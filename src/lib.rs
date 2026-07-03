@@ -1,0 +1,977 @@
+use std::{
+    collections::{BTreeMap, HashSet},
+    fs,
+    io::{Cursor, Read},
+    mem::MaybeUninit,
+    path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+
+use pumpkin::{
+    command::{
+        CommandExecutor, CommandResult, CommandSender,
+        args::ConsumedArgs,
+        tree::{CommandTree, builder::literal},
+    },
+    entity::{EntityBase, RemovalReason},
+    plugin::{
+        BoxFuture, Context, EventHandler, EventPriority, PLUGIN_API_VERSION, Plugin, PluginFuture,
+        PluginMetadata, server::server_tick_start::ServerTickStartEvent,
+    },
+    server::Server,
+};
+use pumpkin_util::{
+    math::vector2::Vector2,
+    permission::{Permission, PermissionDefault, PermissionLvl},
+    text::{TextComponent, color::NamedColor},
+};
+use ruzstd::{
+    decoding::StreamingDecoder,
+    encoding::{CompressionLevel, compress_to_vec},
+};
+use serde::{Deserialize, Serialize};
+use std::sync::atomic::AtomicUsize;
+use sysinfo::{Pid, System, get_current_pid};
+use uuid::Uuid;
+
+mod mob_ai;
+
+use mob_ai::MobAiState;
+
+const PLUGIN_NAME: &str = "Cabbage";
+const CABBAGE_PERMISSION: &str = "Cabbage:command.cabbage";
+const CABBAGE_NAMES: [&str; 1] = ["cabbage"];
+const CLEAR_DROPS_PERMISSION: &str = "Cabbage:command.clear_drops";
+const CLEAR_DROPS_NAMES: [&str; 1] = ["cleardrops"];
+const METRICS_PERMISSION: &str = "Cabbage:command.metrics";
+const METRICS_NAMES: [&str; 1] = ["metrics"];
+const DROPPED_ITEM_ENTITY_ID: &str = "minecraft:item";
+
+#[unsafe(no_mangle)]
+pub static PUMPKIN_API_VERSION: u32 = PLUGIN_API_VERSION;
+
+#[unsafe(no_mangle)]
+pub static mut METADATA: MaybeUninit<PluginMetadata> = MaybeUninit::uninit();
+
+#[ctor::ctor]
+fn init_metadata() {
+    let metadata = PluginMetadata {
+        name: PLUGIN_NAME.to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        authors: vec!["Pumpkin Server Admin".to_string()],
+        description: "Cabbage server utility plugin.".to_string(),
+        dependencies: Vec::new(),
+        permissions: Vec::new(),
+    };
+
+    unsafe {
+        core::ptr::addr_of_mut!(METADATA)
+            .cast::<PluginMetadata>()
+            .write(metadata);
+    }
+}
+
+struct CabbagePlugin {
+    clear_drops_state: Arc<ClearDropsState>,
+    mob_ai_state: Arc<MobAiState>,
+    dropped_item_cleanup_state: Arc<DroppedItemCleanupState>,
+    metrics_reporter_state: Arc<MetricsReporterState>,
+}
+
+impl CabbagePlugin {
+    fn new() -> Self {
+        Self {
+            clear_drops_state: Arc::new(ClearDropsState::default()),
+            mob_ai_state: Arc::new(MobAiState::default()),
+            dropped_item_cleanup_state: Arc::new(DroppedItemCleanupState::default()),
+            metrics_reporter_state: Arc::new(MetricsReporterState::default()),
+        }
+    }
+}
+
+struct MetricsReporterState {
+    sys: Mutex<System>,
+    pid: Pid,
+    cached_map_chunks: Arc<AtomicUsize>,
+    metrics_log: AtomicBool,
+    config_path: Mutex<Option<PathBuf>>,
+}
+
+impl Default for MetricsReporterState {
+    fn default() -> Self {
+        let sys = System::new();
+        let pid = get_current_pid().expect("Failed to get current process ID");
+        Self {
+            sys: Mutex::new(sys),
+            pid,
+            cached_map_chunks: Arc::new(AtomicUsize::new(0)),
+            metrics_log: AtomicBool::new(false),
+            config_path: Mutex::new(None),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct PluginConfig {
+    metrics_log: bool,
+}
+
+impl Default for PluginConfig {
+    fn default() -> Self {
+        Self { metrics_log: false }
+    }
+}
+
+#[derive(Default)]
+struct DroppedItemCleanupState {
+    last_out_of_range_items: Mutex<HashSet<Uuid>>,
+}
+
+#[derive(Default)]
+struct ClearDropsState {
+    pending: AtomicBool,
+    sender: Mutex<Option<CommandSender>>,
+}
+
+#[derive(Default)]
+struct SavedDropCleanup {
+    folders_scanned: usize,
+    files_scanned: usize,
+    files_changed: usize,
+    chunks_scanned: usize,
+    chunks_changed: usize,
+    saved_removed: usize,
+    errors: usize,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+struct SavedPumpData {
+    x: i32,
+    z: i32,
+    chunks: BTreeMap<String, Vec<u8>>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct SavedEntityChunkNbt {
+    data_version: i32,
+    position: [i32; 2],
+    entities: Vec<pumpkin_nbt::NbtCompound>,
+}
+
+fn clear_drops_debug(message: impl AsRef<str>) {
+    println!("[Cabbage] /cleardrops: {}", message.as_ref());
+}
+
+impl Plugin for CabbagePlugin {
+    fn on_load(&mut self, context: Arc<Context>) -> PluginFuture<'_, Result<(), String>> {
+        Box::pin(async move {
+            let cabbage_permission = Permission::new(
+                CABBAGE_PERMISSION,
+                "Allows viewing Cabbage command information.",
+                PermissionDefault::Op(PermissionLvl::Two),
+            );
+
+            match context.register_permission(cabbage_permission).await {
+                Ok(()) => {}
+                Err(error) if error.contains("already registered") => {}
+                Err(error) => return Err(error),
+            }
+
+            let clear_drops_permission = Permission::new(
+                CLEAR_DROPS_PERMISSION,
+                "Allows clearing all loaded dropped item entities.",
+                PermissionDefault::Allow,
+            );
+
+            match context.register_permission(clear_drops_permission).await {
+                Ok(()) => {}
+                Err(error) if error.contains("already registered") => {}
+                Err(error) => return Err(error),
+            }
+
+            let metrics_permission = Permission::new(
+                METRICS_PERMISSION,
+                "Allows viewing metrics and toggling metrics console logging.",
+                PermissionDefault::Op(PermissionLvl::Two),
+            );
+
+            match context.register_permission(metrics_permission).await {
+                Ok(()) => {}
+                Err(error) if error.contains("already registered") => {}
+                Err(error) => return Err(error),
+            }
+
+            self.metrics_reporter_state
+                .load_config(context.get_data_folder());
+
+            spawn_disk_scan(
+                context.server.worlds.load().iter().cloned().collect(),
+                self.metrics_reporter_state.cached_map_chunks.clone(),
+            );
+
+            context
+                .register_command(cabbage_command_tree(), CABBAGE_PERMISSION)
+                .await;
+            context
+                .register_event::<ServerTickStartEvent, _>(
+                    self.clear_drops_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<ServerTickStartEvent, _>(
+                    self.mob_ai_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<ServerTickStartEvent, _>(
+                    self.dropped_item_cleanup_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<ServerTickStartEvent, _>(
+                    self.metrics_reporter_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_command(
+                    clear_drops_command_tree(self.clear_drops_state.clone()),
+                    CLEAR_DROPS_PERMISSION,
+                )
+                .await;
+            context
+                .register_command(
+                    metrics_command_tree(self.metrics_reporter_state.clone()),
+                    METRICS_PERMISSION,
+                )
+                .await;
+
+            Ok(())
+        })
+    }
+
+    fn on_unload(&mut self, context: Arc<Context>) -> PluginFuture<'_, Result<(), String>> {
+        Box::pin(async move {
+            context.unregister_command(CABBAGE_NAMES[0]).await;
+            context.unregister_command(CLEAR_DROPS_NAMES[0]).await;
+            context.unregister_command(METRICS_NAMES[0]).await;
+            Ok(())
+        })
+    }
+}
+
+impl EventHandler<ServerTickStartEvent> for DroppedItemCleanupState {
+    fn handle<'a>(
+        &'a self,
+        server: &'a Arc<Server>,
+        event: &'a ServerTickStartEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if event.tick % 100 != 0 {
+                return;
+            }
+
+            let last_out_of_range = {
+                let last_items = self.last_out_of_range_items.lock().unwrap();
+                last_items.clone()
+            };
+            let mut current_out_of_range = HashSet::new();
+
+            for world in server.worlds.load().iter() {
+                let mut watched_chunks = HashSet::<Vector2<i32>>::new();
+
+                for player in world.players.load().iter() {
+                    let center = player.get_entity().chunk_pos.load();
+
+                    for dx in -1..=1 {
+                        for dz in -1..=1 {
+                            watched_chunks.insert(Vector2::new(center.x + dx, center.y + dz));
+                        }
+                    }
+                }
+
+                let entities = world.entities.load();
+                for entity_base in entities.iter() {
+                    let entity = entity_base.get_entity();
+
+                    if entity.entity_type.resource_name != "item"
+                        && entity.entity_type.resource_name != "minecraft:item"
+                    {
+                        continue;
+                    }
+
+                    let chunk_pos = entity.chunk_pos.load();
+                    if watched_chunks.contains(&chunk_pos) {
+                        continue;
+                    }
+
+                    let uuid = entity.entity_uuid;
+                    let was_out_of_range = last_out_of_range.contains(&uuid);
+
+                    if was_out_of_range {
+                        entity.removed.store(true, Ordering::Relaxed);
+                        entity.removal_reason.store(Some(RemovalReason::Discarded));
+                        entity.remove().await;
+                    } else {
+                        current_out_of_range.insert(uuid);
+                    }
+                }
+            }
+
+            {
+                let mut last_items = self.last_out_of_range_items.lock().unwrap();
+                *last_items = current_out_of_range;
+            }
+        })
+    }
+}
+
+struct CabbageInfoExecutor;
+
+impl CommandExecutor for CabbageInfoExecutor {
+    fn execute<'a>(
+        &'a self,
+        sender: &'a CommandSender,
+        _server: &'a Server,
+        _args: &'a ConsumedArgs<'a>,
+    ) -> CommandResult<'a> {
+        Box::pin(async move {
+            sender
+                .send_message(TextComponent::text(
+                    "Cabbage commands:\n/cleardrops - Queue dropped item cleanup.\n/metrics - Print current metrics once.\n/metrics log - Toggle periodic console metric logging.",
+                ))
+                .await;
+
+            Ok(1)
+        })
+    }
+}
+
+struct ClearDropsExecutor {
+    state: Arc<ClearDropsState>,
+}
+
+impl CommandExecutor for ClearDropsExecutor {
+    fn execute<'a>(
+        &'a self,
+        sender: &'a CommandSender,
+        _server: &'a Server,
+        _args: &'a ConsumedArgs<'a>,
+    ) -> CommandResult<'a> {
+        Box::pin(async move {
+            let queued = !self.state.pending.swap(true, Ordering::SeqCst);
+            if queued && let Ok(mut pending_sender) = self.state.sender.lock() {
+                *pending_sender = Some(sender.clone());
+            }
+
+            clear_drops_debug(format!("command received from {sender}; queued={queued}"));
+
+            sender
+                .send_message(TextComponent::text(if queued {
+                    "Queued dropped item cleanup for the next server tick."
+                } else {
+                    "Dropped item cleanup is already queued."
+                }))
+                .await;
+
+            Ok(1)
+        })
+    }
+}
+
+struct MetricsPrintExecutor {
+    state: Arc<MetricsReporterState>,
+}
+
+impl CommandExecutor for MetricsPrintExecutor {
+    fn execute<'a>(
+        &'a self,
+        sender: &'a CommandSender,
+        server: &'a Server,
+        _args: &'a ConsumedArgs<'a>,
+    ) -> CommandResult<'a> {
+        Box::pin(async move {
+            if !metrics_command_allowed(sender) {
+                sender
+                    .send_message(
+                        TextComponent::text("You do not have permission to run /metrics.")
+                            .color_named(NamedColor::Red),
+                    )
+                    .await;
+                return Ok(0);
+            }
+
+            let snapshot = self.state.collect_metrics(server);
+            sender
+                .send_message(TextComponent::text(snapshot.format()))
+                .await;
+
+            Ok(1)
+        })
+    }
+}
+
+struct MetricsLogToggleExecutor {
+    state: Arc<MetricsReporterState>,
+}
+
+impl CommandExecutor for MetricsLogToggleExecutor {
+    fn execute<'a>(
+        &'a self,
+        sender: &'a CommandSender,
+        _server: &'a Server,
+        _args: &'a ConsumedArgs<'a>,
+    ) -> CommandResult<'a> {
+        Box::pin(async move {
+            if !metrics_command_allowed(sender) {
+                sender
+                    .send_message(
+                        TextComponent::text("You do not have permission to run /metrics.")
+                            .color_named(NamedColor::Red),
+                    )
+                    .await;
+                return Ok(0);
+            }
+
+            let enabled = self.state.toggle_metrics_log();
+            sender.send_message(metrics_log_message(enabled)).await;
+
+            Ok(1)
+        })
+    }
+}
+
+fn metrics_command_allowed(sender: &CommandSender) -> bool {
+    matches!(sender, CommandSender::Console | CommandSender::Rcon(_))
+        || (sender.is_player() && sender.has_permission_lvl(PermissionLvl::Two))
+}
+
+fn metrics_log_message(enabled: bool) -> TextComponent {
+    let (state, color) = if enabled {
+        ("on", NamedColor::Green)
+    } else {
+        ("off", NamedColor::Red)
+    };
+
+    TextComponent::text("Turning metric logging ")
+        .add_child(TextComponent::text(state).color_named(color))
+        .add_text(".")
+}
+
+impl EventHandler<ServerTickStartEvent> for ClearDropsState {
+    fn handle<'a>(
+        &'a self,
+        server: &'a Arc<Server>,
+        event: &'a ServerTickStartEvent,
+    ) -> BoxFuture<'a, ()> {
+        self.run_clear_on_tick(server, event.tick, "handle")
+    }
+
+    fn handle_blocking<'a>(
+        &'a self,
+        server: &'a Arc<Server>,
+        event: &'a mut ServerTickStartEvent,
+    ) -> BoxFuture<'a, ()> {
+        self.run_clear_on_tick(server, event.tick, "handle_blocking")
+    }
+}
+
+impl ClearDropsState {
+    fn run_clear_on_tick<'a>(
+        &'a self,
+        server: &'a Arc<Server>,
+        tick: i32,
+        handler: &'static str,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.pending.swap(false, Ordering::SeqCst) {
+                return;
+            }
+
+            clear_drops_debug(format!("tick {tick}: running cleanup via {handler}"));
+
+            let sender = self.sender.lock().ok().and_then(|mut sender| sender.take());
+            let loaded_removed = clear_loaded_drops(server).await;
+            let saved_summary = clear_saved_drops(server);
+
+            clear_drops_debug(format!(
+                "tick {tick}: cleanup finished; loaded_removed={loaded_removed}, saved_removed={}, saved_files_changed={}, saved_errors={}",
+                saved_summary.saved_removed, saved_summary.files_changed, saved_summary.errors
+            ));
+
+            if let Some(sender) = sender {
+                sender
+                    .send_message(TextComponent::text(format!(
+                        "Cleared {loaded_removed} loaded dropped item{} and {} saved dropped item{} from .pump files{}.",
+                        if loaded_removed == 1 { "" } else { "s" },
+                        saved_summary.saved_removed,
+                        if saved_summary.saved_removed == 1 {
+                            ""
+                        } else {
+                            "s"
+                        },
+                        if saved_summary.errors == 0 {
+                            String::new()
+                        } else {
+                            format!(" ({} saved file scan error{})", saved_summary.errors, if saved_summary.errors == 1 { "" } else { "s" })
+                        }
+                    )))
+                    .await;
+            }
+        })
+    }
+}
+
+async fn clear_loaded_drops(server: &Server) -> usize {
+    let mut drops = Vec::new();
+
+    let worlds = server.worlds.load();
+    clear_drops_debug(format!("scanning {} loaded world(s)", worlds.len()));
+
+    for (world_index, world) in worlds.iter().enumerate() {
+        let entities = world.entities.load();
+        let before = drops.len();
+
+        drops.extend(entities.iter().filter_map(|entity| {
+            (entity.get_entity().entity_type.resource_name == "item").then(|| entity.clone())
+        }));
+
+        let world_drops = drops.len() - before;
+        clear_drops_debug(format!(
+            "world #{world_index}: entities={}, dropped_items={world_drops}",
+            entities.len()
+        ));
+    }
+
+    let removed = drops.len();
+    clear_drops_debug(format!("removing {removed} dropped item entity/entities"));
+
+    for entity in drops {
+        let base_entity = entity.get_entity();
+        base_entity.removed.store(true, Ordering::Relaxed);
+        base_entity
+            .removal_reason
+            .store(Some(RemovalReason::Discarded));
+        base_entity.remove().await;
+    }
+
+    removed
+}
+
+fn clear_saved_drops(server: &Server) -> SavedDropCleanup {
+    let mut summary = SavedDropCleanup::default();
+    let folders = saved_entity_folders(server);
+
+    clear_drops_debug(format!(
+        "scanning saved .pump entity files in {} folder(s)",
+        folders.len()
+    ));
+
+    for folder in folders {
+        summary.folders_scanned += 1;
+        clear_drops_debug(format!("saved scan folder: {}", folder.display()));
+
+        let entries = match fs::read_dir(&folder) {
+            Ok(entries) => entries,
+            Err(error) => {
+                record_saved_scan_error(&mut summary, &folder, error);
+                continue;
+            }
+        };
+
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    record_saved_scan_error(&mut summary, &folder, error);
+                    continue;
+                }
+            };
+
+            let path = entry.path();
+            if !is_pump_file(&path) {
+                continue;
+            }
+
+            if let Err(error) = clear_saved_pump_file(&path, &mut summary) {
+                record_saved_scan_error(&mut summary, &path, error);
+            }
+        }
+    }
+
+    clear_drops_debug(format!(
+        "saved scan finished: folders={}, files={}, files_changed={}, chunks={}, chunks_changed={}, saved_removed={}, errors={}",
+        summary.folders_scanned,
+        summary.files_scanned,
+        summary.files_changed,
+        summary.chunks_scanned,
+        summary.chunks_changed,
+        summary.saved_removed,
+        summary.errors
+    ));
+
+    summary
+}
+
+fn saved_entity_folders(server: &Server) -> Vec<PathBuf> {
+    let mut folders = Vec::new();
+
+    for world in server.worlds.load().iter() {
+        let folder = world.level.level_folder.entities_folder.clone();
+        if !folders.iter().any(|existing| existing == &folder) {
+            folders.push(folder);
+        }
+    }
+
+    folders
+}
+
+fn clear_saved_pump_file(path: &Path, summary: &mut SavedDropCleanup) -> Result<(), String> {
+    summary.files_scanned += 1;
+
+    let file_bytes = fs::read(path).map_err(|error| error.to_string())?;
+    let mut pump_data: SavedPumpData = pumpkin_nbt::from_bytes_unnamed(Cursor::new(file_bytes))
+        .map_err(|error| {
+            format!(
+                "failed to parse pump region NBT {}: {error}",
+                path.display()
+            )
+        })?;
+
+    let mut file_changed = false;
+    let region_x = pump_data.x;
+    let region_z = pump_data.z;
+
+    for (chunk_key, compressed_chunk) in pump_data.chunks.iter_mut() {
+        let chunk_index = match chunk_key.parse::<i32>() {
+            Ok(index) if (0..1024).contains(&index) => index,
+            _ => {
+                summary.errors += 1;
+                clear_drops_debug(format!(
+                    "saved scan error in {}: invalid chunk key {chunk_key}",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+
+        summary.chunks_scanned += 1;
+
+        let mut decoder = match StreamingDecoder::new(&compressed_chunk[..]) {
+            Ok(decoder) => decoder,
+            Err(error) => {
+                summary.errors += 1;
+                clear_drops_debug(format!(
+                    "saved scan error in {} chunk {chunk_key}: zstd decoder error: {error}",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+
+        let mut decompressed = Vec::new();
+        if let Err(error) = decoder.read_to_end(&mut decompressed) {
+            summary.errors += 1;
+            clear_drops_debug(format!(
+                "saved scan error in {} chunk {chunk_key}: zstd read error: {error}",
+                path.display()
+            ));
+            continue;
+        }
+
+        let mut chunk_nbt: SavedEntityChunkNbt = match pumpkin_nbt::from_bytes_unnamed(Cursor::new(
+            decompressed,
+        )) {
+            Ok(chunk_nbt) => chunk_nbt,
+            Err(error) => {
+                summary.errors += 1;
+                clear_drops_debug(format!(
+                    "saved scan error in {} chunk {chunk_key}: entity chunk NBT parse error: {error}",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+
+        let rel_x = chunk_index % 32;
+        let rel_z = chunk_index / 32;
+        let expected_position = [region_x * 32 + rel_x, region_z * 32 + rel_z];
+        if chunk_nbt.position != expected_position {
+            clear_drops_debug(format!(
+                "saved scan warning in {} chunk {chunk_key}: expected chunk {},{} but NBT says {},{}",
+                path.display(),
+                expected_position[0],
+                expected_position[1],
+                chunk_nbt.position[0],
+                chunk_nbt.position[1]
+            ));
+        }
+
+        let before = chunk_nbt.entities.len();
+        chunk_nbt
+            .entities
+            .retain(|entity| entity.get_string("id") != Some(DROPPED_ITEM_ENTITY_ID));
+        let removed = before - chunk_nbt.entities.len();
+
+        if removed == 0 {
+            continue;
+        }
+
+        let mut serialized_chunk = Vec::new();
+        pumpkin_nbt::to_bytes_unnamed(&chunk_nbt, &mut serialized_chunk).map_err(|error| {
+            format!(
+                "failed to serialize entity chunk {chunk_key} in {}: {error}",
+                path.display()
+            )
+        })?;
+
+        *compressed_chunk = compress_to_vec(&serialized_chunk[..], CompressionLevel::Fastest);
+        file_changed = true;
+        summary.chunks_changed += 1;
+        summary.saved_removed += removed;
+    }
+
+    if file_changed {
+        let mut serialized_file = Vec::new();
+        pumpkin_nbt::to_bytes_unnamed(&pump_data, &mut serialized_file).map_err(|error| {
+            format!("failed to serialize pump file {}: {error}", path.display())
+        })?;
+        fs::write(path, serialized_file)
+            .map_err(|error| format!("failed to write pump file {}: {error}", path.display()))?;
+        summary.files_changed += 1;
+    }
+
+    Ok(())
+}
+
+fn is_pump_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("pump"))
+}
+
+fn record_saved_scan_error(
+    summary: &mut SavedDropCleanup,
+    path: &Path,
+    error: impl std::fmt::Display,
+) {
+    summary.errors += 1;
+    clear_drops_debug(format!("saved scan error in {}: {error}", path.display()));
+}
+
+fn cabbage_command_tree() -> CommandTree {
+    CommandTree::new(CABBAGE_NAMES, "List Cabbage commands").execute(CabbageInfoExecutor)
+}
+
+fn clear_drops_command_tree(state: Arc<ClearDropsState>) -> CommandTree {
+    CommandTree::new(
+        CLEAR_DROPS_NAMES,
+        "Remove loaded and saved dropped item entities",
+    )
+    .execute(ClearDropsExecutor { state })
+}
+
+fn metrics_command_tree(state: Arc<MetricsReporterState>) -> CommandTree {
+    CommandTree::new(METRICS_NAMES, "Show metrics and toggle metrics logging")
+        .execute(MetricsPrintExecutor {
+            state: state.clone(),
+        })
+        .then(literal("log").execute(MetricsLogToggleExecutor { state }))
+}
+
+fn spawn_disk_scan(worlds: Vec<Arc<pumpkin::world::World>>, cached_map_chunks: Arc<AtomicUsize>) {
+    std::thread::spawn(move || {
+        let mut total_chunks = 0;
+
+        for world in worlds {
+            let region_folder = &world.level.level_folder.region_folder;
+            if let Ok(entries) = std::fs::read_dir(region_folder) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|s| s.to_str()) == Some("pump") {
+                        if let Ok(file_bytes) = std::fs::read(&path) {
+                            if let Ok(pump_data) = pumpkin_nbt::from_bytes_unnamed::<SavedPumpData>(
+                                std::io::Cursor::new(file_bytes),
+                            ) {
+                                total_chunks += pump_data.chunks.len();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        cached_map_chunks.store(total_chunks, Ordering::SeqCst);
+    });
+}
+
+fn estimate_chunk_ram(chunk: &pumpkin_world::chunk::ChunkData) -> usize {
+    let mut size = std::mem::size_of::<pumpkin_world::chunk::ChunkData>();
+
+    if let Ok(block_sections) = chunk.section.block_sections.read() {
+        for palette in block_sections.iter() {
+            if let pumpkin_world::chunk::palette::PalettedContainer::Heterogeneous(_) = palette {
+                size += 6144;
+            }
+        }
+    }
+    if let Ok(biome_sections) = chunk.section.biome_sections.read() {
+        for palette in biome_sections.iter() {
+            if let pumpkin_world::chunk::palette::PalettedContainer::Heterogeneous(_) = palette {
+                size += 64;
+            }
+        }
+    }
+    if let Ok(light) = chunk.light_engine.lock() {
+        size += light.sky_light.len() * 2048;
+        size += light.block_light.len() * 2048;
+    }
+    size
+}
+
+struct MetricsSnapshot {
+    loaded_chunks_total: usize,
+    loaded_chunks_ram_mib: f64,
+    loaded_entity_chunks: usize,
+    total_map_chunks: usize,
+    tps: f64,
+    mspt: f64,
+    app_ram_mib: f64,
+}
+
+impl MetricsSnapshot {
+    fn format(&self) -> String {
+        format!(
+            "[Cabbage] Chunks loaded in world: {} ({:.2} MB) | Chunks loaded in chunk.data (entities): {} | Total map chunks: {} | TPS: {:.1} (MSPT: {:.2}ms) | App RAM: {:.2} MB",
+            self.loaded_chunks_total,
+            self.loaded_chunks_ram_mib,
+            self.loaded_entity_chunks,
+            self.total_map_chunks,
+            self.tps,
+            self.mspt,
+            self.app_ram_mib
+        )
+    }
+}
+
+impl MetricsReporterState {
+    fn load_config(&self, data_folder: PathBuf) {
+        let path = data_folder.join("config.json");
+        let config = fs::read_to_string(&path)
+            .ok()
+            .and_then(|contents| serde_json::from_str::<PluginConfig>(&contents).ok())
+            .unwrap_or_default();
+
+        self.metrics_log.store(config.metrics_log, Ordering::SeqCst);
+
+        if let Ok(mut config_path) = self.config_path.lock() {
+            *config_path = Some(path);
+        }
+
+        self.save_config(config.metrics_log);
+    }
+
+    fn toggle_metrics_log(&self) -> bool {
+        let enabled = !self.metrics_log.fetch_xor(true, Ordering::SeqCst);
+        self.save_config(enabled);
+        enabled
+    }
+
+    fn save_config(&self, metrics_log: bool) {
+        let path = self.config_path.lock().ok().and_then(|path| path.clone());
+        let Some(path) = path else {
+            return;
+        };
+
+        if let Some(parent) = path.parent()
+            && let Err(error) = fs::create_dir_all(parent)
+        {
+            println!(
+                "[Cabbage] Failed to create metrics config folder {}: {error}",
+                parent.display()
+            );
+            return;
+        }
+
+        let config = PluginConfig { metrics_log };
+        let Ok(contents) = serde_json::to_string_pretty(&config) else {
+            return;
+        };
+
+        if let Err(error) = fs::write(&path, contents) {
+            println!(
+                "[Cabbage] Failed to write metrics config {}: {error}",
+                path.display()
+            );
+        }
+    }
+
+    fn collect_metrics(&self, server: &Server) -> MetricsSnapshot {
+        let tps = server.get_tps().min(server.basic_config.tps as f64);
+        let mspt = server.get_mspt();
+
+        let app_ram_mib = {
+            let mut sys = self.sys.lock().unwrap();
+            sys.refresh_process(self.pid);
+            if let Some(process) = sys.process(self.pid) {
+                process.memory() as f64 / (1024.0 * 1024.0)
+            } else {
+                0.0
+            }
+        };
+
+        let mut loaded_chunks_total = 0;
+        let mut loaded_chunks_ram = 0;
+        let mut loaded_entity_chunks = 0;
+
+        for world in server.worlds.load().iter() {
+            loaded_chunks_total += world.level.loaded_chunks.len();
+            for ref_entry in world.level.loaded_chunks.iter() {
+                loaded_chunks_ram += estimate_chunk_ram(ref_entry.value());
+            }
+            loaded_entity_chunks += world.level.loaded_entity_chunks_count();
+        }
+
+        MetricsSnapshot {
+            loaded_chunks_total,
+            loaded_chunks_ram_mib: loaded_chunks_ram as f64 / (1024.0 * 1024.0),
+            loaded_entity_chunks,
+            total_map_chunks: self.cached_map_chunks.load(Ordering::SeqCst),
+            tps,
+            mspt,
+            app_ram_mib,
+        }
+    }
+}
+
+impl EventHandler<ServerTickStartEvent> for MetricsReporterState {
+    fn handle<'a>(
+        &'a self,
+        server: &'a Arc<Server>,
+        event: &'a ServerTickStartEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.metrics_log.load(Ordering::SeqCst) || event.tick % 40 != 0 {
+                return;
+            }
+
+            println!("{}", self.collect_metrics(server).format());
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub fn plugin() -> Box<dyn Plugin> {
+    Box::new(CabbagePlugin::new())
+}

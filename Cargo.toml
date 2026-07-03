@@ -1,0 +1,40 @@
+[workspace]
+resolver = "3"
+
+[package]
+name = "cabbage"
+version = "0.1.0"
+edition = "2024"
+authors = ["Pumpkin Server Admin"]
+description = "A native utility and optimization engine for the Pumpkin Minecraft server. Bringing multithreaded systems, entity control, and deep diagnostics to the table at bare-metal speeds. Simple, expandable, and ready for future features."
+license = "GPL-3.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ctor = "0.2"
+pumpkin = { path = "../../pumpkin" }
+pumpkin-nbt = { path = "../../pumpkin-nbt" }
+pumpkin-util = { path = "../../pumpkin-util" }
+pumpkin-world = { path = "../../pumpkin-world" }
+ruzstd = "0.8.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = "1.23"
+sysinfo = "0.30"
+
+[profile.dev]
+opt-level = 0
+debug = 1
+incremental = true
+codegen-units = 256
+
+[profile.dev.package."*"]
+opt-level = 0
+debug = 0
+
+[profile.release]
+lto = true
+opt-level = 3
+strip = "debuginfo"
