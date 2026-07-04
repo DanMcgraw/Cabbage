@@ -10,25 +10,31 @@
 
 Cabbage is a native Pumpkin plugin focused on server utilities, diagnostics, and custom mob AI/pathfinding. The README is the high-level product guide; this file is the working guide for future agents.
 
-When the task involves Mob AI, pathfinding, movement, velocity planning, worker threads, or managed entity behavior, read `MOB_AI_DATA_FLOW.md` before editing `src/mob_ai.rs`.
+When the task involves Mob AI, pathfinding, movement, velocity planning, worker threads, or managed entity behavior, read `src/mob_ai/MOB_AI_DATA_FLOW.md` before editing files in `src/mob_ai/`.
 
 ## Current Layout
 
 ```text
 Cabbage/
 |-- AGENTS.md
-|-- MOB_AI_DATA_FLOW.md
 |-- README.md
 |-- Cargo.toml
 |-- compile.bat
 `-- src/
     |-- lib.rs
-    `-- mob_ai.rs
+    `-- mob_ai/
+        |-- mod.rs               # event handler and state ownership
+        |-- MOB_AI_DATA_FLOW.md  # mob AI architecture and data flow rules
+        |-- pathfinding.rs       # grid, bounds, bidirectional A*
+        |-- movement.rs          # velocity plans, lookahead, rotation
+        |-- workers.rs           # Rayon worker-pool job submission and ActiveJobGuard
+        |-- clustering.rs        # mob-location table and anti-clump push
+        `-- types.rs             # shared snapshots and small data structs
 ```
 
 ## Refactor Organization Chart
 
-Use this target structure as files become larger. Do not split prematurely; split when a section becomes hard to test or reason about independently.
+Use this target structure as files become larger. (The **mob_ai** refactor has been completed).
 
 ```text
 src/
@@ -48,19 +54,11 @@ src/
 |   |-- loaded_cleanup.rs
 |   `-- saved_region_cleanup.rs
 |
-|-- metrics/
-|   |-- mod.rs
-|   |-- config.rs
-|   |-- reporter.rs
-|   `-- disk_scan.rs
-|
-`-- mob_ai/
-    |-- mod.rs               # event handler and state ownership
-    |-- pathfinding.rs       # grid, bounds, bidirectional A*
-    |-- movement.rs          # velocity plans, lookahead, rotation
-    |-- workers.rs           # Rayon worker-pool job submission
-    |-- clustering.rs        # mob-location table and anti-clump push
-    `-- types.rs             # shared snapshots and small data structs
+`-- metrics/
+    |-- mod.rs
+    |-- config.rs
+    |-- reporter.rs
+    `-- disk_scan.rs
 ```
 
 ## Refactor Rules

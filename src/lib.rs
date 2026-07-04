@@ -83,11 +83,12 @@ struct CabbagePlugin {
 
 impl CabbagePlugin {
     fn new() -> Self {
+        let mob_ai_state = Arc::new(MobAiState::default());
         Self {
             clear_drops_state: Arc::new(ClearDropsState::default()),
-            mob_ai_state: Arc::new(MobAiState::default()),
+            mob_ai_state: mob_ai_state.clone(),
             dropped_item_cleanup_state: Arc::new(DroppedItemCleanupState::default()),
-            metrics_reporter_state: Arc::new(MetricsReporterState::default()),
+            metrics_reporter_state: Arc::new(MetricsReporterState::new(mob_ai_state)),
         }
     }
 }
@@ -98,10 +99,14 @@ struct MetricsReporterState {
     cached_map_chunks: Arc<AtomicUsize>,
     metrics_log: AtomicBool,
     config_path: Mutex<Option<PathBuf>>,
+    mob_ai_state: Arc<MobAiState>,
+    last_paths_completed: std::sync::atomic::AtomicUsize,
+    last_velocities_completed: std::sync::atomic::AtomicUsize,
+    last_metrics_time: Mutex<std::time::Instant>,
 }
 
-impl Default for MetricsReporterState {
-    fn default() -> Self {
+impl MetricsReporterState {
+    fn new(mob_ai_state: Arc<MobAiState>) -> Self {
         let sys = System::new();
         let pid = get_current_pid().expect("Failed to get current process ID");
         Self {
@@ -110,6 +115,10 @@ impl Default for MetricsReporterState {
             cached_map_chunks: Arc::new(AtomicUsize::new(0)),
             metrics_log: AtomicBool::new(false),
             config_path: Mutex::new(None),
+            mob_ai_state,
+            last_paths_completed: std::sync::atomic::AtomicUsize::new(0),
+            last_velocities_completed: std::sync::atomic::AtomicUsize::new(0),
+            last_metrics_time: Mutex::new(std::time::Instant::now()),
         }
     }
 }
@@ -848,19 +857,33 @@ struct MetricsSnapshot {
     tps: f64,
     mspt: f64,
     app_ram_mib: f64,
+    mob_ai_managed_mobs: usize,
+    mob_ai_active_path_jobs: usize,
+    mob_ai_active_velocity_jobs: usize,
+    mob_ai_worker_threads: usize,
+    mob_ai_paths_per_sec: f64,
+    mob_ai_velocities_per_sec: f64,
 }
 
 impl MetricsSnapshot {
     fn format(&self) -> String {
         format!(
-            "[Cabbage] Chunks loaded in world: {} ({:.2} MB) | Chunks loaded in chunk.data (entities): {} | Total map chunks: {} | TPS: {:.1} (MSPT: {:.2}ms) | App RAM: {:.2} MB",
+            "[Cabbage] Chunks loaded in world: {} ({:.2} MB) | Chunks loaded in chunk.data (entities): {} | Total map chunks: {} | TPS: {:.1} (MSPT: {:.2}ms) | App RAM: {:.2} MB\n\
+             [Cabbage Mob AI] Managed mobs: {} | Active jobs: path={}, velocity={} (pool size: {})\n\
+             [Cabbage Mob AI] Processing rates: paths/s: {:.1}, velocity_plans/s: {:.1}",
             self.loaded_chunks_total,
             self.loaded_chunks_ram_mib,
             self.loaded_entity_chunks,
             self.total_map_chunks,
             self.tps,
             self.mspt,
-            self.app_ram_mib
+            self.app_ram_mib,
+            self.mob_ai_managed_mobs,
+            self.mob_ai_active_path_jobs,
+            self.mob_ai_active_velocity_jobs,
+            self.mob_ai_worker_threads,
+            self.mob_ai_paths_per_sec,
+            self.mob_ai_velocities_per_sec
         )
     }
 }
@@ -943,6 +966,25 @@ impl MetricsReporterState {
             loaded_entity_chunks += world.level.loaded_entity_chunks_count();
         }
 
+        let mob_ai_metrics = self.mob_ai_state.get_metrics();
+        
+        let (paths_rate, velocities_rate) = {
+            let mut last_time_lock = self.last_metrics_time.lock().unwrap();
+            let elapsed = last_time_lock.elapsed().as_secs_f64();
+            *last_time_lock = std::time::Instant::now();
+            
+            let last_paths = self.last_paths_completed.swap(mob_ai_metrics.total_paths_completed, Ordering::SeqCst);
+            let last_velocities = self.last_velocities_completed.swap(mob_ai_metrics.total_velocities_completed, Ordering::SeqCst);
+            
+            if elapsed > 0.0 {
+                let p_rate = (mob_ai_metrics.total_paths_completed.saturating_sub(last_paths)) as f64 / elapsed;
+                let v_rate = (mob_ai_metrics.total_velocities_completed.saturating_sub(last_velocities)) as f64 / elapsed;
+                (p_rate, v_rate)
+            } else {
+                (0.0, 0.0)
+            }
+        };
+
         MetricsSnapshot {
             loaded_chunks_total,
             loaded_chunks_ram_mib: loaded_chunks_ram as f64 / (1024.0 * 1024.0),
@@ -951,6 +993,12 @@ impl MetricsReporterState {
             tps,
             mspt,
             app_ram_mib,
+            mob_ai_managed_mobs: mob_ai_metrics.managed_mobs_count,
+            mob_ai_active_path_jobs: mob_ai_metrics.active_path_jobs,
+            mob_ai_active_velocity_jobs: mob_ai_metrics.active_velocity_jobs,
+            mob_ai_worker_threads: mob_ai_metrics.total_worker_threads,
+            mob_ai_paths_per_sec: paths_rate,
+            mob_ai_velocities_per_sec: velocities_rate,
         }
     }
 }
