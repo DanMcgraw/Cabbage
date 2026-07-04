@@ -227,7 +227,7 @@ impl Plugin for CabbagePlugin {
                 .register_event::<ServerTickStartEvent, _>(
                     self.mob_ai_state.clone(),
                     EventPriority::Normal,
-                    false,
+                    true,
                 )
                 .await;
             context

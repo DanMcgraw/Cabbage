@@ -210,9 +210,11 @@ version = "0.1.0"
 dependencies = [
  "ctor",
  "pumpkin",
+ "pumpkin-data",
  "pumpkin-nbt",
  "pumpkin-util",
  "pumpkin-world",
+ "rayon",
  "ruzstd",
  "serde",
  "serde_json",
