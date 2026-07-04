@@ -209,6 +209,7 @@ name = "cabbage"
 version = "0.1.0"
 dependencies = [
  "ctor",
+ "log",
  "pumpkin",
  "pumpkin-data",
  "pumpkin-nbt",

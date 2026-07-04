@@ -78,10 +78,14 @@ impl Default for MobAiState {
 impl EventHandler<ServerTickStartEvent> for MobAiState {
     fn handle<'a>(
         &'a self,
-        server: &'a Arc<Server>,
-        event: &'a ServerTickStartEvent,
+        _server: &'a Arc<Server>,
+        _event: &'a ServerTickStartEvent,
     ) -> BoxFuture<'a, ()> {
-        self.run_tick(server, event.tick)
+        // Fix 1: Do not call run_tick from the non-blocking handler.
+        // run_tick touches live Pumpkin world/entity state, which is only safe on
+        // the game thread. The non-blocking handler may run on an async executor
+        // thread, causing access violations (error 0x05).
+        Box::pin(async {})
     }
 
     fn handle_blocking<'a>(
@@ -96,6 +100,12 @@ impl EventHandler<ServerTickStartEvent> for MobAiState {
 impl MobAiState {
     fn run_tick<'a>(&'a self, server: &'a Arc<Server>, tick: i32) -> BoxFuture<'a, ()> {
         Box::pin(async move {
+            log::trace!(
+                "MobAiState::run_tick tick={} thread={:?}",
+                tick,
+                std::thread::current().name()
+            );
+
             let mut seen_mobs = HashSet::new();
             let mut active_mobs = Vec::new();
             let should_update_velocity = tick % MOB_MOVE_PERIOD_TICKS == 0;
@@ -114,8 +124,16 @@ impl MobAiState {
 
                     seen_mobs.insert(entity.entity_uuid);
 
+                    // Fix 5: Apply completed velocity plan BEFORE snapshotting
+                    // so the snapshot reflects post-apply state for the next
+                    // worker job, avoiding stale velocity data.
+                    if should_update_velocity {
+                        self.apply_planned_velocity(entity_base.as_ref(), entity.entity_uuid);
+                    }
+
                     let current_pos = entity.pos.load();
                     let mob_pos = BlockPos::floored_v(current_pos);
+                    let current_velocity = entity.velocity.load();
                     let Some((target_pos, horizontal_distance)) =
                         nearest_player_pos(world, mob_pos)
                     else {
@@ -148,16 +166,12 @@ impl MobAiState {
                         None
                     };
 
-                    if should_update_velocity {
-                        self.apply_planned_velocity(entity_base.as_ref(), entity.entity_uuid);
-                    }
-
                     active_mobs.push(ActiveMobSnapshot {
                         uuid: entity.entity_uuid,
                         world_uuid: world.uuid,
                         current_pos,
                         current_block: mob_pos,
-                        current_velocity: entity.velocity.load(),
+                        current_velocity,
                         movement_speed: living_entity
                             .get_attribute_value(&Attributes::MOVEMENT_SPEED),
                         path_target,
@@ -218,20 +232,29 @@ impl MobAiState {
         let path_steps = Arc::clone(&self.path_steps);
 
         self.worker_pool.spawn(move || {
+            // Fix 4: ActiveJobGuard ensures the UUID is removed from the active
+            // set even if the worker panics, preventing permanent job stalls.
+            let _guard = ActiveJobGuard {
+                uuid,
+                set: active_path_jobs,
+            };
+
+            log::trace!(
+                "path job uuid={} thread={:?}",
+                uuid,
+                std::thread::current().name()
+            );
+
             let steps = bidirectional_a_star(&grid, mob_pos, target_pos)
                 .map(|path| movement_path_steps(&path, mob_pos))
                 .filter(|steps| !steps.is_empty());
 
-            {
-                let mut path_steps = path_steps.lock().unwrap();
-                if let Some(steps) = steps {
-                    path_steps.insert(uuid, steps);
-                } else {
-                    path_steps.remove(&uuid);
-                }
+            let mut path_steps = path_steps.lock().unwrap();
+            if let Some(steps) = steps {
+                path_steps.insert(uuid, steps);
+            } else {
+                path_steps.remove(&uuid);
             }
-
-            active_path_jobs.lock().unwrap().remove(&uuid);
         });
     }
 
@@ -246,12 +269,16 @@ impl MobAiState {
     }
 
     fn apply_planned_velocity(&self, entity_base: &dyn EntityBase, uuid: Uuid) {
-        let mut planned_velocities = self.planned_velocities.lock().unwrap();
-        let Some(plan) = planned_velocities.remove(&uuid) else {
-            return;
+        // Fix 6: Extract the plan under the lock and immediately release it.
+        // No local mutex is held while mutating live Pumpkin entity state.
+        let plan = {
+            let mut planned_velocities = self.planned_velocities.lock().unwrap();
+            planned_velocities.remove(&uuid)
         };
 
-        drop(planned_velocities);
+        let Some(plan) = plan else {
+            return;
+        };
 
         let entity = entity_base.get_entity();
         point_body_along_velocity(entity, plan.steering_delta);
@@ -286,11 +313,22 @@ impl MobAiState {
             let planned_velocities = Arc::clone(&self.planned_velocities);
 
             self.worker_pool.spawn(move || {
+                // Fix 4: ActiveJobGuard ensures the UUID is removed from the
+                // active set even if the worker panics.
+                let _guard = ActiveJobGuard {
+                    uuid: job.uuid,
+                    set: active_velocity_jobs,
+                };
+
+                log::trace!(
+                    "velocity job uuid={} thread={:?}",
+                    job.uuid,
+                    std::thread::current().name()
+                );
+
                 if let Some(plan) = compute_velocity_plan(&job) {
                     planned_velocities.lock().unwrap().insert(job.uuid, plan);
                 }
-
-                active_velocity_jobs.lock().unwrap().remove(&job.uuid);
             });
         }
     }
@@ -325,17 +363,41 @@ impl MobAiState {
     }
 
     fn retain_seen_mobs(&self, seen_mobs: &HashSet<Uuid>) {
-        let mut last_path_ticks = self.last_path_ticks.lock().unwrap();
-        last_path_ticks.retain(|uuid, _| seen_mobs.contains(uuid));
+        // Fix 3: Only prune cache/result maps, NOT active job ownership sets.
+        // Worker jobs own their active marker lifecycle via ActiveJobGuard.
+        // If a mob disappears while a job is running, the job finishes and
+        // the result gets ignored or pruned because the mob is no longer seen.
+        // This preserves the one-active-job-per-UUID deduplication invariant.
+        self.last_path_ticks
+            .lock()
+            .unwrap()
+            .retain(|uuid, _| seen_mobs.contains(uuid));
 
-        let mut path_steps = self.path_steps.lock().unwrap();
-        path_steps.retain(|uuid, _| seen_mobs.contains(uuid));
+        self.path_steps
+            .lock()
+            .unwrap()
+            .retain(|uuid, _| seen_mobs.contains(uuid));
 
-        let mut active_velocity_jobs = self.active_velocity_jobs.lock().unwrap();
-        active_velocity_jobs.retain(|uuid| seen_mobs.contains(uuid));
+        self.planned_velocities
+            .lock()
+            .unwrap()
+            .retain(|uuid, _| seen_mobs.contains(uuid));
+    }
+}
 
-        let mut planned_velocities = self.planned_velocities.lock().unwrap();
-        planned_velocities.retain(|uuid, _| seen_mobs.contains(uuid));
+/// RAII guard that removes a mob UUID from its active job set on drop.
+///
+/// This ensures that a worker-thread panic cannot permanently leave a UUID
+/// marked as active, which would prevent future jobs from being submitted
+/// for that mob (Fix 4).
+struct ActiveJobGuard {
+    uuid: Uuid,
+    set: Arc<Mutex<HashSet<Uuid>>>,
+}
+
+impl Drop for ActiveJobGuard {
+    fn drop(&mut self) {
+        self.set.lock().unwrap().remove(&self.uuid);
     }
 }
 
