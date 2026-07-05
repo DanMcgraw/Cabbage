@@ -402,10 +402,12 @@ pub fn block_center_feet_pos(pos: BlockPos) -> Vector3<f64> {
     )
 }
 
-pub fn path_interval_ticks(horizontal_distance: i64) -> i64 {
-    PATH_INTERVAL_HORIZONTAL_DISTANCE_MULTIPLIER_TICKS
+pub fn path_interval_ticks(horizontal_distance: i64, entity_count: usize) -> i64 {
+    let base = PATH_INTERVAL_HORIZONTAL_DISTANCE_MULTIPLIER_TICKS
         .saturating_mul(horizontal_distance)
-        .max(MIN_PATH_INTERVAL_TICKS)
+        .max(MIN_PATH_INTERVAL_TICKS);
+    let load_multiplier = 1 + (entity_count as i64 / 100);
+    base.saturating_mul(load_multiplier)
 }
 
 #[cfg(test)]
@@ -492,11 +494,24 @@ mod tests {
 
     #[test]
     fn path_interval_uses_horizontal_distance_with_minimum() {
-        assert_eq!(path_interval_ticks(0), 5);
-        assert_eq!(path_interval_ticks(1), 5);
-        assert_eq!(path_interval_ticks(2), 5);
-        assert_eq!(path_interval_ticks(3), 6);
-        assert_eq!(path_interval_ticks(10), 20);
+        assert_eq!(path_interval_ticks(0, 0), 5);
+        assert_eq!(path_interval_ticks(1, 0), 5);
+        assert_eq!(path_interval_ticks(2, 0), 5);
+        assert_eq!(path_interval_ticks(3, 0), 6);
+        assert_eq!(path_interval_ticks(10, 0), 20);
+    }
+
+    #[test]
+    fn path_interval_scales_with_entity_count() {
+        // 0-99 entities: 1x multiplier
+        assert_eq!(path_interval_ticks(10, 0), 20);
+        assert_eq!(path_interval_ticks(10, 99), 20);
+        // 100 entities: 2x multiplier
+        assert_eq!(path_interval_ticks(10, 100), 40);
+        // 200 entities: 3x multiplier
+        assert_eq!(path_interval_ticks(10, 200), 60);
+        // minimum floor also scales
+        assert_eq!(path_interval_ticks(0, 100), 10);
     }
 
     #[test]

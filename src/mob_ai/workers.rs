@@ -41,6 +41,13 @@ impl MobAiState {
         mob_pos: BlockPos,
         target_pos: BlockPos,
     ) {
+        // Record the endpoints on the game thread so the reuse check on the
+        // next cycle can compare them without waiting for the worker to finish.
+        self.path_endpoints
+            .lock()
+            .unwrap()
+            .insert(uuid, (mob_pos, target_pos));
+
         let active_path_jobs = Arc::clone(&self.active_path_jobs);
         let path_steps = Arc::clone(&self.path_steps);
         let paths_completed = Arc::clone(&self.paths_completed);

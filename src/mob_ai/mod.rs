@@ -37,6 +37,10 @@ const PATH_BOX_OUTSET_BLOCKS: i32 = 3;
 
 const MOB_JUMP_TYPES: [&str; 3] = ["zombie", "skeleton", "creeper"];
 const MOB_MOVE_PERIOD_TICKS: i32 = 4;
+/// Number of ticks to skip a newly-loaded entity before touching its AI
+/// structures. Entities spawned from chunk loading may not have their
+/// goals/navigator/look-control fully initialised for the first few ticks.
+const ENTITY_LOAD_GRACE_TICKS: i32 = 40;
 
 pub(crate) struct MobAiState {
     pub(crate) worker_pool: Arc<ThreadPool>,
@@ -50,6 +54,12 @@ pub(crate) struct MobAiState {
     pub(crate) velocities_completed: Arc<std::sync::atomic::AtomicUsize>,
     pub(crate) disabled_mobs: Mutex<HashSet<Uuid>>,
     pub(crate) frozen_out_of_bounds_mobs: Mutex<HashSet<Uuid>>,
+    /// Tick at which each entity was first observed. Entities inside their
+    /// grace window are completely skipped by the AI loop.
+    pub(crate) grace_period_mobs: Mutex<HashMap<Uuid, i32>>,
+    /// Cached (start_block, goal_block) that produced the current path_steps
+    /// entry.  Used to skip redundant A* jobs when neither endpoint moved.
+    pub(crate) path_endpoints: Mutex<HashMap<Uuid, (BlockPos, BlockPos)>>,
 }
 
 pub struct MobAiMetrics {
@@ -82,6 +92,8 @@ impl Default for MobAiState {
             velocities_completed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             disabled_mobs: Mutex::new(HashSet::new()),
             frozen_out_of_bounds_mobs: Mutex::new(HashSet::new()),
+            grace_period_mobs: Mutex::new(HashMap::new()),
+            path_endpoints: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -144,6 +156,16 @@ impl MobAiState {
                         continue;
                     }
                     loaded_managed_mobs.insert(entity.entity_uuid);
+
+                    // Grace period: skip entities that just appeared until their
+                    // AI sub-systems have had time to fully initialise.
+                    {
+                        let mut grace = self.grace_period_mobs.lock().unwrap();
+                        let first_seen = grace.entry(entity.entity_uuid).or_insert(tick);
+                        if tick.wrapping_sub(*first_seen) < ENTITY_LOAD_GRACE_TICKS {
+                            continue;
+                        }
+                    }
 
                     // Mobs outside the 3x3 chunk area around players are not AI-active,
                     // but still need their live movement state frozen while they remain loaded.
@@ -211,8 +233,15 @@ impl MobAiState {
                         path_target,
                     });
 
-                    let interval = path_interval_ticks(horizontal_distance);
+                    let interval =
+                        path_interval_ticks(horizontal_distance, active_seen_mobs.len());
                     if !self.should_start_path_job(entity.entity_uuid, tick, interval) {
+                        continue;
+                    }
+
+                    // Reuse the existing path when neither endpoint has changed.
+                    if self.can_reuse_path(entity.entity_uuid, mob_pos, target_pos) {
+                        self.clear_active_path_job(entity.entity_uuid);
                         continue;
                     }
 
@@ -314,6 +343,20 @@ impl MobAiState {
 
     fn clear_path(&self, uuid: Uuid) {
         self.path_steps.lock().unwrap().remove(&uuid);
+        self.path_endpoints.lock().unwrap().remove(&uuid);
+    }
+
+    /// Returns `true` when a cached path already exists for this mob and
+    /// neither endpoint (mob block, target block) has changed since the
+    /// path was computed, meaning the A* result can be reused.
+    fn can_reuse_path(&self, uuid: Uuid, mob_pos: BlockPos, target_pos: BlockPos) -> bool {
+        let endpoints = self.path_endpoints.lock().unwrap();
+        if let Some(&(cached_start, cached_goal)) = endpoints.get(&uuid) {
+            if cached_start == mob_pos && cached_goal == target_pos {
+                return self.path_steps.lock().unwrap().contains_key(&uuid);
+            }
+        }
+        false
     }
 
     fn clear_active_path_job(&self, uuid: Uuid) {
@@ -362,6 +405,11 @@ impl MobAiState {
             .unwrap()
             .retain(|uuid, _| active_seen_mobs.contains(uuid));
 
+        self.path_endpoints
+            .lock()
+            .unwrap()
+            .retain(|uuid, _| active_seen_mobs.contains(uuid));
+
         self.planned_velocities
             .lock()
             .unwrap()
@@ -376,6 +424,11 @@ impl MobAiState {
             .lock()
             .unwrap()
             .retain(|uuid| loaded_managed_mobs.contains(uuid) && !active_seen_mobs.contains(uuid));
+
+        self.grace_period_mobs
+            .lock()
+            .unwrap()
+            .retain(|uuid, _| loaded_managed_mobs.contains(uuid));
     }
 
     pub fn get_metrics(&self) -> MobAiMetrics {
