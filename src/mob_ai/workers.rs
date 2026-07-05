@@ -1,6 +1,8 @@
 use crate::mob_ai::MobAiState;
 use crate::mob_ai::movement::compute_velocity_plan;
-use crate::mob_ai::pathfinding::{BlockGrid, bidirectional_a_star, movement_path_steps};
+use crate::mob_ai::pathfinding::{
+    BlockGrid, PlayerSearchTree, bidirectional_a_star, connect_to_player_tree, movement_path_steps,
+};
 use crate::mob_ai::types::{ActiveMobSnapshot, VelocityJobSnapshot};
 use pumpkin_util::math::position::BlockPos;
 use std::collections::HashSet;
@@ -40,6 +42,7 @@ impl MobAiState {
         grid: BlockGrid,
         mob_pos: BlockPos,
         target_pos: BlockPos,
+        player_tree: Option<Arc<PlayerSearchTree>>,
     ) {
         // Record the endpoints on the game thread so the reuse check on the
         // next cycle can compare them without waiting for the worker to finish.
@@ -64,9 +67,13 @@ impl MobAiState {
                 std::thread::current().name()
             );
 
-            let steps = bidirectional_a_star(&grid, mob_pos, target_pos)
-                .map(|path| movement_path_steps(&path, mob_pos))
-                .filter(|steps| !steps.is_empty());
+            let steps = if let Some(ref tree) = player_tree {
+                connect_to_player_tree(&grid, mob_pos, target_pos, tree)
+            } else {
+                bidirectional_a_star(&grid, mob_pos, target_pos)
+                    .map(|path| movement_path_steps(&path, mob_pos))
+                    .filter(|steps| !steps.is_empty())
+            };
 
             let mut path_steps = path_steps.lock().unwrap();
             if let Some(steps) = steps {

@@ -3,7 +3,7 @@ use pumpkin_util::math::vector3::Vector3;
 use uuid::Uuid;
 
 pub const CLUSTER_DIAMETER_BLOCKS: f64 = 1.5;
-pub const CLUSTER_CENTER_PUSH_RADIUS_BLOCKS: f64 = 0.7;
+pub const CLUSTER_CENTER_PUSH_RADIUS_BLOCKS: f64 = 0.525;
 pub const CLUSTER_CELL_SIZE_BLOCKS: f64 = CLUSTER_DIAMETER_BLOCKS;
 
 #[derive(Clone, Debug)]
@@ -206,22 +206,22 @@ mod tests {
         let second_uuid = test_uuid(2);
         let table = MobLocationTable::from_entries([
             location_entry(first_uuid, world_uuid, 0.0, 0.0, 0.0),
-            location_entry(second_uuid, world_uuid, 1.2, 0.0, 0.0),
+            location_entry(second_uuid, world_uuid, 0.8, 0.0, 0.0),
         ]);
 
         let cluster = table.query_cluster(first_uuid).unwrap();
 
-        assert_eq!(cluster.center, Vector3::new(0.6, 0.0, 0.0));
+        assert_eq!(cluster.center, Vector3::new(0.4, 0.0, 0.0));
         assert_eq!(
             cluster.members,
             vec![
                 MobClusterMember {
                     uuid: first_uuid,
-                    offset_from_center: Vector3::new(-0.6, 0.0, 0.0),
+                    offset_from_center: Vector3::new(-0.4, 0.0, 0.0),
                 },
                 MobClusterMember {
                     uuid: second_uuid,
-                    offset_from_center: Vector3::new(0.6, 0.0, 0.0),
+                    offset_from_center: Vector3::new(0.4, 0.0, 0.0),
                 },
             ]
         );
@@ -290,8 +290,8 @@ mod tests {
         let first_uuid = test_uuid(1);
         let second_uuid = test_uuid(2);
         let table = MobLocationTable::from_entries([
-            location_entry(first_uuid, world_uuid, -0.6, 0.0, 0.0),
-            location_entry(second_uuid, world_uuid, 0.6, 0.0, 0.0),
+            location_entry(first_uuid, world_uuid, -0.4, 0.0, 0.0),
+            location_entry(second_uuid, world_uuid, 0.4, 0.0, 0.0),
         ]);
 
         let velocity = cluster_push_velocity(first_uuid, 0.35, &table);
@@ -305,8 +305,8 @@ mod tests {
         let first_uuid = test_uuid(1);
         let second_uuid = test_uuid(2);
         let table = MobLocationTable::from_entries([
-            location_entry(first_uuid, world_uuid, -0.4, -0.4, 0.0),
-            location_entry(second_uuid, world_uuid, 0.4, 0.4, 0.0),
+            location_entry(first_uuid, world_uuid, -0.3, -0.3, 0.0),
+            location_entry(second_uuid, world_uuid, 0.3, 0.3, 0.0),
         ]);
 
         let velocity = cluster_push_velocity(first_uuid, 0.5, &table);

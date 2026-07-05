@@ -23,10 +23,10 @@ pub(crate) mod pathfinding;
 pub(crate) mod types;
 pub(crate) mod workers;
 
-use movement::{point_body_along_velocity, weighted_lookahead_target};
+use movement::weighted_lookahead_target;
 use pathfinding::{
-    BlockGrid, PathBounds, block_distance_squared, horizontal_block_distance,
-    path_height_difference_exceeded, path_interval_ticks,
+    BlockGrid, PathBounds, PlayerSearchTree, block_distance_squared, generate_player_tree,
+    horizontal_block_distance, path_height_difference_exceeded, path_interval_ticks,
 };
 use types::{
     ActiveMobSnapshot, MobLocationEntry, MobLocationTable, PathVelocityTarget, VelocityPlan,
@@ -36,7 +36,6 @@ use workers::cabbage_worker_thread_count;
 const PATH_BOX_OUTSET_BLOCKS: i32 = 3;
 
 const MOB_JUMP_TYPES: [&str; 3] = ["zombie", "skeleton", "creeper"];
-const MOB_MOVE_PERIOD_TICKS: i32 = 4;
 /// Number of ticks to skip a newly-loaded entity before touching its AI
 /// structures. Entities spawned from chunk loading may not have their
 /// goals/navigator/look-control fully initialised for the first few ticks.
@@ -60,6 +59,12 @@ pub(crate) struct MobAiState {
     /// Cached (start_block, goal_block) that produced the current path_steps
     /// entry.  Used to skip redundant A* jobs when neither endpoint moved.
     pub(crate) path_endpoints: Mutex<HashMap<Uuid, (BlockPos, BlockPos)>>,
+    /// Cached Dijkstra search trees per player. Shared by nearby mobs.
+    pub(crate) player_trees: Mutex<HashMap<Uuid, Arc<PlayerSearchTree>>>,
+    /// Last computed block position of players to detect movement.
+    pub(crate) last_player_positions: Mutex<HashMap<Uuid, BlockPos>>,
+    /// Last applied rotation yaw based on planned velocity.
+    pub(crate) last_applied_yaws: Mutex<HashMap<Uuid, f32>>,
 }
 
 pub struct MobAiMetrics {
@@ -94,6 +99,9 @@ impl Default for MobAiState {
             frozen_out_of_bounds_mobs: Mutex::new(HashSet::new()),
             grace_period_mobs: Mutex::new(HashMap::new()),
             path_endpoints: Mutex::new(HashMap::new()),
+            player_trees: Mutex::new(HashMap::new()),
+            last_player_positions: Mutex::new(HashMap::new()),
+            last_applied_yaws: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -132,7 +140,76 @@ impl MobAiState {
             let mut active_seen_mobs = HashSet::new();
             let mut loaded_managed_mobs = HashSet::new();
             let mut active_mobs = Vec::new();
-            let should_update_velocity = tick % MOB_MOVE_PERIOD_TICKS == 0;
+
+            // Calculate actual tick period dynamically based on the number of currently managed mobs
+            let managed_count = self.last_path_ticks.lock().unwrap().len();
+            let actual_period = if managed_count <= 600 {
+                4
+            } else {
+                let excess = (managed_count as f64 - 600.0) / 300.0;
+                let multiplier = 1.0 + 0.3 * excess;
+                (4.0 * multiplier).round() as i32
+            };
+            let should_update_velocity = tick % actual_period == 0;
+
+            struct PathJobToSpawn {
+                uuid: Uuid,
+                grid: BlockGrid,
+                mob_pos: BlockPos,
+                target_pos: BlockPos,
+                player_tree: Option<Arc<PlayerSearchTree>>,
+                distance_to_player: f64,
+            }
+            let mut path_jobs_to_spawn = Vec::new();
+
+            // 1. Prioritized Player Tree Pre-Computation (Blocking barrier)
+            let mut players_to_update = Vec::new();
+            let mut active_player_uuids = HashSet::new();
+            for world in server.worlds.load().iter() {
+                for player in world.players.load().iter() {
+                    let player_uuid = player.get_entity().entity_uuid;
+                    active_player_uuids.insert(player_uuid);
+                    let player_pos = player.get_entity().pos.load();
+                    let player_block = BlockPos::floored_v(player_pos);
+
+                    let needs_update = {
+                        let mut last_pos = self.last_player_positions.lock().unwrap();
+                        if last_pos.get(&player_uuid) != Some(&player_block) {
+                            last_pos.insert(player_uuid, player_block);
+                            true
+                        } else {
+                            false
+                        }
+                    };
+
+                    if needs_update {
+                        players_to_update.push((player_uuid, player_block, world.clone()));
+                    }
+                }
+            }
+
+            if !players_to_update.is_empty() {
+                self.worker_pool.scope(|scope| {
+                    for (player_uuid, player_block, world) in players_to_update {
+                        scope.spawn(move |_| {
+                            // bounds region: +-6 horizontally, +-4 vertically
+                            let bounds = PathBounds {
+                                min: player_block.add(-6, -4, -6),
+                                max: player_block.add(6, 4, 6),
+                            };
+                            if let Some(grid) = BlockGrid::sample(bounds, |pos| {
+                                world.get_block_state(&pos).is_solid_block()
+                            }) {
+                                let tree = generate_player_tree(&grid, player_block);
+                                self.player_trees
+                                    .lock()
+                                    .unwrap()
+                                    .insert(player_uuid, Arc::new(tree));
+                            }
+                        });
+                    }
+                });
+            }
 
             for world in server.worlds.load().iter() {
                 if world.players.load().is_empty() {
@@ -187,7 +264,7 @@ impl MobAiState {
                     let current_pos = entity.pos.load();
                     let mob_pos = BlockPos::floored_v(current_pos);
                     let current_velocity = entity.velocity.load();
-                    let Some((target_pos, player_eye_pos, horizontal_distance)) =
+                    let Some((player_uuid, target_pos, player_eye_pos, horizontal_distance)) =
                         nearest_player_pos(world, mob_pos)
                     else {
                         continue;
@@ -222,6 +299,7 @@ impl MobAiState {
                         None
                     };
 
+                    let dist_3d = current_pos.squared_distance_to_vec(&player_eye_pos);
                     active_mobs.push(ActiveMobSnapshot {
                         uuid: entity.entity_uuid,
                         world_uuid: world.uuid,
@@ -231,7 +309,21 @@ impl MobAiState {
                         movement_speed: living_entity
                             .get_attribute_value(&Attributes::MOVEMENT_SPEED),
                         path_target,
+                        player_distance: dist_3d,
                     });
+
+                    // Ensure the entity faces the direction of travel based on the last velocity it was given
+                    if let Some(&last_yaw) = self
+                        .last_applied_yaws
+                        .lock()
+                        .unwrap()
+                        .get(&entity.entity_uuid)
+                    {
+                        entity.yaw.store(last_yaw);
+                        entity.body_yaw.store(last_yaw);
+                        entity.head_yaw.store(last_yaw);
+                        entity.send_rotation();
+                    }
 
                     let interval = path_interval_ticks(horizontal_distance, active_seen_mobs.len());
                     if !self.should_start_path_job(entity.entity_uuid, tick, interval) {
@@ -252,16 +344,53 @@ impl MobAiState {
                         continue;
                     };
 
-                    self.spawn_path_job(entity.entity_uuid, grid, mob_pos, target_pos);
+                    let player_tree = self.player_trees.lock().unwrap().get(&player_uuid).cloned();
+
+                    path_jobs_to_spawn.push(PathJobToSpawn {
+                        uuid: entity.entity_uuid,
+                        grid,
+                        mob_pos,
+                        target_pos,
+                        player_tree,
+                        distance_to_player: dist_3d,
+                    });
                 }
+            }
+
+            // Prioritize and spawn pathfinding jobs closest to the player first
+            path_jobs_to_spawn.sort_by(|a, b| {
+                a.distance_to_player
+                    .partial_cmp(&b.distance_to_player)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            for job in path_jobs_to_spawn {
+                self.spawn_path_job(
+                    job.uuid,
+                    job.grid,
+                    job.mob_pos,
+                    job.target_pos,
+                    job.player_tree,
+                );
             }
 
             if should_update_velocity {
                 self.update_mob_locations(&active_mobs);
-                self.spawn_velocity_jobs(&active_mobs);
+
+                // Prioritize velocity planning updates closest to the player first
+                let mut sorted_active_mobs = active_mobs.clone();
+                sorted_active_mobs.sort_by(|a, b| {
+                    a.player_distance
+                        .partial_cmp(&b.player_distance)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                self.spawn_velocity_jobs(&sorted_active_mobs);
             }
 
-            self.retain_seen_mobs(&active_seen_mobs, &loaded_managed_mobs);
+            self.retain_seen_mobs(
+                &active_seen_mobs,
+                &loaded_managed_mobs,
+                &active_player_uuids,
+            );
         })
     }
 }
@@ -312,7 +441,16 @@ impl MobAiState {
         };
 
         let entity = entity_base.get_entity();
-        point_body_along_velocity(entity, plan.steering_delta);
+        if let Some(body_yaw) = plan.target_yaw {
+            entity.yaw.store(body_yaw);
+            entity.body_yaw.store(body_yaw);
+            entity.head_yaw.store(body_yaw);
+            entity.send_rotation();
+            self.last_applied_yaws
+                .lock()
+                .unwrap()
+                .insert(uuid, body_yaw);
+        }
         entity.velocity.store(plan.velocity);
         entity
             .velocity_dirty
@@ -388,6 +526,7 @@ impl MobAiState {
         &self,
         active_seen_mobs: &HashSet<Uuid>,
         loaded_managed_mobs: &HashSet<Uuid>,
+        active_player_uuids: &HashSet<Uuid>,
     ) {
         // Fix 3: Only prune cache/result maps, NOT active job ownership sets.
         // Worker jobs own their active marker lifecycle via ActiveJobGuard.
@@ -428,6 +567,21 @@ impl MobAiState {
             .lock()
             .unwrap()
             .retain(|uuid, _| loaded_managed_mobs.contains(uuid));
+
+        self.player_trees
+            .lock()
+            .unwrap()
+            .retain(|uuid, _| active_player_uuids.contains(uuid));
+
+        self.last_player_positions
+            .lock()
+            .unwrap()
+            .retain(|uuid, _| active_player_uuids.contains(uuid));
+
+        self.last_applied_yaws
+            .lock()
+            .unwrap()
+            .retain(|uuid, _| active_seen_mobs.contains(uuid));
     }
 
     pub fn get_metrics(&self) -> MobAiMetrics {
@@ -446,28 +600,38 @@ impl MobAiState {
     }
 }
 
-fn nearest_player_pos(world: &World, mob_pos: BlockPos) -> Option<(BlockPos, Vector3<f64>, i64)> {
+fn nearest_player_pos(
+    world: &World,
+    mob_pos: BlockPos,
+) -> Option<(Uuid, BlockPos, Vector3<f64>, i64)> {
     world
         .players
         .load()
         .iter()
         .map(|player| {
             let player_entity = player.get_entity();
+            let player_uuid = player_entity.entity_uuid;
             let player_block_pos = BlockPos::floored_v(player_entity.pos.load());
             let distance_squared = block_distance_squared(mob_pos, player_block_pos);
             let horizontal_distance = horizontal_block_distance(mob_pos, player_block_pos);
             let player_eye_pos = player_entity.get_eye_pos();
             (
+                player_uuid,
                 player_block_pos,
                 player_eye_pos,
                 distance_squared,
                 horizontal_distance,
             )
         })
-        .min_by_key(|(_, _, distance_squared, _)| *distance_squared)
+        .min_by_key(|(_, _, _, distance_squared, _)| *distance_squared)
         .map(
-            |(player_block_pos, player_eye_pos, _, horizontal_distance)| {
-                (player_block_pos, player_eye_pos, horizontal_distance)
+            |(player_uuid, player_block_pos, player_eye_pos, _, horizontal_distance)| {
+                (
+                    player_uuid,
+                    player_block_pos,
+                    player_eye_pos,
+                    horizontal_distance,
+                )
             },
         )
 }
@@ -496,7 +660,7 @@ fn update_pumpkin_look_target(entity_base: &dyn EntityBase, target_pos: Vector3<
 fn clear_pumpkin_mob_ai(entity_base: &dyn EntityBase) {
     if let Some(mob) = get_mob_helper(entity_base) {
         let mob_entity = mob.get_mob_entity();
-        mob_entity.set_no_ai(true);
+        mob_entity.set_no_ai(false);
         *mob_entity.goals_selector.lock().unwrap() =
             pumpkin::entity::ai::goal::goal_selector::GoalSelector::default();
         *mob_entity.target_selector.lock().unwrap() =

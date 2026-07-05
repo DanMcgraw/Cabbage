@@ -410,6 +410,143 @@ pub fn path_interval_ticks(horizontal_distance: i64, entity_count: usize) -> i64
     base.saturating_mul(load_multiplier)
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct DijkstraQueueEntry {
+    pos: BlockPos,
+    g: u32,
+}
+
+impl Ord for DijkstraQueueEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.g.cmp(&self.g)
+    }
+}
+
+impl PartialOrd for DijkstraQueueEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+pub struct PlayerSearchTree {
+    #[allow(dead_code)]
+    pub player_pos: BlockPos,
+    pub parents: HashMap<BlockPos, BlockPos>,
+}
+
+pub fn generate_player_tree(grid: &BlockGrid, player_pos: BlockPos) -> PlayerSearchTree {
+    let mut parents = HashMap::new();
+    let mut g_score = HashMap::new();
+    let mut open = BinaryHeap::new();
+
+    g_score.insert(player_pos, 0);
+    open.push(DijkstraQueueEntry {
+        pos: player_pos,
+        g: 0,
+    });
+
+    while let Some(entry) = open.pop() {
+        let current = entry.pos;
+        let current_g = entry.g;
+
+        if let Some(&best_g) = g_score.get(&current) {
+            if current_g > best_g {
+                continue;
+            }
+        }
+
+        for (neighbor, step_cost) in grid.neighbors(current, false) {
+            let tentative_g = current_g.saturating_add(step_cost);
+            if tentative_g < *g_score.get(&neighbor).unwrap_or(&u32::MAX) {
+                g_score.insert(neighbor, tentative_g);
+                parents.insert(neighbor, current);
+                open.push(DijkstraQueueEntry {
+                    pos: neighbor,
+                    g: tentative_g,
+                });
+            }
+        }
+    }
+
+    PlayerSearchTree {
+        player_pos,
+        parents,
+    }
+}
+
+pub fn connect_to_player_tree(
+    grid: &BlockGrid,
+    mob_pos: BlockPos,
+    target_pos: BlockPos,
+    player_tree: &PlayerSearchTree,
+) -> Option<VecDeque<BlockPos>> {
+    if !grid.is_open(mob_pos) {
+        return None;
+    }
+
+    if mob_pos == target_pos {
+        let mut path = VecDeque::new();
+        path.push_back(mob_pos);
+        return Some(path);
+    }
+
+    let mut search = SearchData::new(mob_pos, target_pos);
+    let mut meet_point = None;
+
+    while !search.open.is_empty() {
+        let current = search.pop_current()?;
+
+        if player_tree.parents.contains_key(&current) || current == target_pos {
+            meet_point = Some(current);
+            break;
+        }
+
+        let current_g = search.g_score[&current];
+        for (neighbor, step_cost) in grid.neighbors(current, true) {
+            let tentative_g = current_g.saturating_add(step_cost);
+            if tentative_g >= *search.g_score.get(&neighbor).unwrap_or(&u32::MAX) {
+                continue;
+            }
+
+            search.came_from.insert(neighbor, current);
+            search.g_score.insert(neighbor, tentative_g);
+            search.push(neighbor, tentative_g, path_heuristic(neighbor, target_pos));
+        }
+    }
+
+    let meet = meet_point?;
+    let mut path = VecDeque::new();
+
+    let mut current = meet;
+    while current != mob_pos {
+        path.push_front(current);
+        if let Some(&prev) = search.came_from.get(&current) {
+            current = prev;
+        } else {
+            break;
+        }
+    }
+    path.push_front(mob_pos);
+
+    let mut current = meet;
+    while current != target_pos {
+        if let Some(&next) = player_tree.parents.get(&current) {
+            path.push_back(next);
+            current = next;
+        } else {
+            break;
+        }
+    }
+
+    let path_vec: Vec<BlockPos> = path.into_iter().collect();
+    let processed_steps = movement_path_steps(&path_vec, mob_pos);
+    if processed_steps.is_empty() {
+        None
+    } else {
+        Some(processed_steps)
+    }
+}
+
 #[cfg(test)]
 fn next_horizontal_path_step(path: &[BlockPos], start: BlockPos) -> Option<BlockPos> {
     path.iter()
@@ -651,5 +788,43 @@ mod tests {
 
         assert!(grid.is_open(next));
         assert_eq!(block_distance_squared(pos(0, 0, 0), next), 1);
+    }
+
+    #[test]
+    fn test_generate_player_tree() {
+        let player = pos(0, 0, 0);
+        let bounds = PathBounds {
+            min: pos(-6, -4, -6),
+            max: pos(6, 4, 6),
+        };
+        let grid = open_grid(bounds);
+        let tree = generate_player_tree(&grid, player);
+
+        assert_eq!(tree.player_pos, player);
+        assert!(tree.parents.contains_key(&pos(1, 0, 0)));
+        assert_eq!(*tree.parents.get(&pos(1, 0, 0)).unwrap(), player);
+    }
+
+    #[test]
+    fn test_connect_to_player_tree() {
+        let player = pos(0, 0, 5);
+        let mob = pos(0, 0, 0);
+        let bounds = PathBounds {
+            min: pos(-6, -4, -6),
+            max: pos(6, 4, 11),
+        };
+        let grid = open_grid(bounds);
+
+        let player_grid = open_grid(PathBounds {
+            min: pos(-6, -4, -1),
+            max: pos(6, 4, 11),
+        });
+        let tree = generate_player_tree(&player_grid, player);
+
+        let path = connect_to_player_tree(&grid, mob, player, &tree).unwrap();
+
+        assert_eq!(path.front().copied().unwrap(), pos(0, 0, 1));
+        assert_eq!(path.back().copied().unwrap(), player);
+        assert!(path.len() > 1);
     }
 }

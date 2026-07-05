@@ -19,6 +19,7 @@ pub fn compute_velocity_plan(job: &VelocityJobSnapshot) -> Option<VelocityPlan> 
         Some(job.world_uuid)
     );
 
+    let mut target_yaw = None;
     if let Some(path_target) = job.path_target {
         let path_velocity = velocity_toward(
             job.current_pos,
@@ -30,6 +31,8 @@ pub fn compute_velocity_plan(job: &VelocityJobSnapshot) -> Option<VelocityPlan> 
         steering_delta.x += path_velocity.x;
         steering_delta.y += path_velocity.y;
         steering_delta.z += path_velocity.z;
+
+        target_yaw = yaw_from_xz_delta(path_velocity.x, path_velocity.z);
     }
 
     let cluster_velocity =
@@ -41,9 +44,13 @@ pub fn compute_velocity_plan(job: &VelocityJobSnapshot) -> Option<VelocityPlan> 
         return None;
     }
 
+    let final_target_yaw =
+        target_yaw.or_else(|| yaw_from_xz_delta(steering_delta.x, steering_delta.z));
+
     Some(VelocityPlan {
         velocity: velocity_with_pathfinding_delta(job.current_velocity, steering_delta),
         steering_delta,
+        target_yaw: final_target_yaw,
     })
 }
 
@@ -111,13 +118,6 @@ pub fn velocity_with_pathfinding_delta(
     current_velocity
 }
 
-pub fn point_body_along_velocity(entity: &pumpkin::entity::Entity, velocity: Vector3<f64>) {
-    if let Some(body_yaw) = yaw_from_xz_delta(velocity.x, velocity.z) {
-        entity.yaw.store(body_yaw);
-        entity.body_yaw.store(body_yaw);
-        entity.send_rotation();
-    }
-}
 
 #[allow(dead_code)]
 pub fn yaw_from_xz_delta(dx: f64, dz: f64) -> Option<f32> {

@@ -11,6 +11,7 @@ pub struct ActiveMobSnapshot {
     pub current_velocity: Vector3<f64>,
     pub movement_speed: f64,
     pub path_target: Option<PathVelocityTarget>,
+    pub player_distance: f64,
 }
 
 #[derive(Clone)]
@@ -35,6 +36,7 @@ pub struct PathVelocityTarget {
 pub struct VelocityPlan {
     pub velocity: Vector3<f64>,
     pub steering_delta: Vector3<f64>,
+    pub target_yaw: Option<f32>,
 }
 
 #[derive(Clone, Copy)]
