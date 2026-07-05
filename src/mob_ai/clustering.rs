@@ -2,8 +2,8 @@ use pumpkin_util::math::vector3::Vector3;
 use uuid::Uuid;
 use crate::mob_ai::types::{MobLocationTable, MobLocationEntry, ClusterCell};
 
-pub const CLUSTER_DIAMETER_BLOCKS: f64 = 2.0;
-pub const CLUSTER_CENTER_PUSH_RADIUS_BLOCKS: f64 = 1.0;
+pub const CLUSTER_DIAMETER_BLOCKS: f64 = 1.5;
+pub const CLUSTER_CENTER_PUSH_RADIUS_BLOCKS: f64 = 0.7;
 pub const CLUSTER_CELL_SIZE_BLOCKS: f64 = CLUSTER_DIAMETER_BLOCKS;
 
 #[derive(Clone, Debug)]

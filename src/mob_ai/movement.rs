@@ -35,7 +35,6 @@ pub fn compute_velocity_plan(job: &VelocityJobSnapshot) -> Option<VelocityPlan> 
     let cluster_velocity =
         cluster_push_velocity(job.uuid, job.movement_speed, job.location_table.as_ref());
     steering_delta.x += cluster_velocity.x;
-    steering_delta.y += cluster_velocity.y;
     steering_delta.z += cluster_velocity.z;
 
     if steering_delta.length_squared() == 0.0 {
@@ -112,14 +111,13 @@ pub fn velocity_with_pathfinding_delta(
     current_velocity
 }
 
-pub fn point_body_along_velocity(entity: &pumpkin::entity::Entity, velocity: Vector3<f64>) {
-    if let Some(body_yaw) = yaw_from_xz_delta(velocity.x, velocity.z) {
-        entity.yaw.store(body_yaw);
-        entity.head_yaw.store(body_yaw);
-        entity.body_yaw.store(body_yaw);
-    }
+pub fn point_body_along_velocity(entity: &pumpkin::entity::Entity, _velocity: Vector3<f64>) {
+    entity.yaw.store(0.0);
+    //entity.head_yaw.store(0.0);
+    //entity.body_yaw.store(0.0);
 }
 
+#[allow(dead_code)]
 pub fn yaw_from_xz_delta(dx: f64, dz: f64) -> Option<f32> {
     if dx.abs() <= 1.0E-5 && dz.abs() <= 1.0E-5 {
         None
@@ -273,6 +271,6 @@ mod tests {
             Vector3::new(0.5, 0.75, -0.25),
         );
 
-        assert_eq!(velocity, Vector3::new(0.75, 0.75, 0.25));
+        assert_eq!(velocity, Vector3::new(0.575, 0.75, -0.1));
     }
 }

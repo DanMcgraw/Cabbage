@@ -13,6 +13,12 @@ use pumpkin_data::attributes::Attributes;
 use pumpkin_util::math::{position::BlockPos, vector3::Vector3, vector2::Vector2};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use uuid::Uuid;
+use pumpkin::entity::mob::{
+    Mob,
+    creeper::CreeperEntity,
+    skeleton::skeleton::SkeletonEntity,
+    zombie::zombie::ZombieEntity,
+};
 
 pub(crate) mod types;
 pub(crate) mod pathfinding;
@@ -43,14 +49,13 @@ pub(crate) struct MobAiState {
     pub(crate) mob_locations: Mutex<MobLocationTable>,
     pub(crate) paths_completed: Arc<std::sync::atomic::AtomicUsize>,
     pub(crate) velocities_completed: Arc<std::sync::atomic::AtomicUsize>,
+    pub(crate) disabled_mobs: Mutex<HashSet<Uuid>>,
 }
 
 pub struct MobAiMetrics {
     pub active_path_jobs: usize,
     pub active_velocity_jobs: usize,
     pub total_worker_threads: usize,
-    pub path_steps_cached: usize,
-    pub planned_velocities_cached: usize,
     pub managed_mobs_count: usize,
     pub total_paths_completed: usize,
     pub total_velocities_completed: usize,
@@ -75,6 +80,7 @@ impl Default for MobAiState {
             mob_locations: Mutex::new(MobLocationTable::default()),
             paths_completed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             velocities_completed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            disabled_mobs: Mutex::new(HashSet::new()),
         }
     }
 }
@@ -161,6 +167,17 @@ impl MobAiState {
                     else {
                         continue;
                     };
+
+                    let is_new = self.disabled_mobs.lock().unwrap().insert(entity.entity_uuid);
+                    if is_new {
+                        disable_pumpkin_goals(entity_base.as_ref());
+                        let look_target = Vector3::new(
+                            target_pos.0.x as f64 + 0.5,
+                            target_pos.0.y as f64,
+                            target_pos.0.z as f64 + 0.5,
+                        );
+                        update_pumpkin_look_target(entity_base.as_ref(), look_target);
+                    }
 
                     if path_height_difference_exceeded(mob_pos, target_pos) {
                         self.clear_path(entity.entity_uuid);
@@ -328,6 +345,11 @@ impl MobAiState {
             .lock()
             .unwrap()
             .retain(|uuid, _| seen_mobs.contains(uuid));
+
+        self.disabled_mobs
+            .lock()
+            .unwrap()
+            .retain(|uuid| seen_mobs.contains(uuid));
     }
 
     pub fn get_metrics(&self) -> MobAiMetrics {
@@ -335,8 +357,6 @@ impl MobAiState {
             active_path_jobs: self.active_path_jobs.lock().unwrap().len(),
             active_velocity_jobs: self.active_velocity_jobs.lock().unwrap().len(),
             total_worker_threads: self.worker_pool.current_num_threads(),
-            path_steps_cached: self.path_steps.lock().unwrap().len(),
-            planned_velocities_cached: self.planned_velocities.lock().unwrap().len(),
             managed_mobs_count: self.last_path_ticks.lock().unwrap().len(),
             total_paths_completed: self.paths_completed.load(std::sync::atomic::Ordering::Relaxed),
             total_velocities_completed: self.velocities_completed.load(std::sync::atomic::Ordering::Relaxed),
@@ -358,4 +378,33 @@ fn nearest_player_pos(world: &World, mob_pos: BlockPos) -> Option<(BlockPos, i64
         })
         .min_by_key(|(_, distance_squared, _)| *distance_squared)
         .map(|(player_pos, _, horizontal_distance)| (player_pos, horizontal_distance))
+}
+
+fn get_mob_helper(entity_base: &dyn EntityBase) -> Option<&dyn Mob> {
+    if let Some(creeper) = entity_base.cast_any().downcast_ref::<CreeperEntity>() {
+        return Some(creeper);
+    }
+    if let Some(skeleton) = entity_base.cast_any().downcast_ref::<SkeletonEntity>() {
+        return Some(skeleton);
+    }
+    if let Some(zombie) = entity_base.cast_any().downcast_ref::<ZombieEntity>() {
+        return Some(zombie);
+    }
+    None
+}
+
+fn update_pumpkin_look_target(entity_base: &dyn EntityBase, target_pos: Vector3<f64>) {
+    if let Some(mob) = get_mob_helper(entity_base) {
+        let mob_entity = mob.get_mob_entity();
+        let mut look_control = mob_entity.look_control.lock().unwrap();
+        look_control.look_at_position(mob, target_pos);
+    }
+}
+
+fn disable_pumpkin_goals(entity_base: &dyn EntityBase) {
+    if let Some(mob) = get_mob_helper(entity_base) {
+        let mob_entity = mob.get_mob_entity();
+        *mob_entity.goals_selector.lock().unwrap() = pumpkin::entity::ai::goal::goal_selector::GoalSelector::default();
+        *mob_entity.target_selector.lock().unwrap() = pumpkin::entity::ai::goal::goal_selector::GoalSelector::default();
+    }
 }
