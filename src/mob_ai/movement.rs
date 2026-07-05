@@ -118,7 +118,6 @@ pub fn velocity_with_pathfinding_delta(
     current_velocity
 }
 
-
 #[allow(dead_code)]
 pub fn yaw_from_xz_delta(dx: f64, dz: f64) -> Option<f32> {
     if dx.abs() <= 1.0E-5 && dz.abs() <= 1.0E-5 {
