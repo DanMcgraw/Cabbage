@@ -233,8 +233,7 @@ impl MobAiState {
                         path_target,
                     });
 
-                    let interval =
-                        path_interval_ticks(horizontal_distance, active_seen_mobs.len());
+                    let interval = path_interval_ticks(horizontal_distance, active_seen_mobs.len());
                     if !self.should_start_path_job(entity.entity_uuid, tick, interval) {
                         continue;
                     }
@@ -458,31 +457,32 @@ fn nearest_player_pos(world: &World, mob_pos: BlockPos) -> Option<(BlockPos, Vec
             let distance_squared = block_distance_squared(mob_pos, player_block_pos);
             let horizontal_distance = horizontal_block_distance(mob_pos, player_block_pos);
             let player_eye_pos = player_entity.get_eye_pos();
-            (player_block_pos, player_eye_pos, distance_squared, horizontal_distance)
+            (
+                player_block_pos,
+                player_eye_pos,
+                distance_squared,
+                horizontal_distance,
+            )
         })
         .min_by_key(|(_, _, distance_squared, _)| *distance_squared)
-        .map(|(player_block_pos, player_eye_pos, _, horizontal_distance)| {
-            (player_block_pos, player_eye_pos, horizontal_distance)
-        })
+        .map(
+            |(player_block_pos, player_eye_pos, _, horizontal_distance)| {
+                (player_block_pos, player_eye_pos, horizontal_distance)
+            },
+        )
 }
 
 fn get_mob_helper(entity_base: &dyn EntityBase) -> Option<&dyn Mob> {
-    let entity = entity_base.get_entity();
-    let name: &str = &entity.entity_type.resource_name;
-    let raw_ptr = entity_base as *const dyn EntityBase as *const ();
-
-    if name == "minecraft:creeper" || name == "creeper" {
-        let creeper = unsafe { &*(raw_ptr as *const CreeperEntity) };
-        Some(creeper as &dyn Mob)
-    } else if name == "minecraft:skeleton" || name == "skeleton" {
-        let skeleton = unsafe { &*(raw_ptr as *const SkeletonEntity) };
-        Some(skeleton as &dyn Mob)
-    } else if name == "minecraft:zombie" || name == "zombie" {
-        let zombie = unsafe { &*(raw_ptr as *const ZombieEntity) };
-        Some(zombie as &dyn Mob)
-    } else {
-        None
+    if let Some(creeper) = entity_base.cast_any().downcast_ref::<CreeperEntity>() {
+        return Some(creeper as &dyn Mob);
     }
+    if let Some(skeleton) = entity_base.cast_any().downcast_ref::<SkeletonEntity>() {
+        return Some(skeleton as &dyn Mob);
+    }
+    if let Some(zombie) = entity_base.cast_any().downcast_ref::<ZombieEntity>() {
+        return Some(zombie as &dyn Mob);
+    }
+    None
 }
 
 fn update_pumpkin_look_target(entity_base: &dyn EntityBase, target_pos: Vector3<f64>) {
