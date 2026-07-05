@@ -1,8 +1,8 @@
+use pumpkin_util::math::{position::BlockPos, vector3::Vector3};
 use std::{
     cmp::Ordering,
     collections::{BinaryHeap, HashMap, VecDeque},
 };
-use pumpkin_util::math::{position::BlockPos, vector3::Vector3};
 
 pub const MAX_PATH_HEIGHT_DIFFERENCE: i32 = 8;
 pub const MAX_PATH_GRID_VOLUME: usize = 65_536;
@@ -65,7 +65,10 @@ pub struct BlockGrid {
 }
 
 impl BlockGrid {
-    pub fn sample(mut bounds: PathBounds, mut is_closed: impl FnMut(BlockPos) -> bool) -> Option<Self> {
+    pub fn sample(
+        mut bounds: PathBounds,
+        mut is_closed: impl FnMut(BlockPos) -> bool,
+    ) -> Option<Self> {
         normalize_bounds(&mut bounds);
 
         let size_x = axis_len(bounds.min.0.x, bounds.max.0.x)?;

@@ -967,18 +967,28 @@ impl MetricsReporterState {
         }
 
         let mob_ai_metrics = self.mob_ai_state.get_metrics();
-        
+
         let (paths_rate, velocities_rate) = {
             let mut last_time_lock = self.last_metrics_time.lock().unwrap();
             let elapsed = last_time_lock.elapsed().as_secs_f64();
             *last_time_lock = std::time::Instant::now();
-            
-            let last_paths = self.last_paths_completed.swap(mob_ai_metrics.total_paths_completed, Ordering::SeqCst);
-            let last_velocities = self.last_velocities_completed.swap(mob_ai_metrics.total_velocities_completed, Ordering::SeqCst);
-            
+
+            let last_paths = self
+                .last_paths_completed
+                .swap(mob_ai_metrics.total_paths_completed, Ordering::SeqCst);
+            let last_velocities = self
+                .last_velocities_completed
+                .swap(mob_ai_metrics.total_velocities_completed, Ordering::SeqCst);
+
             if elapsed > 0.0 {
-                let p_rate = (mob_ai_metrics.total_paths_completed.saturating_sub(last_paths)) as f64 / elapsed;
-                let v_rate = (mob_ai_metrics.total_velocities_completed.saturating_sub(last_velocities)) as f64 / elapsed;
+                let p_rate = (mob_ai_metrics
+                    .total_paths_completed
+                    .saturating_sub(last_paths)) as f64
+                    / elapsed;
+                let v_rate = (mob_ai_metrics
+                    .total_velocities_completed
+                    .saturating_sub(last_velocities)) as f64
+                    / elapsed;
                 (p_rate, v_rate)
             } else {
                 (0.0, 0.0)

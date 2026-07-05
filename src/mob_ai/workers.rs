@@ -1,11 +1,11 @@
+use crate::mob_ai::MobAiState;
+use crate::mob_ai::movement::compute_velocity_plan;
+use crate::mob_ai::pathfinding::{BlockGrid, bidirectional_a_star, movement_path_steps};
+use crate::mob_ai::types::{ActiveMobSnapshot, VelocityJobSnapshot};
+use pumpkin_util::math::position::BlockPos;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use pumpkin_util::math::position::BlockPos;
 use uuid::Uuid;
-use crate::mob_ai::MobAiState;
-use crate::mob_ai::types::{ActiveMobSnapshot, VelocityJobSnapshot};
-use crate::mob_ai::pathfinding::{BlockGrid, bidirectional_a_star, movement_path_steps};
-use crate::mob_ai::movement::compute_velocity_plan;
 
 pub struct ActiveJobGuard {
     pub uuid: Uuid,
@@ -34,7 +34,13 @@ pub const fn cabbage_worker_thread_count_for(available_parallelism: Option<usize
 }
 
 impl MobAiState {
-    pub fn spawn_path_job(&self, uuid: Uuid, grid: BlockGrid, mob_pos: BlockPos, target_pos: BlockPos) {
+    pub fn spawn_path_job(
+        &self,
+        uuid: Uuid,
+        grid: BlockGrid,
+        mob_pos: BlockPos,
+        target_pos: BlockPos,
+    ) {
         let active_path_jobs = Arc::clone(&self.active_path_jobs);
         let path_steps = Arc::clone(&self.path_steps);
         let paths_completed = Arc::clone(&self.paths_completed);

@@ -21,7 +21,9 @@ Shared synchronized state
 |-- path_steps: queued block steps from completed path jobs
 |-- mob_locations: latest game-thread snapshot for clustering
 |-- active_velocity_jobs: one velocity job per mob
-`-- planned_velocities: worker-computed velocity plans awaiting game-thread apply
+|-- planned_velocities: worker-computed velocity plans awaiting game-thread apply
+|-- disabled_mobs: loaded managed mobs whose Pumpkin AI/control state has already been cleared
+`-- frozen_out_of_bounds_mobs: loaded managed mobs that have already been stopped after leaving the active AI window
 ```
 
 ## Per-Tick Flow
@@ -40,6 +42,7 @@ Shared synchronized state
    - snapshots active mob locations
    - submits velocity jobs for mobs with current path targets
 6. The game thread prunes stale UUIDs from caches after the scan.
+7. Managed mobs that are loaded but outside the active player chunk window are frozen on the game thread only when they first leave that window: Pumpkin AI/control state is cleared once, pending Cabbage path/velocity state is removed by cache pruning, movement input and jumping are cleared, and live velocity is zeroed.
 
 ## Pathfinding Jobs
 
@@ -82,8 +85,9 @@ Workers must only calculate. They do not call Pumpkin entity methods.
 Only the game thread applies worker results:
 
 - `apply_planned_velocity` removes a `VelocityPlan` from `planned_velocities` and applies it under minimal lock scope.
-- It updates entity body/head yaw from the steering delta.
+- It currently force-locks entity yaw, head yaw, and body yaw to `0.0` for rotation debugging. Pumpkin's normal mob tick remains the only rotation packet sender.
 - It stores velocity and marks `velocity_dirty`.
+- `freeze_out_of_bounds_mob` handles managed mobs outside the active AI window. It does not submit worker jobs and does not repeat heavy AI/control resets for mobs that are already frozen out of bounds.
 
 Keep all direct entity mutation here or in helpers called only from this game-thread path.
 

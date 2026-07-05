@@ -1,8 +1,8 @@
-use std::collections::VecDeque;
-use pumpkin_util::math::{position::BlockPos, vector3::Vector3, wrap_degrees};
-use crate::mob_ai::types::{VelocityJobSnapshot, VelocityPlan};
-use crate::mob_ai::pathfinding::block_center_feet_pos;
 use crate::mob_ai::clustering::cluster_push_velocity;
+use crate::mob_ai::pathfinding::block_center_feet_pos;
+use crate::mob_ai::types::{VelocityJobSnapshot, VelocityPlan};
+use pumpkin_util::math::{position::BlockPos, vector3::Vector3, wrap_degrees};
+use std::collections::VecDeque;
 
 pub const MOB_PATH_VELOCITY_BLOCKS_PER_TICK: f64 = 0.25;
 pub const UPWARD_PATH_VELOCITY_MULTIPLIER: f64 = 2.0;
@@ -111,10 +111,12 @@ pub fn velocity_with_pathfinding_delta(
     current_velocity
 }
 
-pub fn point_body_along_velocity(entity: &pumpkin::entity::Entity, _velocity: Vector3<f64>) {
-    entity.yaw.store(0.0);
-    //entity.head_yaw.store(0.0);
-    //entity.body_yaw.store(0.0);
+pub fn point_body_along_velocity(entity: &pumpkin::entity::Entity, velocity: Vector3<f64>) {
+    if let Some(body_yaw) = yaw_from_xz_delta(velocity.x, velocity.z) {
+        entity.yaw.store(body_yaw);
+        entity.body_yaw.store(body_yaw);
+        entity.send_rotation();
+    }
 }
 
 #[allow(dead_code)]
@@ -157,7 +159,11 @@ mod tests {
 
     #[test]
     fn weighted_lookahead_target_weights_first_three_steps() {
-        let steps = VecDeque::from([BlockPos::new(1, 0, 0), BlockPos::new(3, 0, 0), BlockPos::new(5, 0, 0)]);
+        let steps = VecDeque::from([
+            BlockPos::new(1, 0, 0),
+            BlockPos::new(3, 0, 0),
+            BlockPos::new(5, 0, 0),
+        ]);
         let target = weighted_lookahead_target(&steps).unwrap();
 
         assert!((target.x - (17.0 / 6.0)).abs() < f64::EPSILON);
