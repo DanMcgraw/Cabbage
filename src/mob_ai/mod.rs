@@ -73,6 +73,7 @@ pub(crate) struct MobAiState {
     pub(crate) last_player_positions: Mutex<HashMap<Uuid, BlockPos>>,
     /// Last applied rotation yaw based on planned velocity.
     pub(crate) last_applied_yaws: Mutex<HashMap<Uuid, f32>>,
+    pub(crate) active_mobs_count: std::sync::atomic::AtomicUsize,
 }
 
 pub struct MobAiMetrics {
@@ -111,6 +112,7 @@ impl Default for MobAiState {
             player_trees: Arc::new(Mutex::new(HashMap::new())),
             last_player_positions: Mutex::new(HashMap::new()),
             last_applied_yaws: Mutex::new(HashMap::new()),
+            active_mobs_count: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 }
@@ -566,6 +568,8 @@ impl MobAiState {
                 });
                 self.spawn_velocity_jobs(&sorted_active_mobs);
             }
+
+            self.active_mobs_count.store(active_mobs.len(), std::sync::atomic::Ordering::Relaxed);
         })
     }
 }
@@ -624,7 +628,7 @@ impl MobAiState {
             active_path_jobs: self.active_path_jobs.lock().unwrap().len(),
             active_velocity_jobs: self.active_velocity_jobs.lock().unwrap().len(),
             total_worker_threads: self.worker_pool.current_num_threads(),
-            managed_mobs_count: self.managed_mobs.lock().unwrap().len(),
+            managed_mobs_count: self.active_mobs_count.load(std::sync::atomic::Ordering::Relaxed),
             total_paths_completed: self
                 .paths_completed
                 .load(std::sync::atomic::Ordering::Relaxed),
