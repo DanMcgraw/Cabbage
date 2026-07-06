@@ -90,24 +90,26 @@ impl MobAiState {
         let location_table = Arc::new(self.mob_locations.lock().unwrap().clone());
         let velocities_completed = Arc::clone(&self.velocities_completed);
 
-        for mob in active_mobs {
-            {
-                let mut active_velocity_jobs = self.active_velocity_jobs.lock().unwrap();
-                if !active_velocity_jobs.insert(mob.uuid) {
-                    continue;
+        let mut jobs_to_spawn = Vec::new();
+        {
+            let mut active_velocity_jobs = self.active_velocity_jobs.lock().unwrap();
+            for mob in active_mobs {
+                if active_velocity_jobs.insert(mob.uuid) {
+                    jobs_to_spawn.push(VelocityJobSnapshot {
+                        uuid: mob.uuid,
+                        world_uuid: mob.world_uuid,
+                        current_pos: mob.current_pos,
+                        current_block: mob.current_block,
+                        current_velocity: mob.current_velocity,
+                        movement_speed: mob.movement_speed,
+                        path_target: mob.path_target,
+                        location_table: Arc::clone(&location_table),
+                    });
                 }
             }
+        }
 
-            let job = VelocityJobSnapshot {
-                uuid: mob.uuid,
-                world_uuid: mob.world_uuid,
-                current_pos: mob.current_pos,
-                current_block: mob.current_block,
-                current_velocity: mob.current_velocity,
-                movement_speed: mob.movement_speed,
-                path_target: mob.path_target,
-                location_table: Arc::clone(&location_table),
-            };
+        for job in jobs_to_spawn {
             let active_velocity_jobs = Arc::clone(&self.active_velocity_jobs);
             let planned_velocities = Arc::clone(&self.planned_velocities);
             let velocities_completed = Arc::clone(&velocities_completed);

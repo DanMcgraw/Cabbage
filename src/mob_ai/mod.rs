@@ -224,8 +224,22 @@ impl MobAiState {
 
             let mut active_mobs = Vec::new();
 
+            // Lock all needed state maps once here to avoid locking/unlocking thousands of times in the loops!
+            let mut last_player_positions = self.last_player_positions.lock().unwrap();
+            let mut last_path_ticks = self.last_path_ticks.lock().unwrap();
+            let mut active_path_jobs = self.active_path_jobs.lock().unwrap();
+            let mut path_steps = self.path_steps.lock().unwrap();
+            let mut planned_velocities = self.planned_velocities.lock().unwrap();
+            let mut managed_mobs = self.managed_mobs.lock().unwrap();
+            let mut disabled_mobs = self.disabled_mobs.lock().unwrap();
+            let mut frozen_out_of_bounds = self.frozen_out_of_bounds_mobs.lock().unwrap();
+            let mut grace_period = self.grace_period_mobs.lock().unwrap();
+            let mut last_applied_yaws = self.last_applied_yaws.lock().unwrap();
+            let mut path_endpoints = self.path_endpoints.lock().unwrap();
+            let mut player_trees = self.player_trees.lock().unwrap();
+
             // Calculate actual tick period dynamically based on the number of currently managed mobs
-            let managed_count = self.managed_mobs.lock().unwrap().len();
+            let managed_count = managed_mobs.len();
             let actual_period = if managed_count <= 600 {
                 4
             } else {
@@ -255,14 +269,11 @@ impl MobAiState {
                     let player_pos = player.get_entity().pos.load();
                     let player_block = BlockPos::floored_v(player_pos);
 
-                    let needs_update = {
-                        let mut last_pos = self.last_player_positions.lock().unwrap();
-                        if last_pos.get(&player_uuid) != Some(&player_block) {
-                            last_pos.insert(player_uuid, player_block);
-                            true
-                        } else {
-                            false
-                        }
+                    let needs_update = if last_player_positions.get(&player_uuid) != Some(&player_block) {
+                        last_player_positions.insert(player_uuid, player_block);
+                        true
+                    } else {
+                        false
                     };
 
                     if needs_update {
@@ -273,7 +284,7 @@ impl MobAiState {
 
             if !players_to_update.is_empty() {
                 for (player_uuid, player_block, world) in players_to_update {
-                    let player_trees = Arc::clone(&self.player_trees);
+                    let player_trees_clone = Arc::clone(&self.player_trees);
                     self.worker_pool.spawn(move || {
                         // bounds region: +-6 horizontally, +-4 vertically
                         let bounds = PathBounds {
@@ -284,7 +295,7 @@ impl MobAiState {
                             world.get_block_state(&pos).is_solid_block()
                         }) {
                             let tree = generate_player_tree(&grid, player_block);
-                            player_trees
+                            player_trees_clone
                                 .lock()
                                 .unwrap()
                                 .insert(player_uuid, Arc::new(tree));
@@ -317,7 +328,7 @@ impl MobAiState {
                     if let Some(chunk_entities) = world.entities_by_chunk.get(chunk_pos) {
                         for entity_base in chunk_entities.iter() {
                             let entity = entity_base.get_entity();
-                            if MOB_JUMP_TYPES.contains(&entity.entity_type.resource_name) {
+                            if MOB_JUMP_TYPES.contains(&entity.entity_type.resource_name.as_ref()) {
                                 entities_to_process.push(entity_base.clone());
                                 active_in_tick_mobs.insert(entity.entity_uuid);
                             }
@@ -330,28 +341,36 @@ impl MobAiState {
                     let entity = entity_base.get_entity();
                     let uuid = entity.entity_uuid;
 
-                    // Ensure this mob is tracked. Events usually populate the registry,
-                    // but this call is idempotent and covers any edge cases.
-                    self.register_managed_mob(world.uuid, entity_base.as_ref());
+                    // Ensure this mob is tracked.
+                    if managed_mobs.insert(uuid) {
+                        clear_pumpkin_mob_ai(entity_base.as_ref());
+                    }
 
                     // Unfreeze mob if it was previously frozen
-                    self.frozen_out_of_bounds_mobs.lock().unwrap().remove(&uuid);
+                    frozen_out_of_bounds.remove(&uuid);
 
                     // Grace period: skip entities that just appeared until their
                     // AI sub-systems have had time to fully initialise.
                     {
-                        let mut grace = self.grace_period_mobs.lock().unwrap();
-                        let first_seen = grace.entry(uuid).or_insert(tick);
+                        let first_seen = grace_period.entry(uuid).or_insert(tick);
                         if tick.wrapping_sub(*first_seen) < ENTITY_LOAD_GRACE_TICKS {
                             continue;
                         }
                     }
 
                     // Fix 5: Apply completed velocity plan BEFORE snapshotting
-                    // so the snapshot reflects post-apply state for the next
-                    // worker job, avoiding stale velocity data.
                     if should_update_velocity {
-                        self.apply_planned_velocity(entity_base.as_ref(), uuid);
+                        let plan = planned_velocities.remove(&uuid);
+                        if let Some(plan) = plan {
+                            if let Some(body_yaw) = plan.target_yaw {
+                                entity.yaw.store(body_yaw);
+                                entity.body_yaw.store(body_yaw);
+                                entity.head_yaw.store(body_yaw);
+                                entity.send_rotation();
+                                last_applied_yaws.insert(uuid, body_yaw);
+                            }
+                            entity.velocity.store(plan.velocity);
+                        }
                     }
 
                     let current_pos = entity.pos.load();
@@ -366,7 +385,8 @@ impl MobAiState {
                     update_pumpkin_look_target(entity_base.as_ref(), player_eye_pos);
 
                     if path_height_difference_exceeded(mob_pos, target_pos) {
-                        self.clear_path(uuid);
+                        path_steps.remove(&uuid);
+                        path_endpoints.remove(&uuid);
                         continue;
                     }
 
@@ -378,7 +398,8 @@ impl MobAiState {
                         self.path_velocity_target(uuid, mob_pos)
                             .and_then(|(target_pos, next_step)| {
                                 if world.get_block_state(&next_step).is_solid_block() {
-                                    self.clear_path(uuid);
+                                    path_steps.remove(&uuid);
+                                    path_endpoints.remove(&uuid);
                                     None
                                 } else {
                                     Some(PathVelocityTarget {
@@ -405,12 +426,7 @@ impl MobAiState {
                     });
 
                     // Ensure the entity faces the direction of travel based on the last velocity it was given
-                    if let Some(&last_yaw) = self
-                        .last_applied_yaws
-                        .lock()
-                        .unwrap()
-                        .get(&uuid)
-                    {
+                    if let Some(&last_yaw) = last_applied_yaws.get(&uuid) {
                         entity.yaw.store(last_yaw);
                         entity.body_yaw.store(last_yaw);
                         entity.head_yaw.store(last_yaw);
@@ -418,13 +434,32 @@ impl MobAiState {
                     }
 
                     let interval = path_interval_ticks(horizontal_distance, active_mobs.len());
-                    if !self.should_start_path_job(uuid, tick, interval) {
+
+                    let mut should_start = false;
+                    if active_path_jobs.insert(uuid) {
+                        let should_attempt = last_path_ticks
+                            .get(&uuid)
+                            .is_none_or(|last_tick| i64::from(tick) - i64::from(*last_tick) >= interval);
+                        if should_attempt {
+                            last_path_ticks.insert(uuid, tick);
+                            should_start = true;
+                        } else {
+                            active_path_jobs.remove(&uuid);
+                        }
+                    }
+                    if !should_start {
                         continue;
                     }
 
                     // Reuse the existing path when neither endpoint has changed.
-                    if self.can_reuse_path(uuid, mob_pos, target_pos) {
-                        self.clear_active_path_job(uuid);
+                    let mut can_reuse = false;
+                    if let Some(&(cached_start, cached_goal)) = path_endpoints.get(&uuid) {
+                        if cached_start == mob_pos && cached_goal == target_pos {
+                            can_reuse = path_steps.contains_key(&uuid);
+                        }
+                    }
+                    if can_reuse {
+                        active_path_jobs.remove(&uuid);
                         continue;
                     }
 
@@ -432,11 +467,11 @@ impl MobAiState {
                     let Some(grid) = BlockGrid::sample(bounds, |pos| {
                         world.get_block_state(&pos).is_solid_block()
                     }) else {
-                        self.clear_active_path_job(uuid);
+                        active_path_jobs.remove(&uuid);
                         continue;
                     };
 
-                    let player_tree = self.player_trees.lock().unwrap().get(&player_uuid).cloned();
+                    let player_tree = player_trees.get(&player_uuid).cloned();
 
                     path_jobs_to_spawn.push(PathJobToSpawn {
                         uuid,
@@ -449,13 +484,19 @@ impl MobAiState {
                 }
 
                 // 5. Freeze newly out-of-bounds managed mobs
-                let managed = self.managed_mobs.lock().unwrap().clone();
+                let managed = managed_mobs.clone();
                 for uuid in managed {
                     if !active_in_tick_mobs.contains(&uuid) {
-                        let is_newly_frozen = self.frozen_out_of_bounds_mobs.lock().unwrap().insert(uuid);
+                        let is_newly_frozen = frozen_out_of_bounds.insert(uuid);
                         if is_newly_frozen {
                             if let Some(entity_base) = world.get_entity_by_uuid(uuid) {
-                                self.freeze_out_of_bounds_mob(entity_base.as_ref(), uuid);
+                                if disabled_mobs.insert(uuid) {
+                                    clear_pumpkin_mob_ai(entity_base.as_ref());
+                                }
+                                let entity = entity_base.get_entity();
+                                if entity.velocity.load() != Vector3::default() {
+                                    entity.set_velocity(Vector3::default());
+                                }
                             }
                         }
                     }
@@ -491,34 +532,14 @@ impl MobAiState {
                 self.spawn_velocity_jobs(&sorted_active_mobs);
             }
 
-            self.retain_player_state(&active_player_uuids);
+            // Inline retain_player_state using active guards
+            player_trees.retain(|uuid, _| active_player_uuids.contains(uuid));
+            last_player_positions.retain(|uuid, _| active_player_uuids.contains(uuid));
         })
     }
 }
 
 impl MobAiState {
-    fn should_start_path_job(&self, uuid: Uuid, tick: i32, interval: i64) -> bool {
-        {
-            let mut active_path_jobs = self.active_path_jobs.lock().unwrap();
-            if !active_path_jobs.insert(uuid) {
-                return false;
-            }
-        }
-
-        let mut last_path_ticks = self.last_path_ticks.lock().unwrap();
-        let should_attempt = last_path_ticks
-            .get(&uuid)
-            .is_none_or(|last_tick| i64::from(tick) - i64::from(*last_tick) >= interval);
-
-        if should_attempt {
-            last_path_ticks.insert(uuid, tick);
-        } else {
-            self.clear_active_path_job(uuid);
-        }
-
-        should_attempt
-    }
-
     fn update_mob_locations(&self, active_mobs: &[ActiveMobSnapshot]) {
         let entries = active_mobs.iter().map(|mob| MobLocationEntry {
             uuid: mob.uuid,
@@ -527,35 +548,6 @@ impl MobAiState {
         });
 
         *self.mob_locations.lock().unwrap() = MobLocationTable::from_entries(entries);
-    }
-
-    fn apply_planned_velocity(&self, entity_base: &dyn EntityBase, uuid: Uuid) {
-        // Fix 6: Extract the plan under the lock and immediately release it.
-        // No local mutex is held while mutating live Pumpkin entity state.
-        let plan = {
-            let mut planned_velocities = self.planned_velocities.lock().unwrap();
-            planned_velocities.remove(&uuid)
-        };
-
-        let Some(plan) = plan else {
-            return;
-        };
-
-        let entity = entity_base.get_entity();
-        if let Some(body_yaw) = plan.target_yaw {
-            entity.yaw.store(body_yaw);
-            entity.body_yaw.store(body_yaw);
-            entity.head_yaw.store(body_yaw);
-            entity.send_rotation();
-            self.last_applied_yaws
-                .lock()
-                .unwrap()
-                .insert(uuid, body_yaw);
-        }
-        entity.velocity.store(plan.velocity);
-        entity
-            .velocity_dirty
-            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn path_velocity_target(
@@ -579,41 +571,7 @@ impl MobAiState {
         weighted_lookahead_target(steps).map(|target| (target, next_step))
     }
 
-    fn clear_path(&self, uuid: Uuid) {
-        self.path_steps.lock().unwrap().remove(&uuid);
-        self.path_endpoints.lock().unwrap().remove(&uuid);
-    }
 
-    /// Returns `true` when a cached path already exists for this mob and
-    /// neither endpoint (mob block, target block) has changed since the
-    /// path was computed, meaning the A* result can be reused.
-    fn can_reuse_path(&self, uuid: Uuid, mob_pos: BlockPos, target_pos: BlockPos) -> bool {
-        let endpoints = self.path_endpoints.lock().unwrap();
-        if let Some(&(cached_start, cached_goal)) = endpoints.get(&uuid) {
-            if cached_start == mob_pos && cached_goal == target_pos {
-                return self.path_steps.lock().unwrap().contains_key(&uuid);
-            }
-        }
-        false
-    }
-
-    fn clear_active_path_job(&self, uuid: Uuid) {
-        self.active_path_jobs.lock().unwrap().remove(&uuid);
-    }
-
-    fn freeze_out_of_bounds_mob(&self, entity_base: &dyn EntityBase, uuid: Uuid) {
-        let is_newly_frozen = self.frozen_out_of_bounds_mobs.lock().unwrap().insert(uuid);
-        if !is_newly_frozen {
-            return;
-        }
-
-        self.ensure_pumpkin_mob_ai_disabled(entity_base, uuid);
-
-        let entity = entity_base.get_entity();
-        if entity.velocity.load() != Vector3::default() {
-            entity.set_velocity(Vector3::default());
-        }
-    }
 
     fn ensure_pumpkin_mob_ai_disabled(&self, entity_base: &dyn EntityBase, uuid: Uuid) -> bool {
         let is_newly_disabled = self.disabled_mobs.lock().unwrap().insert(uuid);
@@ -647,17 +605,7 @@ impl MobAiState {
         self.last_applied_yaws.lock().unwrap().remove(&uuid);
     }
 
-    fn retain_player_state(&self, active_player_uuids: &HashSet<Uuid>) {
-        self.player_trees
-            .lock()
-            .unwrap()
-            .retain(|uuid, _| active_player_uuids.contains(uuid));
 
-        self.last_player_positions
-            .lock()
-            .unwrap()
-            .retain(|uuid, _| active_player_uuids.contains(uuid));
-    }
 
     pub fn get_metrics(&self) -> MobAiMetrics {
         MobAiMetrics {
