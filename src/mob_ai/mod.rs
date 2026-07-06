@@ -395,19 +395,34 @@ impl MobAiState {
                     };
 
                     let path_target = if should_update_velocity {
-                        self.path_velocity_target(uuid, mob_pos)
-                            .and_then(|(target_pos, next_step)| {
-                                if world.get_block_state(&next_step).is_solid_block() {
-                                    path_steps.remove(&uuid);
-                                    path_endpoints.remove(&uuid);
-                                    None
-                                } else {
-                                    Some(PathVelocityTarget {
-                                        target_pos,
-                                        next_step,
-                                    })
-                                }
-                            })
+                        let target = if let Some(steps) = path_steps.get_mut(&uuid) {
+                            while steps.front().is_some_and(|step| *step == mob_pos) {
+                                steps.pop_front();
+                            }
+                            if steps.is_empty() {
+                                path_steps.remove(&uuid);
+                                None
+                            } else if let Some(next_step) = steps.front().copied() {
+                                weighted_lookahead_target(steps).map(|target| (target, next_step))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+
+                        target.and_then(|(target_pos, next_step)| {
+                            if world.get_block_state(&next_step).is_solid_block() {
+                                path_steps.remove(&uuid);
+                                path_endpoints.remove(&uuid);
+                                None
+                            } else {
+                                Some(PathVelocityTarget {
+                                    target_pos,
+                                    next_step,
+                                })
+                            }
+                        })
                     } else {
                         None
                     };
@@ -503,6 +518,24 @@ impl MobAiState {
                 }
             }
 
+            // Inline retain_player_state using active guards BEFORE dropping them
+            player_trees.retain(|uuid, _| active_player_uuids.contains(uuid));
+            last_player_positions.retain(|uuid, _| active_player_uuids.contains(uuid));
+
+            // Drop all locks explicitly to prevent deadlocks when calling helper methods that lock
+            drop(last_player_positions);
+            drop(last_path_ticks);
+            drop(active_path_jobs);
+            drop(path_steps);
+            drop(planned_velocities);
+            drop(managed_mobs);
+            drop(disabled_mobs);
+            drop(frozen_out_of_bounds);
+            drop(grace_period);
+            drop(last_applied_yaws);
+            drop(path_endpoints);
+            drop(player_trees);
+
             // Prioritize and spawn pathfinding jobs closest to the player first
             path_jobs_to_spawn.sort_by(|a, b| {
                 a.distance_to_player
@@ -531,10 +564,6 @@ impl MobAiState {
                 });
                 self.spawn_velocity_jobs(&sorted_active_mobs);
             }
-
-            // Inline retain_player_state using active guards
-            player_trees.retain(|uuid, _| active_player_uuids.contains(uuid));
-            last_player_positions.retain(|uuid, _| active_player_uuids.contains(uuid));
         })
     }
 }
@@ -550,26 +579,7 @@ impl MobAiState {
         *self.mob_locations.lock().unwrap() = MobLocationTable::from_entries(entries);
     }
 
-    fn path_velocity_target(
-        &self,
-        uuid: Uuid,
-        current_pos: BlockPos,
-    ) -> Option<(Vector3<f64>, BlockPos)> {
-        let mut path_steps = self.path_steps.lock().unwrap();
-        let steps = path_steps.get_mut(&uuid)?;
 
-        while steps.front().is_some_and(|step| *step == current_pos) {
-            steps.pop_front();
-        }
-
-        if steps.is_empty() {
-            path_steps.remove(&uuid);
-            return None;
-        }
-
-        let next_step = steps.front().copied()?;
-        weighted_lookahead_target(steps).map(|target| (target, next_step))
-    }
 
 
 
