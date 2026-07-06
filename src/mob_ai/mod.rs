@@ -251,7 +251,7 @@ impl MobAiState {
 
             struct PathJobToSpawn {
                 uuid: Uuid,
-                grid: BlockGrid,
+                world: Arc<World>,
                 mob_pos: BlockPos,
                 target_pos: BlockPos,
                 player_tree: Option<Arc<PlayerSearchTree>>,
@@ -305,14 +305,24 @@ impl MobAiState {
             }
 
             for world in server.worlds.load().iter() {
-                if world.players.load().is_empty() {
+                let players: Vec<PlayerSnapshot> = world.players.load().iter().map(|player| {
+                    let player_entity = player.get_entity();
+                    PlayerSnapshot {
+                        uuid: player_entity.entity_uuid,
+                        block_pos: BlockPos::floored_v(player_entity.pos.load()),
+                        eye_pos: player_entity.get_eye_pos(),
+                        chunk_pos: player_entity.chunk_pos.load(),
+                    }
+                }).collect();
+
+                if players.is_empty() {
                     continue;
                 }
 
                 // 2. Build the list of watched chunks (3x3 around each player)
                 let mut watched_chunks = HashSet::new();
-                for player in world.players.load().iter() {
-                    let center = player.get_entity().chunk_pos.load();
+                for player in &players {
+                    let center = player.chunk_pos;
                     for dx in -1..=1 {
                         for dz in -1..=1 {
                             watched_chunks.insert(Vector2::new(center.x + dx, center.y + dz));
@@ -377,7 +387,7 @@ impl MobAiState {
                     let mob_pos = BlockPos::floored_v(current_pos);
                     let current_velocity = entity.velocity.load();
                     let Some((player_uuid, target_pos, player_eye_pos, horizontal_distance)) =
-                        nearest_player_pos(world, mob_pos)
+                        nearest_player_pos(&players, mob_pos)
                     else {
                         continue;
                     };
@@ -478,19 +488,11 @@ impl MobAiState {
                         continue;
                     }
 
-                    let bounds = PathBounds::between(mob_pos, target_pos, PATH_BOX_OUTSET_BLOCKS);
-                    let Some(grid) = BlockGrid::sample(bounds, |pos| {
-                        world.get_block_state(&pos).is_solid_block()
-                    }) else {
-                        active_path_jobs.remove(&uuid);
-                        continue;
-                    };
-
                     let player_tree = player_trees.get(&player_uuid).cloned();
 
                     path_jobs_to_spawn.push(PathJobToSpawn {
                         uuid,
-                        grid,
+                        world: world.clone(),
                         mob_pos,
                         target_pos,
                         player_tree,
@@ -545,7 +547,7 @@ impl MobAiState {
             for job in path_jobs_to_spawn {
                 self.spawn_path_job(
                     job.uuid,
-                    job.grid,
+                    job.world,
                     job.mob_pos,
                     job.target_pos,
                     job.player_tree,
@@ -634,24 +636,18 @@ impl MobAiState {
 }
 
 fn nearest_player_pos(
-    world: &World,
+    players: &[PlayerSnapshot],
     mob_pos: BlockPos,
 ) -> Option<(Uuid, BlockPos, Vector3<f64>, i64)> {
-    world
-        .players
-        .load()
+    players
         .iter()
         .map(|player| {
-            let player_entity = player.get_entity();
-            let player_uuid = player_entity.entity_uuid;
-            let player_block_pos = BlockPos::floored_v(player_entity.pos.load());
-            let distance_squared = block_distance_squared(mob_pos, player_block_pos);
-            let horizontal_distance = horizontal_block_distance(mob_pos, player_block_pos);
-            let player_eye_pos = player_entity.get_eye_pos();
+            let distance_squared = block_distance_squared(mob_pos, player.block_pos);
+            let horizontal_distance = horizontal_block_distance(mob_pos, player.block_pos);
             (
-                player_uuid,
-                player_block_pos,
-                player_eye_pos,
+                player.uuid,
+                player.block_pos,
+                player.eye_pos,
                 distance_squared,
                 horizontal_distance,
             )
@@ -667,6 +663,13 @@ fn nearest_player_pos(
                 )
             },
         )
+}
+
+struct PlayerSnapshot {
+    uuid: Uuid,
+    block_pos: BlockPos,
+    eye_pos: Vector3<f64>,
+    chunk_pos: Vector2<i32>,
 }
 
 fn get_mob_helper(entity_base: &dyn EntityBase) -> Option<&dyn Mob> {

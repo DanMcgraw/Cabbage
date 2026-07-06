@@ -1,7 +1,8 @@
 use crate::mob_ai::MobAiState;
 use crate::mob_ai::movement::compute_velocity_plan;
 use crate::mob_ai::pathfinding::{
-    BlockGrid, PlayerSearchTree, bidirectional_a_star, connect_to_player_tree, movement_path_steps,
+    BlockGrid, PathBounds, PlayerSearchTree, bidirectional_a_star, connect_to_player_tree,
+    movement_path_steps,
 };
 use crate::mob_ai::types::{ActiveMobSnapshot, VelocityJobSnapshot};
 use pumpkin_util::math::position::BlockPos;
@@ -39,7 +40,7 @@ impl MobAiState {
     pub fn spawn_path_job(
         &self,
         uuid: Uuid,
-        grid: BlockGrid,
+        world: Arc<pumpkin::world::World>,
         mob_pos: BlockPos,
         target_pos: BlockPos,
         player_tree: Option<Arc<PlayerSearchTree>>,
@@ -66,6 +67,13 @@ impl MobAiState {
                 uuid,
                 std::thread::current().name()
             );
+
+            let bounds = PathBounds::between(mob_pos, target_pos, super::PATH_BOX_OUTSET_BLOCKS);
+            let Some(grid) = BlockGrid::sample(bounds, |pos| {
+                world.get_block_state(&pos).is_solid_block()
+            }) else {
+                return;
+            };
 
             let steps = if let Some(ref tree) = player_tree {
                 connect_to_player_tree(&grid, mob_pos, target_pos, tree)
