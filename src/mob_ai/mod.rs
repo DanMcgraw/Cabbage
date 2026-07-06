@@ -68,7 +68,7 @@ pub(crate) struct MobAiState {
     /// entry.  Used to skip redundant A* jobs when neither endpoint moved.
     pub(crate) path_endpoints: Mutex<HashMap<Uuid, (BlockPos, BlockPos)>>,
     /// Cached Dijkstra search trees per player. Shared by nearby mobs.
-    pub(crate) player_trees: Mutex<HashMap<Uuid, Arc<PlayerSearchTree>>>,
+    pub(crate) player_trees: Arc<Mutex<HashMap<Uuid, Arc<PlayerSearchTree>>>>,
     /// Last computed block position of players to detect movement.
     pub(crate) last_player_positions: Mutex<HashMap<Uuid, BlockPos>>,
     /// Last applied rotation yaw based on planned velocity.
@@ -108,7 +108,7 @@ impl Default for MobAiState {
             frozen_out_of_bounds_mobs: Mutex::new(HashSet::new()),
             grace_period_mobs: Mutex::new(HashMap::new()),
             path_endpoints: Mutex::new(HashMap::new()),
-            player_trees: Mutex::new(HashMap::new()),
+            player_trees: Arc::new(Mutex::new(HashMap::new())),
             last_player_positions: Mutex::new(HashMap::new()),
             last_applied_yaws: Mutex::new(HashMap::new()),
         }
@@ -245,7 +245,7 @@ impl MobAiState {
             }
             let mut path_jobs_to_spawn = Vec::new();
 
-            // 1. Prioritized Player Tree Pre-Computation (Blocking barrier)
+            // 1. Prioritized Player Tree Pre-Computation (Asynchronous & Non-blocking)
             let mut players_to_update = Vec::new();
             let mut active_player_uuids = HashSet::new();
             for world in server.worlds.load().iter() {
@@ -272,26 +272,25 @@ impl MobAiState {
             }
 
             if !players_to_update.is_empty() {
-                self.worker_pool.scope(|scope| {
-                    for (player_uuid, player_block, world) in players_to_update {
-                        scope.spawn(move |_| {
-                            // bounds region: +-6 horizontally, +-4 vertically
-                            let bounds = PathBounds {
-                                min: player_block.add(-6, -4, -6),
-                                max: player_block.add(6, 4, 6),
-                            };
-                            if let Some(grid) = BlockGrid::sample(bounds, |pos| {
-                                world.get_block_state(&pos).is_solid_block()
-                            }) {
-                                let tree = generate_player_tree(&grid, player_block);
-                                self.player_trees
-                                    .lock()
-                                    .unwrap()
-                                    .insert(player_uuid, Arc::new(tree));
-                            }
-                        });
-                    }
-                });
+                for (player_uuid, player_block, world) in players_to_update {
+                    let player_trees = Arc::clone(&self.player_trees);
+                    self.worker_pool.spawn(move || {
+                        // bounds region: +-6 horizontally, +-4 vertically
+                        let bounds = PathBounds {
+                            min: player_block.add(-6, -4, -6),
+                            max: player_block.add(6, 4, 6),
+                        };
+                        if let Some(grid) = BlockGrid::sample(bounds, |pos| {
+                            world.get_block_state(&pos).is_solid_block()
+                        }) {
+                            let tree = generate_player_tree(&grid, player_block);
+                            player_trees
+                                .lock()
+                                .unwrap()
+                                .insert(player_uuid, Arc::new(tree));
+                        }
+                    });
+                }
             }
 
             for world in server.worlds.load().iter() {
@@ -299,6 +298,7 @@ impl MobAiState {
                     continue;
                 }
 
+                // 2. Build the list of watched chunks (3x3 around each player)
                 let mut watched_chunks = HashSet::new();
                 for player in world.players.load().iter() {
                     let center = player.get_entity().chunk_pos.load();
@@ -309,40 +309,49 @@ impl MobAiState {
                     }
                 }
 
-                for entity_base in world.iter_active_entities() {
-                    let entity = entity_base.get_entity();
+                // 3. Directly sample entities ONLY in the watched chunks
+                let mut active_in_tick_mobs = HashSet::new();
+                let mut entities_to_process = Vec::new();
 
-                    if !MOB_JUMP_TYPES.contains(&entity.entity_type.resource_name) {
-                        continue;
+                for chunk_pos in &watched_chunks {
+                    if let Some(chunk_entities) = world.entities_by_chunk.get(chunk_pos) {
+                        for entity_base in chunk_entities.iter() {
+                            let entity = entity_base.get_entity();
+                            if MOB_JUMP_TYPES.contains(&entity.entity_type.resource_name) {
+                                entities_to_process.push(entity_base.clone());
+                                active_in_tick_mobs.insert(entity.entity_uuid);
+                            }
+                        }
                     }
+                }
+
+                // 4. Process the active nearby mobs
+                for entity_base in entities_to_process {
+                    let entity = entity_base.get_entity();
+                    let uuid = entity.entity_uuid;
 
                     // Ensure this mob is tracked. Events usually populate the registry,
                     // but this call is idempotent and covers any edge cases.
                     self.register_managed_mob(world.uuid, entity_base.as_ref());
 
+                    // Unfreeze mob if it was previously frozen
+                    self.frozen_out_of_bounds_mobs.lock().unwrap().remove(&uuid);
+
                     // Grace period: skip entities that just appeared until their
                     // AI sub-systems have had time to fully initialise.
                     {
                         let mut grace = self.grace_period_mobs.lock().unwrap();
-                        let first_seen = grace.entry(entity.entity_uuid).or_insert(tick);
+                        let first_seen = grace.entry(uuid).or_insert(tick);
                         if tick.wrapping_sub(*first_seen) < ENTITY_LOAD_GRACE_TICKS {
                             continue;
                         }
-                    }
-
-                    // Mobs outside the 3x3 chunk area around players are not AI-active,
-                    // but still need their live movement state frozen while they remain loaded.
-                    let chunk_pos = entity.chunk_pos.load();
-                    if !watched_chunks.contains(&chunk_pos) {
-                        self.freeze_out_of_bounds_mob(entity_base.as_ref(), entity.entity_uuid);
-                        continue;
                     }
 
                     // Fix 5: Apply completed velocity plan BEFORE snapshotting
                     // so the snapshot reflects post-apply state for the next
                     // worker job, avoiding stale velocity data.
                     if should_update_velocity {
-                        self.apply_planned_velocity(entity_base.as_ref(), entity.entity_uuid);
+                        self.apply_planned_velocity(entity_base.as_ref(), uuid);
                     }
 
                     let current_pos = entity.pos.load();
@@ -357,7 +366,7 @@ impl MobAiState {
                     update_pumpkin_look_target(entity_base.as_ref(), player_eye_pos);
 
                     if path_height_difference_exceeded(mob_pos, target_pos) {
-                        self.clear_path(entity.entity_uuid);
+                        self.clear_path(uuid);
                         continue;
                     }
 
@@ -366,10 +375,10 @@ impl MobAiState {
                     };
 
                     let path_target = if should_update_velocity {
-                        self.path_velocity_target(entity.entity_uuid, mob_pos)
+                        self.path_velocity_target(uuid, mob_pos)
                             .and_then(|(target_pos, next_step)| {
                                 if world.get_block_state(&next_step).is_solid_block() {
-                                    self.clear_path(entity.entity_uuid);
+                                    self.clear_path(uuid);
                                     None
                                 } else {
                                     Some(PathVelocityTarget {
@@ -384,7 +393,7 @@ impl MobAiState {
 
                     let dist_3d = current_pos.squared_distance_to_vec(&player_eye_pos);
                     active_mobs.push(ActiveMobSnapshot {
-                        uuid: entity.entity_uuid,
+                        uuid,
                         world_uuid: world.uuid,
                         current_pos,
                         current_block: mob_pos,
@@ -400,7 +409,7 @@ impl MobAiState {
                         .last_applied_yaws
                         .lock()
                         .unwrap()
-                        .get(&entity.entity_uuid)
+                        .get(&uuid)
                     {
                         entity.yaw.store(last_yaw);
                         entity.body_yaw.store(last_yaw);
@@ -409,13 +418,13 @@ impl MobAiState {
                     }
 
                     let interval = path_interval_ticks(horizontal_distance, active_mobs.len());
-                    if !self.should_start_path_job(entity.entity_uuid, tick, interval) {
+                    if !self.should_start_path_job(uuid, tick, interval) {
                         continue;
                     }
 
                     // Reuse the existing path when neither endpoint has changed.
-                    if self.can_reuse_path(entity.entity_uuid, mob_pos, target_pos) {
-                        self.clear_active_path_job(entity.entity_uuid);
+                    if self.can_reuse_path(uuid, mob_pos, target_pos) {
+                        self.clear_active_path_job(uuid);
                         continue;
                     }
 
@@ -423,20 +432,33 @@ impl MobAiState {
                     let Some(grid) = BlockGrid::sample(bounds, |pos| {
                         world.get_block_state(&pos).is_solid_block()
                     }) else {
-                        self.clear_active_path_job(entity.entity_uuid);
+                        self.clear_active_path_job(uuid);
                         continue;
                     };
 
                     let player_tree = self.player_trees.lock().unwrap().get(&player_uuid).cloned();
 
                     path_jobs_to_spawn.push(PathJobToSpawn {
-                        uuid: entity.entity_uuid,
+                        uuid,
                         grid,
                         mob_pos,
                         target_pos,
                         player_tree,
                         distance_to_player: dist_3d,
                     });
+                }
+
+                // 5. Freeze newly out-of-bounds managed mobs
+                let managed = self.managed_mobs.lock().unwrap().clone();
+                for uuid in managed {
+                    if !active_in_tick_mobs.contains(&uuid) {
+                        let is_newly_frozen = self.frozen_out_of_bounds_mobs.lock().unwrap().insert(uuid);
+                        if is_newly_frozen {
+                            if let Some(entity_base) = world.get_entity_by_uuid(uuid) {
+                                self.freeze_out_of_bounds_mob(entity_base.as_ref(), uuid);
+                            }
+                        }
+                    }
                 }
             }
 
