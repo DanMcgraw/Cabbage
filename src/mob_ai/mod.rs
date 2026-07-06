@@ -8,7 +8,13 @@ use pumpkin::entity::mob::{
 };
 use pumpkin::{
     entity::EntityBase,
-    plugin::{BoxFuture, EventHandler, server::server_tick_start::ServerTickStartEvent},
+    plugin::{
+        BoxFuture, EventHandler,
+        api::events::entity::{
+            ChunkEntityLoadEvent, ChunkEntityUnloadEvent, EntityRemoveEvent, EntitySpawnEvent,
+        },
+        server::server_tick_start::ServerTickStartEvent,
+    },
     server::Server,
     world::World,
 };
@@ -51,6 +57,8 @@ pub(crate) struct MobAiState {
     pub(crate) mob_locations: Mutex<MobLocationTable>,
     pub(crate) paths_completed: Arc<std::sync::atomic::AtomicUsize>,
     pub(crate) velocities_completed: Arc<std::sync::atomic::AtomicUsize>,
+    /// Managed mob UUIDs tracked via entity lifecycle events and tick discovery.
+    pub(crate) managed_mobs: Mutex<HashSet<Uuid>>,
     pub(crate) disabled_mobs: Mutex<HashSet<Uuid>>,
     pub(crate) frozen_out_of_bounds_mobs: Mutex<HashSet<Uuid>>,
     /// Tick at which each entity was first observed. Entities inside their
@@ -95,6 +103,7 @@ impl Default for MobAiState {
             mob_locations: Mutex::new(MobLocationTable::default()),
             paths_completed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             velocities_completed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            managed_mobs: Mutex::new(HashSet::new()),
             disabled_mobs: Mutex::new(HashSet::new()),
             frozen_out_of_bounds_mobs: Mutex::new(HashSet::new()),
             grace_period_mobs: Mutex::new(HashMap::new()),
@@ -128,6 +137,82 @@ impl EventHandler<ServerTickStartEvent> for MobAiState {
     }
 }
 
+impl EventHandler<EntitySpawnEvent> for MobAiState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a EntitySpawnEvent,
+    ) -> BoxFuture<'a, ()> {
+        self.register_managed_mob(event.world.uuid, event.entity.as_ref());
+        Box::pin(async {})
+    }
+
+    fn handle_blocking<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        _event: &'a mut EntitySpawnEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async {})
+    }
+}
+
+impl EventHandler<EntityRemoveEvent> for MobAiState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a EntityRemoveEvent,
+    ) -> BoxFuture<'a, ()> {
+        self.unregister_managed_mob(event.entity.get_entity().entity_uuid);
+        Box::pin(async {})
+    }
+
+    fn handle_blocking<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        _event: &'a mut EntityRemoveEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async {})
+    }
+}
+
+impl EventHandler<ChunkEntityLoadEvent> for MobAiState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a ChunkEntityLoadEvent,
+    ) -> BoxFuture<'a, ()> {
+        self.register_managed_mob(event.world.uuid, event.entity.as_ref());
+        Box::pin(async {})
+    }
+
+    fn handle_blocking<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        _event: &'a mut ChunkEntityLoadEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async {})
+    }
+}
+
+impl EventHandler<ChunkEntityUnloadEvent> for MobAiState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a ChunkEntityUnloadEvent,
+    ) -> BoxFuture<'a, ()> {
+        self.unregister_managed_mob(event.entity.get_entity().entity_uuid);
+        Box::pin(async {})
+    }
+
+    fn handle_blocking<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        _event: &'a mut ChunkEntityUnloadEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async {})
+    }
+}
+
 impl MobAiState {
     fn run_tick<'a>(&'a self, server: &'a Arc<Server>, tick: i32) -> BoxFuture<'a, ()> {
         Box::pin(async move {
@@ -137,12 +222,10 @@ impl MobAiState {
                 std::thread::current().name()
             );
 
-            let mut active_seen_mobs = HashSet::new();
-            let mut loaded_managed_mobs = HashSet::new();
             let mut active_mobs = Vec::new();
 
             // Calculate actual tick period dynamically based on the number of currently managed mobs
-            let managed_count = self.last_path_ticks.lock().unwrap().len();
+            let managed_count = self.managed_mobs.lock().unwrap().len();
             let actual_period = if managed_count <= 600 {
                 4
             } else {
@@ -226,13 +309,16 @@ impl MobAiState {
                     }
                 }
 
-                for entity_base in world.entities.load().iter() {
+                for entity_base in world.iter_active_entities() {
                     let entity = entity_base.get_entity();
 
                     if !MOB_JUMP_TYPES.contains(&entity.entity_type.resource_name) {
                         continue;
                     }
-                    loaded_managed_mobs.insert(entity.entity_uuid);
+
+                    // Ensure this mob is tracked. Events usually populate the registry,
+                    // but this call is idempotent and covers any edge cases.
+                    self.register_managed_mob(world.uuid, entity_base.as_ref());
 
                     // Grace period: skip entities that just appeared until their
                     // AI sub-systems have had time to fully initialise.
@@ -252,8 +338,6 @@ impl MobAiState {
                         continue;
                     }
 
-                    active_seen_mobs.insert(entity.entity_uuid);
-
                     // Fix 5: Apply completed velocity plan BEFORE snapshotting
                     // so the snapshot reflects post-apply state for the next
                     // worker job, avoiding stale velocity data.
@@ -270,7 +354,6 @@ impl MobAiState {
                         continue;
                     };
 
-                    self.ensure_pumpkin_mob_ai_disabled(entity_base.as_ref(), entity.entity_uuid);
                     update_pumpkin_look_target(entity_base.as_ref(), player_eye_pos);
 
                     if path_height_difference_exceeded(mob_pos, target_pos) {
@@ -325,7 +408,7 @@ impl MobAiState {
                         entity.send_rotation();
                     }
 
-                    let interval = path_interval_ticks(horizontal_distance, active_seen_mobs.len());
+                    let interval = path_interval_ticks(horizontal_distance, active_mobs.len());
                     if !self.should_start_path_job(entity.entity_uuid, tick, interval) {
                         continue;
                     }
@@ -386,11 +469,7 @@ impl MobAiState {
                 self.spawn_velocity_jobs(&sorted_active_mobs);
             }
 
-            self.retain_seen_mobs(
-                &active_seen_mobs,
-                &loaded_managed_mobs,
-                &active_player_uuids,
-            );
+            self.retain_player_state(&active_player_uuids);
         })
     }
 }
@@ -522,52 +601,31 @@ impl MobAiState {
         is_newly_disabled
     }
 
-    fn retain_seen_mobs(
-        &self,
-        active_seen_mobs: &HashSet<Uuid>,
-        loaded_managed_mobs: &HashSet<Uuid>,
-        active_player_uuids: &HashSet<Uuid>,
-    ) {
-        // Fix 3: Only prune cache/result maps, NOT active job ownership sets.
-        // Worker jobs own their active marker lifecycle via ActiveJobGuard.
-        // If a mob disappears while a job is running, the job finishes and
-        // the result gets ignored or pruned because the mob is no longer seen.
-        // This preserves the one-active-job-per-UUID deduplication invariant.
-        self.last_path_ticks
-            .lock()
-            .unwrap()
-            .retain(|uuid, _| active_seen_mobs.contains(uuid));
+    fn register_managed_mob(&self, _world_uuid: Uuid, entity_base: &dyn EntityBase) {
+        let entity = entity_base.get_entity();
+        if !MOB_JUMP_TYPES.contains(&entity.entity_type.resource_name) {
+            return;
+        }
 
-        self.path_steps
-            .lock()
-            .unwrap()
-            .retain(|uuid, _| active_seen_mobs.contains(uuid));
+        let is_new = self.managed_mobs.lock().unwrap().insert(entity.entity_uuid);
+        if is_new {
+            self.ensure_pumpkin_mob_ai_disabled(entity_base, entity.entity_uuid);
+        }
+    }
 
-        self.path_endpoints
-            .lock()
-            .unwrap()
-            .retain(|uuid, _| active_seen_mobs.contains(uuid));
+    fn unregister_managed_mob(&self, uuid: Uuid) {
+        self.managed_mobs.lock().unwrap().remove(&uuid);
+        self.last_path_ticks.lock().unwrap().remove(&uuid);
+        self.path_steps.lock().unwrap().remove(&uuid);
+        self.path_endpoints.lock().unwrap().remove(&uuid);
+        self.planned_velocities.lock().unwrap().remove(&uuid);
+        self.disabled_mobs.lock().unwrap().remove(&uuid);
+        self.frozen_out_of_bounds_mobs.lock().unwrap().remove(&uuid);
+        self.grace_period_mobs.lock().unwrap().remove(&uuid);
+        self.last_applied_yaws.lock().unwrap().remove(&uuid);
+    }
 
-        self.planned_velocities
-            .lock()
-            .unwrap()
-            .retain(|uuid, _| active_seen_mobs.contains(uuid));
-
-        self.disabled_mobs
-            .lock()
-            .unwrap()
-            .retain(|uuid| loaded_managed_mobs.contains(uuid));
-
-        self.frozen_out_of_bounds_mobs
-            .lock()
-            .unwrap()
-            .retain(|uuid| loaded_managed_mobs.contains(uuid) && !active_seen_mobs.contains(uuid));
-
-        self.grace_period_mobs
-            .lock()
-            .unwrap()
-            .retain(|uuid, _| loaded_managed_mobs.contains(uuid));
-
+    fn retain_player_state(&self, active_player_uuids: &HashSet<Uuid>) {
         self.player_trees
             .lock()
             .unwrap()
@@ -577,11 +635,6 @@ impl MobAiState {
             .lock()
             .unwrap()
             .retain(|uuid, _| active_player_uuids.contains(uuid));
-
-        self.last_applied_yaws
-            .lock()
-            .unwrap()
-            .retain(|uuid, _| active_seen_mobs.contains(uuid));
     }
 
     pub fn get_metrics(&self) -> MobAiMetrics {
@@ -589,7 +642,7 @@ impl MobAiState {
             active_path_jobs: self.active_path_jobs.lock().unwrap().len(),
             active_velocity_jobs: self.active_velocity_jobs.lock().unwrap().len(),
             total_worker_threads: self.worker_pool.current_num_threads(),
-            managed_mobs_count: self.last_path_ticks.lock().unwrap().len(),
+            managed_mobs_count: self.managed_mobs.lock().unwrap().len(),
             total_paths_completed: self
                 .paths_completed
                 .load(std::sync::atomic::Ordering::Relaxed),

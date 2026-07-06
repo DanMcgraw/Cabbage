@@ -19,7 +19,11 @@ use pumpkin::{
     entity::{EntityBase, RemovalReason},
     plugin::{
         BoxFuture, Context, EventHandler, EventPriority, PLUGIN_API_VERSION, Plugin, PluginFuture,
-        PluginMetadata, server::server_tick_start::ServerTickStartEvent,
+        PluginMetadata,
+        api::events::entity::{
+            ChunkEntityLoadEvent, ChunkEntityUnloadEvent, EntityRemoveEvent, EntitySpawnEvent,
+        },
+        server::server_tick_start::ServerTickStartEvent,
     },
     server::Server,
 };
@@ -237,6 +241,34 @@ impl Plugin for CabbagePlugin {
                     self.mob_ai_state.clone(),
                     EventPriority::Normal,
                     true,
+                )
+                .await;
+            context
+                .register_event::<EntitySpawnEvent, _>(
+                    self.mob_ai_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<EntityRemoveEvent, _>(
+                    self.mob_ai_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<ChunkEntityLoadEvent, _>(
+                    self.mob_ai_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<ChunkEntityUnloadEvent, _>(
+                    self.mob_ai_state.clone(),
+                    EventPriority::Normal,
+                    false,
                 )
                 .await;
             context
