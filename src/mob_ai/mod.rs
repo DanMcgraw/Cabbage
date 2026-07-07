@@ -433,6 +433,8 @@ impl MobAiState {
                         continue;
                     };
 
+                    living_entity.fall_distance.store(0.0);
+
                     let speed = living_entity.get_attribute_value(&Attributes::MOVEMENT_SPEED);
                     let mut path_target = None;
                     if let Some(steps) = path_steps.get_mut(&uuid) {
