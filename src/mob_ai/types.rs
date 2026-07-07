@@ -1,4 +1,4 @@
-use pumpkin_util::math::{position::BlockPos, vector3::Vector3};
+use pumpkin_util::math::vector3::Vector3;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -111,36 +111,7 @@ pub struct ActiveMobSnapshot {
     pub uuid: Uuid,
     pub world_uuid: Uuid,
     pub current_pos: Vector3<f64>,
-    pub current_block: BlockPos,
-    pub current_velocity: Vector3<f64>,
     pub movement_speed: f64,
-    pub path_target: Option<PathVelocityTarget>,
-    pub player_distance: f64,
-}
-
-#[derive(Clone)]
-pub struct VelocityJobSnapshot {
-    pub uuid: Uuid,
-    pub world_uuid: Uuid,
-    pub current_pos: Vector3<f64>,
-    pub current_block: BlockPos,
-    pub current_velocity: Vector3<f64>,
-    pub movement_speed: f64,
-    pub path_target: Option<PathVelocityTarget>,
-    pub location_table: std::sync::Arc<MobLocationTable>,
-}
-
-#[derive(Clone, Copy)]
-pub struct PathVelocityTarget {
-    pub target_pos: Vector3<f64>,
-    pub next_step: BlockPos,
-}
-
-#[derive(Clone, Copy)]
-pub struct VelocityPlan {
-    pub velocity: Vector3<f64>,
-    pub steering_delta: Vector3<f64>,
-    pub target_yaw: Option<f32>,
 }
 
 #[derive(Clone, Copy)]

@@ -441,6 +441,7 @@ pub fn horizontal_block_distance(a: BlockPos, b: BlockPos) -> i64 {
     i64::try_from(dx.saturating_add(dz)).unwrap_or(i64::MAX)
 }
 
+#[allow(dead_code)]
 pub fn block_center_feet_pos(pos: BlockPos) -> Vector3<f64> {
     Vector3::new(
         f64::from(pos.0.x) + 0.5,

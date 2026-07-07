@@ -3,9 +3,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use pumpkin::entity::mob::{
-    Mob, creeper::CreeperEntity, skeleton::skeleton::SkeletonEntity, zombie::zombie::ZombieEntity,
-};
 use pumpkin::{
     entity::EntityBase,
     plugin::{
@@ -18,7 +15,7 @@ use pumpkin::{
     server::Server,
 };
 use pumpkin_data::attributes::Attributes;
-use pumpkin_util::math::{position::BlockPos, vector2::Vector2, vector3::Vector3};
+use pumpkin_util::math::{position::BlockPos, vector2::Vector2, vector3::Vector3, wrap_degrees};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use uuid::Uuid;
 
@@ -28,14 +25,11 @@ pub(crate) mod pathfinding;
 pub(crate) mod types;
 pub(crate) mod workers;
 
-use movement::weighted_lookahead_target;
 use pathfinding::{
     BlockGrid, PathBounds, PlayerSearchTree, block_distance_squared, generate_player_tree,
     horizontal_block_distance, path_height_difference_exceeded, path_interval_ticks,
 };
-use types::{
-    ActiveMobSnapshot, MobLocationEntry, MobLocationTable, PathVelocityTarget, VelocityPlan,
-};
+use types::{ActiveMobSnapshot, MobLocationEntry, MobLocationTable};
 use workers::cabbage_worker_thread_count;
 
 const PATH_BOX_OUTSET_BLOCKS: i32 = 3;
@@ -51,11 +45,8 @@ pub(crate) struct MobAiState {
     pub(crate) last_path_ticks: Mutex<HashMap<Uuid, i32>>,
     pub(crate) active_path_jobs: Arc<Mutex<HashSet<Uuid>>>,
     pub(crate) path_steps: Arc<Mutex<HashMap<Uuid, VecDeque<BlockPos>>>>,
-    pub(crate) active_velocity_jobs: Arc<Mutex<HashSet<Uuid>>>,
-    pub(crate) planned_velocities: Arc<Mutex<HashMap<Uuid, VelocityPlan>>>,
     pub(crate) mob_locations: Mutex<MobLocationTable>,
     pub(crate) paths_completed: Arc<std::sync::atomic::AtomicUsize>,
-    pub(crate) velocities_completed: Arc<std::sync::atomic::AtomicUsize>,
     /// Managed mob UUIDs tracked via entity lifecycle events and tick discovery.
     pub(crate) managed_mobs: Mutex<HashSet<Uuid>>,
     pub(crate) disabled_mobs: Mutex<HashSet<Uuid>>,
@@ -70,8 +61,6 @@ pub(crate) struct MobAiState {
     pub(crate) player_trees: Arc<Mutex<HashMap<Uuid, Arc<PlayerSearchTree>>>>,
     /// Last computed block position of players to detect movement.
     pub(crate) last_player_positions: Mutex<HashMap<Uuid, BlockPos>>,
-    /// Last applied rotation yaw based on planned velocity.
-    pub(crate) last_applied_yaws: Mutex<HashMap<Uuid, f32>>,
     pub(crate) active_mobs_count: std::sync::atomic::AtomicUsize,
     pub(crate) chunk_registry_read: types::ChunkRegistryRead,
     pub(crate) chunk_registry_write: Arc<Mutex<types::ChunkRegistryWrite>>,
@@ -103,11 +92,8 @@ impl Default for MobAiState {
             last_path_ticks: Mutex::new(HashMap::new()),
             active_path_jobs: Arc::new(Mutex::new(HashSet::new())),
             path_steps: Arc::new(Mutex::new(HashMap::new())),
-            active_velocity_jobs: Arc::new(Mutex::new(HashSet::new())),
-            planned_velocities: Arc::new(Mutex::new(HashMap::new())),
             mob_locations: Mutex::new(MobLocationTable::default()),
             paths_completed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            velocities_completed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             managed_mobs: Mutex::new(HashSet::new()),
             disabled_mobs: Mutex::new(HashSet::new()),
             frozen_out_of_bounds_mobs: Mutex::new(HashSet::new()),
@@ -115,7 +101,6 @@ impl Default for MobAiState {
             path_endpoints: Mutex::new(HashMap::new()),
             player_trees: Arc::new(Mutex::new(HashMap::new())),
             last_player_positions: Mutex::new(HashMap::new()),
-            last_applied_yaws: Mutex::new(HashMap::new()),
             active_mobs_count: std::sync::atomic::AtomicUsize::new(0),
             chunk_registry_read,
             chunk_registry_write: Arc::new(Mutex::new(chunk_registry_write)),
@@ -225,6 +210,12 @@ impl EventHandler<ChunkEntityUnloadEvent> for MobAiState {
 impl MobAiState {
     fn run_tick<'a>(&'a self, server: &'a Arc<Server>, tick: i32) -> BoxFuture<'a, ()> {
         Box::pin(async move {
+            println!(
+                "[Cabbage Debug] MobAiState::run_tick called tick={} enabled={}",
+                tick,
+                self.mob_ai_enabled
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            );
             if !self
                 .mob_ai_enabled
                 .load(std::sync::atomic::Ordering::Relaxed)
@@ -273,12 +264,10 @@ impl MobAiState {
             let mut last_path_ticks = self.last_path_ticks.lock().unwrap();
             let mut active_path_jobs = self.active_path_jobs.lock().unwrap();
             let mut path_steps = self.path_steps.lock().unwrap();
-            let mut planned_velocities = self.planned_velocities.lock().unwrap();
             let mut managed_mobs = self.managed_mobs.lock().unwrap();
             let mut disabled_mobs = self.disabled_mobs.lock().unwrap();
             let mut frozen_out_of_bounds = self.frozen_out_of_bounds_mobs.lock().unwrap();
             let mut grace_period = self.grace_period_mobs.lock().unwrap();
-            let mut last_applied_yaws = self.last_applied_yaws.lock().unwrap();
             let mut path_endpoints = self.path_endpoints.lock().unwrap();
             let mut player_trees = self.player_trees.lock().unwrap();
 
@@ -386,7 +375,12 @@ impl MobAiState {
                     if let Some(chunk_entities) = world.entities_by_chunk.get(chunk_pos) {
                         for entity_base in chunk_entities.iter() {
                             let entity = entity_base.get_entity();
-                            if MOB_JUMP_TYPES.contains(&entity.entity_type.resource_name.as_ref()) {
+                            let resource_name = entity.entity_type.resource_name.as_ref();
+                            println!(
+                                "[Cabbage Debug] run_tick: entity_uuid={} resource_name={}",
+                                entity.entity_uuid, resource_name
+                            );
+                            if MOB_JUMP_TYPES.contains(&resource_name) {
                                 entities_to_process.push(entity_base.clone());
                                 active_in_tick_mobs.insert(entity.entity_uuid);
                             }
@@ -416,27 +410,17 @@ impl MobAiState {
                         }
                     }
 
-                    // Fix 5: Apply completed velocity plan BEFORE snapshotting
-                    if should_update_velocity {
-                        let plan = planned_velocities.remove(&uuid);
-                        if let Some(plan) = plan {
-                            if let Some(body_yaw) = plan.target_yaw {
-                                entity.yaw.store(body_yaw);
-                                entity.body_yaw.store(body_yaw);
-                                entity.head_yaw.store(body_yaw);
-                                entity.send_rotation();
-                                last_applied_yaws.insert(uuid, body_yaw);
-                            }
-                            entity.velocity.store(plan.velocity);
-                        }
-                    }
-
                     let current_pos = entity.pos.load();
                     let mob_pos = BlockPos::floored_v(current_pos);
-                    let current_velocity = entity.velocity.load();
                     let Some((player_uuid, target_pos, player_eye_pos, horizontal_distance)) =
                         nearest_player_pos(&players, mob_pos)
                     else {
+                        if let Some(living_entity) = entity_base.get_living_entity() {
+                            living_entity.movement_input.store(Vector3::default());
+                            living_entity
+                                .jumping
+                                .store(false, std::sync::atomic::Ordering::SeqCst);
+                        }
                         continue;
                     };
 
@@ -445,6 +429,12 @@ impl MobAiState {
                     if path_height_difference_exceeded(mob_pos, target_pos) {
                         path_steps.remove(&uuid);
                         path_endpoints.remove(&uuid);
+                        if let Some(living_entity) = entity_base.get_living_entity() {
+                            living_entity.movement_input.store(Vector3::default());
+                            living_entity
+                                .jumping
+                                .store(false, std::sync::atomic::Ordering::SeqCst);
+                        }
                         continue;
                     }
 
@@ -452,59 +442,66 @@ impl MobAiState {
                         continue;
                     };
 
-                    let path_target = if should_update_velocity {
-                        let target = if let Some(steps) = path_steps.get_mut(&uuid) {
-                            while steps.front().is_some_and(|step| *step == mob_pos) {
+                    let speed = living_entity.get_attribute_value(&Attributes::MOVEMENT_SPEED);
+                    let mut path_target = None;
+                    if let Some(steps) = path_steps.get_mut(&uuid) {
+                        while let Some(front_step) = steps.front() {
+                            let target_pos = Vector3::new(
+                                front_step.0.x as f64 + 0.5,
+                                front_step.0.y as f64,
+                                front_step.0.z as f64 + 0.5,
+                            );
+                            let dist = (target_pos - current_pos).length();
+                            if dist < 0.15 {
+                                steps.pop_front();
+                            } else {
+                                if world.get_block_state(front_step).is_solid_block() {
+                                    path_steps.remove(&uuid);
+                                    path_endpoints.remove(&uuid);
+                                } else {
+                                    path_target = Some(target_pos);
+                                }
+                                break;
+                            }
+                        }
+                    }
+
+                    if let Some(target) = path_target {
+                        let displacement = target - current_pos;
+                        let distance = displacement.length();
+
+                        let new_pos = if distance <= speed {
+                            if let Some(steps) = path_steps.get_mut(&uuid) {
                                 steps.pop_front();
                             }
-                            if steps.is_empty() {
-                                path_steps.remove(&uuid);
-                                None
-                            } else if let Some(next_step) = steps.front().copied() {
-                                weighted_lookahead_target(steps).map(|target| (target, next_step))
-                            } else {
-                                None
-                            }
+                            target
                         } else {
-                            None
+                            let direction = displacement * (1.0 / distance);
+                            current_pos + direction * speed
                         };
 
-                        target.and_then(|(target_pos, next_step)| {
-                            if world.get_block_state(&next_step).is_solid_block() {
-                                path_steps.remove(&uuid);
-                                path_endpoints.remove(&uuid);
-                                None
-                            } else {
-                                Some(PathVelocityTarget {
-                                    target_pos,
-                                    next_step,
-                                })
-                            }
-                        })
-                    } else {
-                        None
-                    };
+                        entity.set_pos(new_pos);
 
-                    let dist_3d = current_pos.squared_distance_to_vec(&player_eye_pos);
+                        // Update rotation (yaw/body_yaw) to face the target walking direction
+                        let y_rot_d =
+                            (displacement.z.atan2(displacement.x).to_degrees() as f32) - 90.0;
+                        let current_yaw = entity.yaw.load();
+                        let new_yaw = wrap_degrees(
+                            current_yaw + wrap_degrees(y_rot_d - current_yaw).clamp(-40.0, 40.0),
+                        );
+                        entity.yaw.store(new_yaw);
+                        entity.body_yaw.store(new_yaw);
+
+                        entity.send_pos_rot();
+                    }
+
                     active_mobs.push(ActiveMobSnapshot {
                         uuid,
                         world_uuid: world.uuid,
                         current_pos,
-                        current_block: mob_pos,
-                        current_velocity,
                         movement_speed: living_entity
                             .get_attribute_value(&Attributes::MOVEMENT_SPEED),
-                        path_target,
-                        player_distance: dist_3d,
                     });
-
-                    // Ensure the entity faces the direction of travel based on the last velocity it was given
-                    if let Some(&last_yaw) = last_applied_yaws.get(&uuid) {
-                        entity.yaw.store(last_yaw);
-                        entity.body_yaw.store(last_yaw);
-                        entity.head_yaw.store(last_yaw);
-                        entity.send_rotation();
-                    }
 
                     let interval = path_interval_ticks(horizontal_distance, active_mobs.len());
 
@@ -538,6 +535,7 @@ impl MobAiState {
 
                     let player_tree = player_trees.get(&player_uuid).cloned();
 
+                    let dist_3d = current_pos.squared_distance_to_vec(&player_eye_pos);
                     path_jobs_to_spawn.push(PathJobToSpawn {
                         uuid,
                         mob_pos,
@@ -561,6 +559,12 @@ impl MobAiState {
                                 if entity.velocity.load() != Vector3::default() {
                                     entity.set_velocity(Vector3::default());
                                 }
+                                if let Some(living_entity) = entity_base.get_living_entity() {
+                                    living_entity.movement_input.store(Vector3::default());
+                                    living_entity
+                                        .jumping
+                                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                                }
                             }
                         }
                     }
@@ -576,12 +580,10 @@ impl MobAiState {
             drop(last_path_ticks);
             drop(active_path_jobs);
             drop(path_steps);
-            drop(planned_velocities);
             drop(managed_mobs);
             drop(disabled_mobs);
             drop(frozen_out_of_bounds);
             drop(grace_period);
-            drop(last_applied_yaws);
             drop(path_endpoints);
             drop(player_trees);
 
@@ -598,14 +600,29 @@ impl MobAiState {
             if should_update_velocity {
                 self.update_mob_locations(&active_mobs);
 
-                // Prioritize velocity planning updates closest to the player first
-                let mut sorted_active_mobs = active_mobs.clone();
-                sorted_active_mobs.sort_by(|a, b| {
-                    a.player_distance
-                        .partial_cmp(&b.player_distance)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-                self.spawn_velocity_jobs(&sorted_active_mobs);
+                let location_table = self.mob_locations.lock().unwrap();
+                for mob in &active_mobs {
+                    let push_velocity = clustering::cluster_push_velocity(
+                        mob.uuid,
+                        mob.movement_speed,
+                        &location_table,
+                    );
+                    if push_velocity.length_squared() > 0.0 {
+                        if let Some(world) = server
+                            .worlds
+                            .load()
+                            .iter()
+                            .find(|w| w.uuid == mob.world_uuid)
+                        {
+                            if let Some(entity_base) = world.get_entity_by_uuid(mob.uuid) {
+                                let entity = entity_base.get_entity();
+                                let current_pos = entity.pos.load();
+                                entity.set_pos(current_pos + push_velocity);
+                                entity.send_pos_rot();
+                            }
+                        }
+                    }
+                }
             }
 
             self.active_mobs_count
@@ -686,7 +703,7 @@ impl MobAiState {
             return;
         }
         let entity = entity_base.get_entity();
-        if !MOB_JUMP_TYPES.contains(&entity.entity_type.resource_name) {
+        if !MOB_JUMP_TYPES.contains(&entity.entity_type.resource_name.as_ref()) {
             return;
         }
 
@@ -701,17 +718,15 @@ impl MobAiState {
         self.last_path_ticks.lock().unwrap().remove(&uuid);
         self.path_steps.lock().unwrap().remove(&uuid);
         self.path_endpoints.lock().unwrap().remove(&uuid);
-        self.planned_velocities.lock().unwrap().remove(&uuid);
         self.disabled_mobs.lock().unwrap().remove(&uuid);
         self.frozen_out_of_bounds_mobs.lock().unwrap().remove(&uuid);
         self.grace_period_mobs.lock().unwrap().remove(&uuid);
-        self.last_applied_yaws.lock().unwrap().remove(&uuid);
     }
 
     pub fn get_metrics(&self) -> MobAiMetrics {
         MobAiMetrics {
             active_path_jobs: self.active_path_jobs.lock().unwrap().len(),
-            active_velocity_jobs: self.active_velocity_jobs.lock().unwrap().len(),
+            active_velocity_jobs: 0,
             total_worker_threads: self.worker_pool.current_num_threads(),
             managed_mobs_count: self
                 .active_mobs_count
@@ -719,9 +734,7 @@ impl MobAiState {
             total_paths_completed: self
                 .paths_completed
                 .load(std::sync::atomic::Ordering::Relaxed),
-            total_velocities_completed: self
-                .velocities_completed
-                .load(std::sync::atomic::Ordering::Relaxed),
+            total_velocities_completed: 0,
         }
     }
 }
@@ -763,45 +776,34 @@ struct PlayerSnapshot {
     chunk_pos: Vector2<i32>,
 }
 
-fn get_mob_helper(entity_base: &dyn EntityBase) -> Option<&dyn Mob> {
-    if let Some(creeper) = entity_base.cast_any().downcast_ref::<CreeperEntity>() {
-        return Some(creeper as &dyn Mob);
-    }
-    if let Some(skeleton) = entity_base.cast_any().downcast_ref::<SkeletonEntity>() {
-        return Some(skeleton as &dyn Mob);
-    }
-    if let Some(zombie) = entity_base.cast_any().downcast_ref::<ZombieEntity>() {
-        return Some(zombie as &dyn Mob);
-    }
-    None
-}
-
 fn update_pumpkin_look_target(entity_base: &dyn EntityBase, target_pos: Vector3<f64>) {
-    if let Some(mob) = get_mob_helper(entity_base) {
-        let mob_entity = mob.get_mob_entity();
-        let mut look_control = mob_entity.look_control.lock().unwrap();
-        look_control.look_at_position(mob, target_pos);
+    let entity = entity_base.get_entity();
+    let eye_pos = entity_base.get_eye_pos();
+
+    let xd = target_pos.x - eye_pos.x;
+    let yd = target_pos.y - eye_pos.y;
+    let zd = target_pos.z - eye_pos.z;
+    let horizontal_distance = (xd * xd + zd * zd).sqrt();
+
+    if horizontal_distance > 1E-7 {
+        let yaw = (zd.atan2(xd).to_degrees() as f32) - 90.0;
+        let pitch = -(yd.atan2(horizontal_distance).to_degrees() as f32);
+
+        let current_head_yaw = entity.head_yaw.load();
+        let target_head_yaw = wrap_degrees(
+            current_head_yaw + wrap_degrees(yaw - current_head_yaw).clamp(-10.0, 10.0),
+        );
+        entity.head_yaw.store(target_head_yaw);
+
+        let current_pitch = entity.pitch.load();
+        let target_pitch =
+            wrap_degrees(current_pitch + wrap_degrees(pitch - current_pitch).clamp(-10.0, 10.0));
+        entity.pitch.store(target_pitch);
     }
 }
 
 fn clear_pumpkin_mob_ai(entity_base: &dyn EntityBase) {
-    if let Some(mob) = get_mob_helper(entity_base) {
-        let mob_entity = mob.get_mob_entity();
-        mob_entity.set_no_ai(false);
-        *mob_entity.goals_selector.lock().unwrap() =
-            pumpkin::entity::ai::goal::goal_selector::GoalSelector::default();
-        *mob_entity.target_selector.lock().unwrap() =
-            pumpkin::entity::ai::goal::goal_selector::GoalSelector::default();
-        if let Ok(mut target) = mob_entity.target.try_lock() {
-            *target = None;
-        }
-        mob_entity.navigator.lock().unwrap().stop();
-        *mob_entity.look_control.lock().unwrap() =
-            pumpkin::entity::ai::control::look_control::LookControl::default();
-        *mob_entity.move_control.lock().unwrap() =
-            Box::new(pumpkin::entity::ai::control::move_control::MoveControl::default());
-
-        let living_entity = &mob_entity.living_entity;
+    if let Some(living_entity) = entity_base.get_living_entity() {
         living_entity.movement_input.store(Vector3::default());
         living_entity
             .jumping
