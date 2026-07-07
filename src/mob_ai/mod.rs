@@ -210,12 +210,6 @@ impl EventHandler<ChunkEntityUnloadEvent> for MobAiState {
 impl MobAiState {
     fn run_tick<'a>(&'a self, server: &'a Arc<Server>, tick: i32) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            println!(
-                "[Cabbage Debug] MobAiState::run_tick called tick={} enabled={}",
-                tick,
-                self.mob_ai_enabled
-                    .load(std::sync::atomic::Ordering::Relaxed)
-            );
             if !self
                 .mob_ai_enabled
                 .load(std::sync::atomic::Ordering::Relaxed)
@@ -376,10 +370,7 @@ impl MobAiState {
                         for entity_base in chunk_entities.iter() {
                             let entity = entity_base.get_entity();
                             let resource_name = entity.entity_type.resource_name.as_ref();
-                            println!(
-                                "[Cabbage Debug] run_tick: entity_uuid={} resource_name={}",
-                                entity.entity_uuid, resource_name
-                            );
+
                             if MOB_JUMP_TYPES.contains(&resource_name) {
                                 entities_to_process.push(entity_base.clone());
                                 active_in_tick_mobs.insert(entity.entity_uuid);

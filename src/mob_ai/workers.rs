@@ -67,11 +67,7 @@ impl MobAiState {
 
             // Sample using only chunk_registry, completely lock-free and Arc<World>-free!
             let grid_opt = BlockGrid::sample_registry(bounds, &chunk_registry);
-            println!(
-                "[Cabbage Debug] workers::spawn_path_job: sampling bounds={:?} grid_ok={}",
-                bounds,
-                grid_opt.is_some()
-            );
+
             let Some(grid) = grid_opt else {
                 return;
             };
@@ -81,11 +77,6 @@ impl MobAiState {
             } else {
                 bidirectional_a_star(&grid, mob_pos, target_pos).map(|vec| VecDeque::from(vec))
             };
-
-            println!(
-                "[Cabbage Debug] workers::spawn_path_job: path found={}",
-                path.is_some()
-            );
 
             let mut path_steps = path_steps.lock().unwrap();
             if let Some(path) = path {
