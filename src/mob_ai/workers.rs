@@ -40,7 +40,6 @@ impl MobAiState {
     pub fn spawn_path_job(
         &self,
         uuid: Uuid,
-        world: Arc<pumpkin::world::World>,
         mob_pos: BlockPos,
         target_pos: BlockPos,
         player_tree: Option<Arc<PlayerSearchTree>>,
@@ -52,9 +51,12 @@ impl MobAiState {
             .unwrap()
             .insert(uuid, (mob_pos, target_pos));
 
+        let bounds = PathBounds::between(mob_pos, target_pos, super::PATH_BOX_OUTSET_BLOCKS);
+
         let active_path_jobs = Arc::clone(&self.active_path_jobs);
         let path_steps = Arc::clone(&self.path_steps);
         let paths_completed = Arc::clone(&self.paths_completed);
+        let chunk_registry = self.chunk_registry_read.clone();
 
         self.worker_pool.spawn(move || {
             let _guard = ActiveJobGuard {
@@ -68,10 +70,8 @@ impl MobAiState {
                 std::thread::current().name()
             );
 
-            let bounds = PathBounds::between(mob_pos, target_pos, super::PATH_BOX_OUTSET_BLOCKS);
-            let Some(grid) = BlockGrid::sample(bounds, |pos| {
-                world.get_block_state(&pos).is_solid_block()
-            }) else {
+            // Sample using only chunk_registry, completely lock-free and Arc<World>-free!
+            let Some(grid) = BlockGrid::sample_registry(bounds, &chunk_registry) else {
                 return;
             };
 

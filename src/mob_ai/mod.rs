@@ -16,7 +16,6 @@ use pumpkin::{
         server::server_tick_start::ServerTickStartEvent,
     },
     server::Server,
-    world::World,
 };
 use pumpkin_data::attributes::Attributes;
 use pumpkin_util::math::{position::BlockPos, vector2::Vector2, vector3::Vector3};
@@ -74,6 +73,9 @@ pub(crate) struct MobAiState {
     /// Last applied rotation yaw based on planned velocity.
     pub(crate) last_applied_yaws: Mutex<HashMap<Uuid, f32>>,
     pub(crate) active_mobs_count: std::sync::atomic::AtomicUsize,
+    pub(crate) chunk_registry_read: types::ChunkRegistryRead,
+    pub(crate) chunk_registry_write: Arc<Mutex<types::ChunkRegistryWrite>>,
+    pub(crate) mob_ai_enabled: std::sync::atomic::AtomicBool,
 }
 
 pub struct MobAiMetrics {
@@ -94,6 +96,8 @@ impl Default for MobAiState {
             .build()
             .expect("failed to build Cabbage mob AI worker pool");
 
+        let (chunk_registry_write, chunk_registry_read) = flashmap::new();
+
         Self {
             worker_pool: Arc::new(worker_pool),
             last_path_ticks: Mutex::new(HashMap::new()),
@@ -113,6 +117,9 @@ impl Default for MobAiState {
             last_player_positions: Mutex::new(HashMap::new()),
             last_applied_yaws: Mutex::new(HashMap::new()),
             active_mobs_count: std::sync::atomic::AtomicUsize::new(0),
+            chunk_registry_read,
+            chunk_registry_write: Arc::new(Mutex::new(chunk_registry_write)),
+            mob_ai_enabled: std::sync::atomic::AtomicBool::new(true),
         }
     }
 }
@@ -218,11 +225,46 @@ impl EventHandler<ChunkEntityUnloadEvent> for MobAiState {
 impl MobAiState {
     fn run_tick<'a>(&'a self, server: &'a Arc<Server>, tick: i32) -> BoxFuture<'a, ()> {
         Box::pin(async move {
+            if !self
+                .mob_ai_enabled
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                return;
+            }
             log::trace!(
                 "MobAiState::run_tick tick={} thread={:?}",
                 tick,
                 std::thread::current().name()
             );
+
+            // Periodically sweep registry to remove chunks that are no longer loaded in any world
+            if tick % 100 == 0 {
+                let mut write = self.chunk_registry_write.lock().unwrap();
+                let mut to_remove = Vec::new();
+                {
+                    let guard = self.chunk_registry_read.guard();
+                    for (&(cx, cz), _) in guard.iter() {
+                        let chunk_pos = Vector2::new(cx, cz);
+                        let mut loaded = false;
+                        for world in server.worlds.load().iter() {
+                            if world.level.is_chunk_loaded(&chunk_pos) {
+                                loaded = true;
+                                break;
+                            }
+                        }
+                        if !loaded {
+                            to_remove.push((cx, cz));
+                        }
+                    }
+                }
+                if !to_remove.is_empty() {
+                    let mut write_guard = write.guard();
+                    for key in to_remove {
+                        write_guard.remove(key);
+                    }
+                    write_guard.publish();
+                }
+            }
 
             let mut active_mobs = Vec::new();
 
@@ -253,7 +295,6 @@ impl MobAiState {
 
             struct PathJobToSpawn {
                 uuid: Uuid,
-                world: Arc<World>,
                 mob_pos: BlockPos,
                 target_pos: BlockPos,
                 player_tree: Option<Arc<PlayerSearchTree>>,
@@ -271,31 +312,31 @@ impl MobAiState {
                     let player_pos = player.get_entity().pos.load();
                     let player_block = BlockPos::floored_v(player_pos);
 
-                    let needs_update = if last_player_positions.get(&player_uuid) != Some(&player_block) {
-                        last_player_positions.insert(player_uuid, player_block);
-                        true
-                    } else {
-                        false
-                    };
+                    let needs_update =
+                        if last_player_positions.get(&player_uuid) != Some(&player_block) {
+                            last_player_positions.insert(player_uuid, player_block);
+                            true
+                        } else {
+                            false
+                        };
 
                     if needs_update {
-                        players_to_update.push((player_uuid, player_block, world.clone()));
+                        players_to_update.push((player_uuid, player_block));
                     }
                 }
             }
 
             if !players_to_update.is_empty() {
-                for (player_uuid, player_block, world) in players_to_update {
+                for (player_uuid, player_block) in players_to_update {
                     let player_trees_clone = Arc::clone(&self.player_trees);
+                    let bounds = PathBounds {
+                        min: player_block.add(-6, -4, -6),
+                        max: player_block.add(6, 4, 6),
+                    };
+
+                    let chunk_registry = self.chunk_registry_read.clone();
                     self.worker_pool.spawn(move || {
-                        // bounds region: +-6 horizontally, +-4 vertically
-                        let bounds = PathBounds {
-                            min: player_block.add(-6, -4, -6),
-                            max: player_block.add(6, 4, 6),
-                        };
-                        if let Some(grid) = BlockGrid::sample(bounds, |pos| {
-                            world.get_block_state(&pos).is_solid_block()
-                        }) {
+                        if let Some(grid) = BlockGrid::sample_registry(bounds, &chunk_registry) {
                             let tree = generate_player_tree(&grid, player_block);
                             player_trees_clone
                                 .lock()
@@ -307,15 +348,20 @@ impl MobAiState {
             }
 
             for world in server.worlds.load().iter() {
-                let players: Vec<PlayerSnapshot> = world.players.load().iter().map(|player| {
-                    let player_entity = player.get_entity();
-                    PlayerSnapshot {
-                        uuid: player_entity.entity_uuid,
-                        block_pos: BlockPos::floored_v(player_entity.pos.load()),
-                        eye_pos: player_entity.get_eye_pos(),
-                        chunk_pos: player_entity.chunk_pos.load(),
-                    }
-                }).collect();
+                let players: Vec<PlayerSnapshot> = world
+                    .players
+                    .load()
+                    .iter()
+                    .map(|player| {
+                        let player_entity = player.get_entity();
+                        PlayerSnapshot {
+                            uuid: player_entity.entity_uuid,
+                            block_pos: BlockPos::floored_v(player_entity.pos.load()),
+                            eye_pos: player_entity.get_eye_pos(),
+                            chunk_pos: player_entity.chunk_pos.load(),
+                        }
+                    })
+                    .collect();
 
                 if players.is_empty() {
                     continue;
@@ -464,9 +510,9 @@ impl MobAiState {
 
                     let mut should_start = false;
                     if active_path_jobs.insert(uuid) {
-                        let should_attempt = last_path_ticks
-                            .get(&uuid)
-                            .is_none_or(|last_tick| i64::from(tick) - i64::from(*last_tick) >= interval);
+                        let should_attempt = last_path_ticks.get(&uuid).is_none_or(|last_tick| {
+                            i64::from(tick) - i64::from(*last_tick) >= interval
+                        });
                         if should_attempt {
                             last_path_ticks.insert(uuid, tick);
                             should_start = true;
@@ -494,7 +540,6 @@ impl MobAiState {
 
                     path_jobs_to_spawn.push(PathJobToSpawn {
                         uuid,
-                        world: world.clone(),
                         mob_pos,
                         target_pos,
                         player_tree,
@@ -547,13 +592,7 @@ impl MobAiState {
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
             for job in path_jobs_to_spawn {
-                self.spawn_path_job(
-                    job.uuid,
-                    job.world,
-                    job.mob_pos,
-                    job.target_pos,
-                    job.player_tree,
-                );
+                self.spawn_path_job(job.uuid, job.mob_pos, job.target_pos, job.player_tree);
             }
 
             if should_update_velocity {
@@ -569,7 +608,8 @@ impl MobAiState {
                 self.spawn_velocity_jobs(&sorted_active_mobs);
             }
 
-            self.active_mobs_count.store(active_mobs.len(), std::sync::atomic::Ordering::Relaxed);
+            self.active_mobs_count
+                .store(active_mobs.len(), std::sync::atomic::Ordering::Relaxed);
         })
     }
 }
@@ -584,10 +624,51 @@ impl MobAiState {
 
         *self.mob_locations.lock().unwrap() = MobLocationTable::from_entries(entries);
     }
+    pub(crate) fn register_chunk(
+        &self,
+        chunk_pos: Vector2<i32>,
+        chunk_data: Arc<pumpkin_world::chunk::ChunkData>,
+    ) {
+        if !self
+            .mob_ai_enabled
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
+        let mut write = self.chunk_registry_write.lock().unwrap();
+        let mut write_guard = write.guard();
+        write_guard.insert(
+            (chunk_pos.x, chunk_pos.y),
+            Arc::new(types::ChunkPassability::new(Some(chunk_data))),
+        );
+        write_guard.publish();
+    }
 
+    pub(crate) fn update_block(
+        &self,
+        block_pos: BlockPos,
+        block_state: &'static pumpkin_data::Block,
+    ) {
+        if !self
+            .mob_ai_enabled
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
+        let chunk_pos = (block_pos.0.x >> 4, block_pos.0.z >> 4);
+        let rx = (block_pos.0.x & 15) as usize;
+        let rz = (block_pos.0.z & 15) as usize;
 
-
-
+        let guard = self.chunk_registry_read.guard();
+        if let Some(chunk) = guard.get(&chunk_pos) {
+            chunk.set_solid(
+                rx,
+                block_pos.0.y,
+                rz,
+                block_state.default_state.is_solid_block(),
+            );
+        }
+    }
 
     fn ensure_pumpkin_mob_ai_disabled(&self, entity_base: &dyn EntityBase, uuid: Uuid) -> bool {
         let is_newly_disabled = self.disabled_mobs.lock().unwrap().insert(uuid);
@@ -598,6 +679,12 @@ impl MobAiState {
     }
 
     fn register_managed_mob(&self, _world_uuid: Uuid, entity_base: &dyn EntityBase) {
+        if !self
+            .mob_ai_enabled
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
         let entity = entity_base.get_entity();
         if !MOB_JUMP_TYPES.contains(&entity.entity_type.resource_name) {
             return;
@@ -621,14 +708,14 @@ impl MobAiState {
         self.last_applied_yaws.lock().unwrap().remove(&uuid);
     }
 
-
-
     pub fn get_metrics(&self) -> MobAiMetrics {
         MobAiMetrics {
             active_path_jobs: self.active_path_jobs.lock().unwrap().len(),
             active_velocity_jobs: self.active_velocity_jobs.lock().unwrap().len(),
             total_worker_threads: self.worker_pool.current_num_threads(),
-            managed_mobs_count: self.active_mobs_count.load(std::sync::atomic::Ordering::Relaxed),
+            managed_mobs_count: self
+                .active_mobs_count
+                .load(std::sync::atomic::Ordering::Relaxed),
             total_paths_completed: self
                 .paths_completed
                 .load(std::sync::atomic::Ordering::Relaxed),
@@ -722,5 +809,54 @@ fn clear_pumpkin_mob_ai(entity_base: &dyn EntityBase) {
         living_entity
             .jumping_cooldown
             .store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl EventHandler<pumpkin::plugin::api::events::world::chunk_send::ChunkSend> for MobAiState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a pumpkin::plugin::api::events::world::chunk_send::ChunkSend,
+    ) -> BoxFuture<'a, ()> {
+        let chunk_pos = Vector2::new(event.chunk.x, event.chunk.z);
+        let chunk_data = Arc::clone(&event.chunk);
+        self.register_chunk(chunk_pos, chunk_data);
+        Box::pin(async move {})
+    }
+
+    fn handle_blocking<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        _event: &'a mut pumpkin::plugin::api::events::world::chunk_send::ChunkSend,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async {})
+    }
+}
+
+impl EventHandler<pumpkin::plugin::api::events::block::block_place::BlockPlaceEvent>
+    for MobAiState
+{
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a pumpkin::plugin::api::events::block::block_place::BlockPlaceEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            self.update_block(event.block_position, event.block_placed);
+        })
+    }
+}
+
+impl EventHandler<pumpkin::plugin::api::events::block::block_break::BlockBreakEvent>
+    for MobAiState
+{
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a pumpkin::plugin::api::events::block::block_break::BlockBreakEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            self.update_block(event.block_position, &pumpkin_data::Block::AIR);
+        })
     }
 }

@@ -37,7 +37,7 @@ use ruzstd::{
     encoding::{CompressionLevel, compress_to_vec},
 };
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 use sysinfo::{Pid, System, get_current_pid};
 use uuid::Uuid;
 
@@ -98,7 +98,7 @@ impl CabbagePlugin {
 }
 
 struct MetricsReporterState {
-    sys: Mutex<System>,
+    sys: Arc<Mutex<System>>,
     pid: Pid,
     cached_map_chunks: Arc<AtomicUsize>,
     metrics_log: AtomicBool,
@@ -107,6 +107,10 @@ struct MetricsReporterState {
     last_paths_completed: std::sync::atomic::AtomicUsize,
     last_velocities_completed: std::sync::atomic::AtomicUsize,
     last_metrics_time: Mutex<std::time::Instant>,
+
+    last_app_ram_bytes: Arc<AtomicU64>,
+    last_chunk_ram_bytes: Arc<AtomicU64>,
+    ram_scanning: Arc<AtomicBool>,
 }
 
 impl MetricsReporterState {
@@ -114,7 +118,7 @@ impl MetricsReporterState {
         let sys = System::new();
         let pid = get_current_pid().expect("Failed to get current process ID");
         Self {
-            sys: Mutex::new(sys),
+            sys: Arc::new(Mutex::new(sys)),
             pid,
             cached_map_chunks: Arc::new(AtomicUsize::new(0)),
             metrics_log: AtomicBool::new(false),
@@ -123,6 +127,10 @@ impl MetricsReporterState {
             last_paths_completed: std::sync::atomic::AtomicUsize::new(0),
             last_velocities_completed: std::sync::atomic::AtomicUsize::new(0),
             last_metrics_time: Mutex::new(std::time::Instant::now()),
+
+            last_app_ram_bytes: Arc::new(AtomicU64::new(0)),
+            last_chunk_ram_bytes: Arc::new(AtomicU64::new(0)),
+            ram_scanning: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -130,11 +138,20 @@ impl MetricsReporterState {
 #[derive(Serialize, Deserialize)]
 struct PluginConfig {
     metrics_log: bool,
+    #[serde(default = "default_true")]
+    mob_ai: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for PluginConfig {
     fn default() -> Self {
-        Self { metrics_log: false }
+        Self {
+            metrics_log: false,
+            mob_ai: true,
+        }
     }
 }
 
@@ -266,6 +283,27 @@ impl Plugin for CabbagePlugin {
                 .await;
             context
                 .register_event::<ChunkEntityUnloadEvent, _>(
+                    self.mob_ai_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<pumpkin::plugin::api::events::world::chunk_send::ChunkSend, _>(
+                    self.mob_ai_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<pumpkin::plugin::api::events::block::block_place::BlockPlaceEvent, _>(
+                    self.mob_ai_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<pumpkin::plugin::api::events::block::block_break::BlockBreakEvent, _>(
                     self.mob_ai_state.clone(),
                     EventPriority::Normal,
                     false,
@@ -929,21 +967,25 @@ impl MetricsReporterState {
             .unwrap_or_default();
 
         self.metrics_log.store(config.metrics_log, Ordering::SeqCst);
+        self.mob_ai_state
+            .mob_ai_enabled
+            .store(config.mob_ai, Ordering::SeqCst);
 
         if let Ok(mut config_path) = self.config_path.lock() {
             *config_path = Some(path);
         }
 
-        self.save_config(config.metrics_log);
+        self.save_config(config.metrics_log, config.mob_ai);
     }
 
     fn toggle_metrics_log(&self) -> bool {
         let enabled = !self.metrics_log.fetch_xor(true, Ordering::SeqCst);
-        self.save_config(enabled);
+        let mob_ai = self.mob_ai_state.mob_ai_enabled.load(Ordering::SeqCst);
+        self.save_config(enabled, mob_ai);
         enabled
     }
 
-    fn save_config(&self, metrics_log: bool) {
+    fn save_config(&self, metrics_log: bool, mob_ai: bool) {
         let path = self.config_path.lock().ok().and_then(|path| path.clone());
         let Some(path) = path else {
             return;
@@ -959,7 +1001,10 @@ impl MetricsReporterState {
             return;
         }
 
-        let config = PluginConfig { metrics_log };
+        let config = PluginConfig {
+            metrics_log,
+            mob_ai,
+        };
         let Ok(contents) = serde_json::to_string_pretty(&config) else {
             return;
         };
@@ -976,25 +1021,14 @@ impl MetricsReporterState {
         let tps = server.get_tps().min(server.basic_config.tps as f64);
         let mspt = server.get_mspt();
 
-        let app_ram_mib = {
-            let mut sys = self.sys.lock().unwrap();
-            sys.refresh_process(self.pid);
-            if let Some(process) = sys.process(self.pid) {
-                process.memory() as f64 / (1024.0 * 1024.0)
-            } else {
-                0.0
-            }
-        };
+        let app_ram_mib = self.last_app_ram_bytes.load(Ordering::SeqCst) as f64 / (1024.0 * 1024.0);
+        let loaded_chunks_ram = self.last_chunk_ram_bytes.load(Ordering::SeqCst);
 
         let mut loaded_chunks_total = 0;
-        let mut loaded_chunks_ram = 0;
         let mut loaded_entity_chunks = 0;
 
         for world in server.worlds.load().iter() {
             loaded_chunks_total += world.level.loaded_chunks.len();
-            for ref_entry in world.level.loaded_chunks.iter() {
-                loaded_chunks_ram += estimate_chunk_ram(ref_entry.value());
-            }
             loaded_entity_chunks += world.level.loaded_entity_chunks_count();
         }
 
@@ -1054,6 +1088,43 @@ impl EventHandler<ServerTickStartEvent> for MetricsReporterState {
         Box::pin(async move {
             if !self.metrics_log.load(Ordering::SeqCst) || event.tick % 40 != 0 {
                 return;
+            }
+
+            if !self.ram_scanning.swap(true, Ordering::SeqCst) {
+                // Collect chunks to scan on background thread
+                let mut chunk_copies = Vec::new();
+                for world in server.worlds.load().iter() {
+                    for entry in world.level.loaded_chunks.iter() {
+                        chunk_copies.push(Arc::clone(entry.value()));
+                    }
+                }
+
+                let sys = Arc::clone(&self.sys);
+                let pid = self.pid;
+                let last_app_ram_bytes = Arc::clone(&self.last_app_ram_bytes);
+                let last_chunk_ram_bytes = Arc::clone(&self.last_chunk_ram_bytes);
+                let ram_scanning = Arc::clone(&self.ram_scanning);
+
+                std::thread::spawn(move || {
+                    let app_ram = {
+                        let mut sys_lock = sys.lock().unwrap();
+                        sys_lock.refresh_process(pid);
+                        if let Some(process) = sys_lock.process(pid) {
+                            process.memory()
+                        } else {
+                            0
+                        }
+                    };
+                    last_app_ram_bytes.store(app_ram, Ordering::SeqCst);
+
+                    let mut chunk_ram = 0;
+                    for chunk in chunk_copies {
+                        chunk_ram += estimate_chunk_ram(&chunk);
+                    }
+                    last_chunk_ram_bytes.store(chunk_ram as u64, Ordering::SeqCst);
+
+                    ram_scanning.store(false, Ordering::SeqCst);
+                });
             }
 
             println!("{}", self.collect_metrics(server).format());

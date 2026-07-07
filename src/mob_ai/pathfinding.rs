@@ -65,6 +65,7 @@ pub struct BlockGrid {
 }
 
 impl BlockGrid {
+    #[allow(dead_code)]
     pub fn sample(
         mut bounds: PathBounds,
         mut is_closed: impl FnMut(BlockPos) -> bool,
@@ -85,6 +86,52 @@ impl BlockGrid {
             for y in bounds.min.0.y..=bounds.max.0.y {
                 for x in bounds.min.0.x..=bounds.max.0.x {
                     closed.push(is_closed(BlockPos::new(x, y, z)));
+                }
+            }
+        }
+
+        Some(Self {
+            bounds,
+            size_x,
+            size_y,
+            size_z,
+            closed,
+        })
+    }
+
+    pub fn sample_registry(
+        mut bounds: PathBounds,
+        chunk_registry: &crate::mob_ai::types::ChunkRegistryRead,
+    ) -> Option<Self> {
+        normalize_bounds(&mut bounds);
+
+        let size_x = axis_len(bounds.min.0.x, bounds.max.0.x)?;
+        let size_y = axis_len(bounds.min.0.y, bounds.max.0.y)?;
+        let size_z = axis_len(bounds.min.0.z, bounds.max.0.z)?;
+        let volume = size_x.checked_mul(size_y)?.checked_mul(size_z)?;
+        if volume > MAX_PATH_GRID_VOLUME {
+            return None;
+        }
+
+        let mut closed = Vec::with_capacity(volume);
+        let guard = chunk_registry.guard();
+
+        for z in bounds.min.0.z..=bounds.max.0.z {
+            for y in bounds.min.0.y..=bounds.max.0.y {
+                let chunk_z = z >> 4;
+                let rz = (z & 15) as usize;
+
+                for x in bounds.min.0.x..=bounds.max.0.x {
+                    let chunk_x = x >> 4;
+                    let rx = (x & 15) as usize;
+
+                    let chunk_pos = (chunk_x, chunk_z);
+                    let is_solid = if let Some(chunk) = guard.get(&chunk_pos) {
+                        chunk.is_solid(rx, y, rz)
+                    } else {
+                        false
+                    };
+                    closed.push(is_solid);
                 }
             }
         }
