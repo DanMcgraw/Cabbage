@@ -461,7 +461,7 @@ impl MobAiState {
                         let displacement = target - current_pos;
                         let distance = displacement.length();
 
-                        let new_pos = if distance <= speed {
+                        let mut new_pos = if distance <= speed {
                             if let Some(steps) = path_steps.get_mut(&uuid) {
                                 steps.pop_front();
                             }
@@ -470,6 +470,15 @@ impl MobAiState {
                             let direction = displacement * (1.0 / distance);
                             current_pos + direction * speed
                         };
+
+                        // Prevent clipping by stepping up/down when horizontally close to the next node
+                        let horizontal_dist =
+                            Vector3::new(displacement.x, 0.0, displacement.z).length();
+                        if horizontal_dist < 0.8 {
+                            new_pos.y = target.y;
+                        } else {
+                            new_pos.y = current_pos.y;
+                        }
 
                         entity.set_pos(new_pos);
 
