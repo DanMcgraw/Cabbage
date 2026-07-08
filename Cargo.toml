@@ -14,11 +14,11 @@ crate-type = ["cdylib"]
 
 [dependencies]
 ctor = "0.2"
-pumpkin = { path = "../../pumpkin" }
-pumpkin-data = { path = "../../pumpkin-data" }
-pumpkin-nbt = { path = "../../pumpkin-nbt" }
-pumpkin-util = { path = "../../pumpkin-util" }
-pumpkin-world = { path = "../../pumpkin-world" }
+pumpkin = { path = "../Pumpkin/pumpkin" }
+pumpkin-data = { path = "../Pumpkin/pumpkin-data" }
+pumpkin-nbt = { path = "../Pumpkin/pumpkin-nbt" }
+pumpkin-util = { path = "../Pumpkin/pumpkin-util" }
+pumpkin-world = { path = "../Pumpkin/pumpkin-world" }
 rayon = "1.12"
 ruzstd = "0.8.3"
 serde = { version = "1.0", features = ["derive"] }
