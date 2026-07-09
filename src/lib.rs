@@ -39,6 +39,7 @@ use pumpkin::{
             craft_item::CraftItemEvent,
             food_level_change::FoodLevelChangeEvent,
             furnace_extract::FurnaceExtractEvent,
+            inventory_interact::InventoryClickEvent,
             inventory_drag::InventoryDragEvent,
             inventory_open::InventoryOpenEvent,
             player_death::PlayerDeathEvent,
@@ -307,7 +308,7 @@ impl Plugin for CabbagePlugin {
 
             let events_permission = Permission::new(
                 EVENTS_PERMISSION,
-                "Allows toggling Phase 2/3 event logging to chat and output.log.",
+                "Allows toggling Phase 2/3/4 event logging to chat and output.log.",
                 PermissionDefault::Op(PermissionLvl::Two),
             );
 
@@ -519,6 +520,13 @@ impl Plugin for CabbagePlugin {
                 )
                 .await;
             context
+                .register_event::<InventoryClickEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
                 .register_event::<InventoryDragEvent, _>(
                     self.event_log_state.clone(),
                     EventPriority::Normal,
@@ -661,7 +669,7 @@ impl CommandExecutor for CabbageInfoExecutor {
         Box::pin(async move {
             sender
                 .send_message(TextComponent::text(
-                    "Cabbage commands:\n/cleardrops - Queue dropped item cleanup.\n/metrics - Print current metrics once.\n/metrics log - Toggle periodic console metric logging.\n/events - Toggle Phase 2/3 event logging to chat and output.log.",
+                    "Cabbage commands:\n/cleardrops - Queue dropped item cleanup.\n/metrics - Print current metrics once.\n/metrics log - Toggle periodic console metric logging.\n/events - Toggle Phase 2/3/4 event logging to chat and output.log.",
                 ))
                 .await;
 
@@ -691,7 +699,7 @@ impl CommandExecutor for EventsToggleExecutor {
 
             sender
                 .send_message(
-                    TextComponent::text("Phase 2/3 event logging is ")
+                    TextComponent::text("Phase 2/3/4 event logging is ")
                         .add_child(TextComponent::text(state_text).color_named(color))
                         .add_text(". Events are written to output.log in the Cabbage data folder."),
                 )
@@ -1137,7 +1145,7 @@ fn metrics_command_tree(state: Arc<MetricsReporterState>) -> CommandTree {
 fn events_command_tree(state: Arc<EventLogState>) -> CommandTree {
     CommandTree::new(
         EVENTS_NAMES,
-        "Toggle Phase 2/3 event logging to chat and output.log",
+        "Toggle Phase 2/3/4 event logging to chat and output.log",
     )
     .execute(EventsToggleExecutor { state })
 }
@@ -1756,6 +1764,46 @@ impl EventHandler<InventoryOpenEvent> for EventLogState {
             let message = format!(
                 "[Cabbage Events] InventoryOpenEvent: player={}, window_type={:?}, block_pos={:?}",
                 event.player.gameprofile.name, event.window_type, event.block_pos
+            );
+
+            event
+                .player
+                .send_system_message(&TextComponent::text(message.clone()))
+                .await;
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<InventoryClickEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a InventoryClickEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let clicked_name = event
+                .clicked_item
+                .as_ref()
+                .map(|i| i.item.registry_key.as_ref())
+                .unwrap_or("empty");
+            let cursor_name = event
+                .cursor
+                .as_ref()
+                .map(|i| i.item.registry_key.as_ref())
+                .unwrap_or("empty");
+            let message = format!(
+                "[Cabbage Events] InventoryClickEvent: player={}, window_type={:?}, slot={}, click_type={:?}, clicked={}, cursor={}",
+                event.player.gameprofile.name,
+                event.window_type,
+                event.slot,
+                event.click_type,
+                clicked_name,
+                cursor_name
             );
 
             event
