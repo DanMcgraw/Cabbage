@@ -23,38 +23,27 @@ use pumpkin::{
         api::events::block::{
             block_damage::BlockDamageEvent, block_drop_item::BlockDropItemEvent,
             block_piston_extend::BlockPistonExtendEvent,
-            block_piston_retract::BlockPistonRetractEvent,
-            brew::BrewEvent, furnace_burn::FurnaceBurnEvent, furnace_smelt::FurnaceSmeltEvent,
+            block_piston_retract::BlockPistonRetractEvent, brew::BrewEvent,
+            furnace_burn::FurnaceBurnEvent, furnace_smelt::FurnaceSmeltEvent,
         },
         api::events::entity::{
             ChunkEntityLoadEvent, ChunkEntityUnloadEvent, EntityRemoveEvent, EntitySpawnEvent,
-            entity_breed::EntityBreedEvent,
-            entity_combust_by_entity::EntityCombustByEntityEvent,
-            entity_damage::EntityDamageEvent,
-            entity_damage_by_entity::EntityDamageByEntityEvent,
-            entity_death::EntityDeathEvent,
-            entity_explode::EntityExplodeEvent,
-            entity_pickup_item::EntityPickupItemEvent,
-            entity_shoot_bow::EntityShootBowEvent,
-            entity_tame::EntityTameEvent,
-            entity_target::EntityTargetEvent,
+            entity_breed::EntityBreedEvent, entity_combust_by_entity::EntityCombustByEntityEvent,
+            entity_damage::EntityDamageEvent, entity_damage_by_entity::EntityDamageByEntityEvent,
+            entity_death::EntityDeathEvent, entity_explode::EntityExplodeEvent,
+            entity_pickup_item::EntityPickupItemEvent, entity_shoot_bow::EntityShootBowEvent,
+            entity_tame::EntityTameEvent, entity_target::EntityTargetEvent,
             entity_target_living_entity::EntityTargetLivingEntityEvent,
-            entity_transform::EntityTransformEvent,
-            explosion_prime::ExplosionPrimeEvent,
-            potion_splash::PotionSplashEvent,
-            projectile_hit::ProjectileHitEvent,
+            entity_transform::EntityTransformEvent, explosion_prime::ExplosionPrimeEvent,
+            potion_splash::PotionSplashEvent, projectile_hit::ProjectileHitEvent,
             projectile_launch::ProjectileLaunchEvent,
         },
         api::events::inventory::InventoryMoveItemEvent,
         api::events::player::{
-            craft_item::CraftItemEvent,
-            food_level_change::FoodLevelChangeEvent,
-            furnace_extract::FurnaceExtractEvent,
-            inventory_interact::InventoryClickEvent,
-            inventory_drag::InventoryDragEvent,
-            inventory_open::InventoryOpenEvent,
-            player_death::PlayerDeathEvent,
-            player_drop_item::PlayerDropItemEvent,
+            craft_item::CraftItemEvent, food_level_change::FoodLevelChangeEvent,
+            furnace_extract::FurnaceExtractEvent, inventory_drag::InventoryDragEvent,
+            inventory_interact::InventoryClickEvent, inventory_open::InventoryOpenEvent,
+            player_death::PlayerDeathEvent, player_drop_item::PlayerDropItemEvent,
         },
         server::server_tick_start::ServerTickStartEvent,
     },
@@ -74,8 +63,10 @@ use std::sync::atomic::{AtomicU64, AtomicUsize};
 use sysinfo::{Pid, System, get_current_pid};
 use uuid::Uuid;
 
+mod mmo;
 mod mob_ai;
 
+use mmo::config::PluginConfig;
 use mob_ai::MobAiState;
 
 const PLUGIN_NAME: &str = "Cabbage";
@@ -120,6 +111,7 @@ struct CabbagePlugin {
     dropped_item_cleanup_state: Arc<DroppedItemCleanupState>,
     metrics_reporter_state: Arc<MetricsReporterState>,
     event_log_state: Arc<EventLogState>,
+    mmo_state: Option<Arc<mmo::MmoState>>,
 }
 
 impl CabbagePlugin {
@@ -131,6 +123,7 @@ impl CabbagePlugin {
             dropped_item_cleanup_state: Arc::new(DroppedItemCleanupState::default()),
             metrics_reporter_state: Arc::new(MetricsReporterState::new(mob_ai_state)),
             event_log_state: Arc::new(EventLogState::default()),
+            mmo_state: None,
         }
     }
 }
@@ -169,26 +162,6 @@ impl MetricsReporterState {
             last_app_ram_bytes: Arc::new(AtomicU64::new(0)),
             last_chunk_ram_bytes: Arc::new(AtomicU64::new(0)),
             ram_scanning: Arc::new(AtomicBool::new(false)),
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-struct PluginConfig {
-    metrics_log: bool,
-    #[serde(default = "default_true")]
-    mob_ai: bool,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-impl Default for PluginConfig {
-    fn default() -> Self {
-        Self {
-            metrics_log: false,
-            mob_ai: true,
         }
     }
 }
@@ -335,6 +308,16 @@ impl Plugin for CabbagePlugin {
             self.event_log_state
                 .set_log_path(context.get_data_folder().join(EVENT_LOG_FILE));
 
+            match mmo::MmoState::new(context.get_data_folder()).await {
+                Ok(state) => {
+                    self.mmo_state = Some(state);
+                }
+                Err(error) => {
+                    println!("[Cabbage] Failed to initialize MMO module: {error}");
+                    self.mmo_state = None;
+                }
+            }
+
             spawn_disk_scan(
                 context.server.worlds.load().iter().cloned().collect(),
                 self.metrics_reporter_state.cached_map_chunks.clone(),
@@ -438,6 +421,40 @@ impl Plugin for CabbagePlugin {
                     EVENTS_PERMISSION,
                 )
                 .await;
+
+            if let Some(mmo_state) = self.mmo_state.as_ref() {
+                if let Err(error) = mmo::register_permissions(&context).await {
+                    println!("[Cabbage] Failed to register MMO permissions: {error}");
+                }
+
+                context
+                    .register_event::<pumpkin::plugin::api::events::block::block_break::BlockBreakEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        false,
+                    )
+                    .await;
+                context
+                    .register_event::<EntityDeathEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        false,
+                    )
+                    .await;
+                context
+                    .register_event::<ServerTickStartEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        false,
+                    )
+                    .await;
+                context
+                    .register_command(
+                        mmo::mmo_command_tree(mmo_state.clone()),
+                        mmo::MMO_PERMISSION,
+                    )
+                    .await;
+            }
 
             context
                 .register_event::<BlockDamageEvent, _>(
@@ -674,6 +691,7 @@ impl Plugin for CabbagePlugin {
             context.unregister_command(CLEAR_DROPS_NAMES[0]).await;
             context.unregister_command(METRICS_NAMES[0]).await;
             context.unregister_command(EVENTS_NAMES[0]).await;
+            context.unregister_command(mmo::MMO_NAMES[0]).await;
             Ok(())
         })
     }
@@ -1329,10 +1347,10 @@ impl MetricsSnapshot {
 
 impl MetricsReporterState {
     fn load_config(&self, data_folder: PathBuf) {
-        let path = data_folder.join("config.json");
+        let path = data_folder.join("config.ron");
         let config = fs::read_to_string(&path)
             .ok()
-            .and_then(|contents| serde_json::from_str::<PluginConfig>(&contents).ok())
+            .and_then(|contents| ron::from_str::<PluginConfig>(&contents).ok())
             .unwrap_or_default();
 
         self.metrics_log.store(config.metrics_log, Ordering::SeqCst);
@@ -1370,11 +1388,15 @@ impl MetricsReporterState {
             return;
         }
 
-        let config = PluginConfig {
-            metrics_log,
-            mob_ai,
-        };
-        let Ok(contents) = serde_json::to_string_pretty(&config) else {
+        let mut config = fs::read_to_string(&path)
+            .ok()
+            .and_then(|contents| ron::from_str::<PluginConfig>(&contents).ok())
+            .unwrap_or_default();
+        config.metrics_log = metrics_log;
+        config.mob_ai = mob_ai;
+
+        let Ok(contents) = ron::ser::to_string_pretty(&config, ron::ser::PrettyConfig::default())
+        else {
             return;
         };
 
@@ -1795,10 +1817,7 @@ impl EventHandler<ProjectileHitEvent> for EventLogState {
                 .as_ref()
                 .map(|e| e.get_entity().entity_type.resource_name.as_ref())
                 .unwrap_or("none");
-            let hit_block_name = event
-                .hit_block
-                .map(|b| b.name)
-                .unwrap_or("none");
+            let hit_block_name = event.hit_block.map(|b| b.name).unwrap_or("none");
             let message = format!(
                 "[Cabbage Events] ProjectileHitEvent: projectile={}, hit_entity={}, hit_block={}",
                 event.projectile.get_entity().entity_type.resource_name,
@@ -1824,9 +1843,7 @@ impl EventHandler<PlayerDropItemEvent> for EventLogState {
 
             let message = format!(
                 "[Cabbage Events] PlayerDropItemEvent: player={}, item={}, count={}",
-                event.player.gameprofile.name,
-                event.item.item.registry_key,
-                event.item.item_count
+                event.player.gameprofile.name, event.item.item.registry_key, event.item.item_count
             );
 
             event
@@ -1916,10 +1933,7 @@ impl EventHandler<InventoryDragEvent> for EventLogState {
 
             let message = format!(
                 "[Cabbage Events] InventoryDragEvent: player={}, window_type={:?}, slots={:?}, click_type={:?}",
-                event.player.gameprofile.name,
-                event.window_type,
-                event.slots,
-                event.click_type
+                event.player.gameprofile.name, event.window_type, event.slots, event.click_type
             );
 
             event
@@ -2021,7 +2035,10 @@ impl EventHandler<FurnaceBurnEvent> for EventLogState {
 
             let message = format!(
                 "[Cabbage Events] FurnaceBurnEvent: block={}, pos={:?}, fuel={}, burn_time={}",
-                event.block.name, event.block_position, event.fuel.item.registry_key, event.burn_time
+                event.block.name,
+                event.block_position,
+                event.fuel.item.registry_key,
+                event.burn_time
             );
 
             self.log(&message);
@@ -2059,11 +2076,7 @@ impl EventHandler<FurnaceExtractEvent> for EventLogState {
 }
 
 impl EventHandler<BrewEvent> for EventLogState {
-    fn handle<'a>(
-        &'a self,
-        _server: &'a Arc<Server>,
-        event: &'a BrewEvent,
-    ) -> BoxFuture<'a, ()> {
+    fn handle<'a>(&'a self, _server: &'a Arc<Server>, event: &'a BrewEvent) -> BoxFuture<'a, ()> {
         Box::pin(async move {
             if !self.is_enabled() {
                 return;
@@ -2316,9 +2329,7 @@ impl EventHandler<ExplosionPrimeEvent> for EventLogState {
                 .unwrap_or("none");
             let message = format!(
                 "[Cabbage Events] ExplosionPrimeEvent: entity={}, radius={}, fire={}",
-                entity_name,
-                event.radius,
-                event.fire
+                entity_name, event.radius, event.fire
             );
 
             self.log(&message);
