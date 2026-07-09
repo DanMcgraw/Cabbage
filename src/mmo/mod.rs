@@ -2,10 +2,14 @@ use std::{
     collections::HashMap,
     fs,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicI32, Ordering},
+    },
 };
 
 use pumpkin::{
+    entity::player::Player,
     plugin::{
         BoxFuture, Context, EventHandler,
         api::events::{
@@ -17,6 +21,7 @@ use pumpkin::{
 };
 use pumpkin_util::permission::{Permission, PermissionDefault, PermissionLvl};
 
+pub(crate) mod bossbar;
 pub(crate) mod commands;
 pub(crate) mod config;
 pub(crate) mod db;
@@ -28,6 +33,7 @@ pub use commands::{MMO_NAMES, MMO_PERMISSION, mmo_command_tree};
 pub use config::{LevelCurve, MmoConfig, PluginConfig, SkillConfig};
 pub use skills::SkillId;
 
+use bossbar::BossbarState;
 use commands::MMO_ADMIN_PERMISSION;
 use config::LegacyPluginConfig;
 use db::MmoDatabase;
@@ -41,6 +47,8 @@ pub struct MmoState {
     db: Arc<MmoDatabase>,
     data_folder: PathBuf,
     curves: Mutex<HashMap<SkillId, LevelCurve>>,
+    bossbar_state: BossbarState,
+    last_tick: AtomicI32,
 }
 
 impl MmoState {
@@ -57,6 +65,8 @@ impl MmoState {
             db,
             data_folder,
             curves: Mutex::new(curves),
+            bossbar_state: BossbarState::new(),
+            last_tick: AtomicI32::new(0),
         }))
     }
 
@@ -83,6 +93,40 @@ impl MmoState {
         self.db.clone()
     }
 
+    /// Last server tick observed by this module.
+    pub fn current_tick(&self) -> i32 {
+        self.last_tick.load(Ordering::Relaxed)
+    }
+
+    /// Show or refresh the skill-progress bossbar for a player.
+    ///
+    /// Reads the player's current skill data from the database, computes level
+    /// progress, and updates the transient bossbar.
+    pub async fn show_xp_bossbar(&self, player: &Arc<Player>, skill: SkillId, current_tick: i32) {
+        let uuid = player.gameprofile.id;
+        let curve = self.curve(skill);
+
+        let skill_data = match self.db.get_skill(uuid, skill).await {
+            Ok(data) => data,
+            Err(error) => {
+                log::warn!("[Cabbage MMO] failed to read {skill} skill for bossbar: {error}");
+                return;
+            }
+        };
+
+        let (level, xp_into_level, xp_for_next) = curve.level_for_xp(skill_data.xp);
+        self.bossbar_state
+            .show_skill_progress(
+                player,
+                skill,
+                level,
+                xp_into_level,
+                xp_for_next,
+                current_tick,
+            )
+            .await;
+    }
+
     /// Reload the RON config and rebuild levelling curves.
     pub async fn reload_config(&self) -> Result<(), String> {
         let plugin_config = load_plugin_config(&self.data_folder)?;
@@ -97,6 +141,16 @@ impl MmoState {
 
         Ok(())
     }
+}
+
+/// Callable module-level helper to show a player's skill-progress bossbar.
+///
+/// This is the preferred public API for other modules or plugins that want to
+/// trigger the bossbar without directly calling a method on [`MmoState`].
+#[allow(dead_code)] // public API surface for external callers / future commands
+pub async fn show_xp_bossbar(state: Arc<MmoState>, player: Arc<Player>, skill: SkillId) {
+    let current_tick = state.current_tick();
+    state.show_xp_bossbar(&player, skill, current_tick).await;
 }
 
 fn build_curves(config: &MmoConfig) -> HashMap<SkillId, LevelCurve> {
@@ -171,13 +225,7 @@ impl EventHandler<BlockBreakEvent> for MmoState {
             if !self.is_enabled() {
                 return;
             }
-            events::handle_block_break(
-                self.db(),
-                self.config().message_on_level_up,
-                self.curve(SkillId::Mining),
-                event,
-            )
-            .await;
+            events::handle_block_break(self, event).await;
         })
     }
 }
@@ -192,14 +240,7 @@ impl EventHandler<EntityDeathEvent> for MmoState {
             if !self.is_enabled() {
                 return;
             }
-            events::handle_entity_death(
-                self.db(),
-                self.config().message_on_level_up,
-                self.curve(SkillId::Combat),
-                server.clone(),
-                event,
-            )
-            .await;
+            events::handle_entity_death(self, server.clone(), event).await;
         })
     }
 }
@@ -207,12 +248,12 @@ impl EventHandler<EntityDeathEvent> for MmoState {
 impl EventHandler<ServerTickStartEvent> for MmoState {
     fn handle<'a>(
         &'a self,
-        _server: &'a Arc<Server>,
-        _event: &'a ServerTickStartEvent,
+        server: &'a Arc<Server>,
+        event: &'a ServerTickStartEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            // Currently writes happen immediately on events. A periodic flush or
-            // online-player cache expiry could be added here in the future.
+            self.last_tick.store(event.tick, Ordering::Relaxed);
+            self.bossbar_state.cleanup_expired(server, event.tick).await;
         })
     }
 }
