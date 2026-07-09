@@ -27,6 +27,15 @@ use pumpkin::{
         },
         api::events::entity::{
             ChunkEntityLoadEvent, ChunkEntityUnloadEvent, EntityRemoveEvent, EntitySpawnEvent,
+            entity_damage::EntityDamageEvent,
+            entity_damage_by_entity::EntityDamageByEntityEvent,
+            entity_death::EntityDeathEvent,
+            projectile_hit::ProjectileHitEvent,
+            projectile_launch::ProjectileLaunchEvent,
+        },
+        api::events::player::{
+            food_level_change::FoodLevelChangeEvent,
+            player_death::PlayerDeathEvent,
         },
         server::server_tick_start::ServerTickStartEvent,
     },
@@ -291,7 +300,7 @@ impl Plugin for CabbagePlugin {
 
             let events_permission = Permission::new(
                 EVENTS_PERMISSION,
-                "Allows toggling Phase 2 event logging to chat and output.log.",
+                "Allows toggling Phase 2/3 event logging to chat and output.log.",
                 PermissionDefault::Op(PermissionLvl::Two),
             );
 
@@ -439,6 +448,55 @@ impl Plugin for CabbagePlugin {
                     false,
                 )
                 .await;
+            context
+                .register_event::<EntityDamageEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<EntityDamageByEntityEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<EntityDeathEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<PlayerDeathEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<FoodLevelChangeEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<ProjectileLaunchEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<ProjectileHitEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
 
             Ok(())
         })
@@ -533,7 +591,7 @@ impl CommandExecutor for CabbageInfoExecutor {
         Box::pin(async move {
             sender
                 .send_message(TextComponent::text(
-                    "Cabbage commands:\n/cleardrops - Queue dropped item cleanup.\n/metrics - Print current metrics once.\n/metrics log - Toggle periodic console metric logging.\n/events - Toggle Phase 2 event logging to chat and output.log.",
+                    "Cabbage commands:\n/cleardrops - Queue dropped item cleanup.\n/metrics - Print current metrics once.\n/metrics log - Toggle periodic console metric logging.\n/events - Toggle Phase 2/3 event logging to chat and output.log.",
                 ))
                 .await;
 
@@ -563,7 +621,7 @@ impl CommandExecutor for EventsToggleExecutor {
 
             sender
                 .send_message(
-                    TextComponent::text("Phase 2 event logging is ")
+                    TextComponent::text("Phase 2/3 event logging is ")
                         .add_child(TextComponent::text(state_text).color_named(color))
                         .add_text(". Events are written to output.log in the Cabbage data folder."),
                 )
@@ -1009,7 +1067,7 @@ fn metrics_command_tree(state: Arc<MetricsReporterState>) -> CommandTree {
 fn events_command_tree(state: Arc<EventLogState>) -> CommandTree {
     CommandTree::new(
         EVENTS_NAMES,
-        "Toggle Phase 2 event logging to chat and output.log",
+        "Toggle Phase 2/3 event logging to chat and output.log",
     )
     .execute(EventsToggleExecutor { state })
 }
@@ -1375,6 +1433,211 @@ impl EventHandler<BlockPistonRetractEvent> for EventLogState {
                 event.piston_pos,
                 event.direction,
                 event.moved_blocks.len()
+            );
+
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<EntityDamageEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a EntityDamageEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let message = format!(
+                "[Cabbage Events] EntityDamageEvent: entity={}, damage_type={}, damage={}, final_damage={}",
+                event.entity.get_entity().entity_type.resource_name,
+                event.damage_type.message_id,
+                event.damage,
+                event.final_damage
+            );
+
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<EntityDamageByEntityEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a EntityDamageByEntityEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let attacker_name = event
+                .attacker
+                .as_ref()
+                .map(|a| a.get_entity().entity_type.resource_name.as_ref())
+                .unwrap_or("none");
+            let message = format!(
+                "[Cabbage Events] EntityDamageByEntityEvent: entity={}, damager={}, attacker={}, damage_type={}, damage={}, final_damage={}",
+                event.entity.get_entity().entity_type.resource_name,
+                event.damager.get_entity().entity_type.resource_name,
+                attacker_name,
+                event.damage_type.message_id,
+                event.damage,
+                event.final_damage
+            );
+
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<EntityDeathEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a EntityDeathEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let killer_name = event
+                .killer
+                .as_ref()
+                .map(|k| k.get_entity().entity_type.resource_name.as_ref())
+                .unwrap_or("none");
+            let message = format!(
+                "[Cabbage Events] EntityDeathEvent: entity={}, killer={}, damage_type={}, drops={}, dropped_exp={}",
+                event.entity.get_entity().entity_type.resource_name,
+                killer_name,
+                event.damage_type.message_id,
+                event.drops.len(),
+                event.dropped_exp
+            );
+
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<PlayerDeathEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a PlayerDeathEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let killer_name = event
+                .killer
+                .as_ref()
+                .map(|k| k.get_entity().entity_type.resource_name.as_ref())
+                .unwrap_or("none");
+            let message = format!(
+                "[Cabbage Events] PlayerDeathEvent: player={}, killer={}, damage_type={}, drops={}, dropped_exp={}, keep_inventory={}, keep_level={}",
+                event.player.gameprofile.name,
+                killer_name,
+                event.damage_type.message_id,
+                event.drops.len(),
+                event.dropped_exp,
+                event.keep_inventory,
+                event.keep_level
+            );
+
+            event
+                .player
+                .send_system_message(&TextComponent::text(message.clone()))
+                .await;
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<FoodLevelChangeEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a FoodLevelChangeEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let message = format!(
+                "[Cabbage Events] FoodLevelChangeEvent: player={}, food_level={}",
+                event.player.gameprofile.name, event.food_level
+            );
+
+            event
+                .player
+                .send_system_message(&TextComponent::text(message.clone()))
+                .await;
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<ProjectileLaunchEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a ProjectileLaunchEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let shooter_name = event
+                .shooter
+                .as_ref()
+                .map(|s| s.get_entity().entity_type.resource_name.as_ref())
+                .unwrap_or("none");
+            let message = format!(
+                "[Cabbage Events] ProjectileLaunchEvent: projectile={}, shooter={}",
+                event.projectile.get_entity().entity_type.resource_name,
+                shooter_name
+            );
+
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<ProjectileHitEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a ProjectileHitEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let hit_entity_name = event
+                .hit_entity
+                .as_ref()
+                .map(|e| e.get_entity().entity_type.resource_name.as_ref())
+                .unwrap_or("none");
+            let hit_block_name = event
+                .hit_block
+                .map(|b| b.name)
+                .unwrap_or("none");
+            let message = format!(
+                "[Cabbage Events] ProjectileHitEvent: projectile={}, hit_entity={}, hit_block={}",
+                event.projectile.get_entity().entity_type.resource_name,
+                hit_entity_name,
+                hit_block_name
             );
 
             self.log(&message);
