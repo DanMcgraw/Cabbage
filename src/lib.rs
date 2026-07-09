@@ -24,6 +24,7 @@ use pumpkin::{
             block_damage::BlockDamageEvent, block_drop_item::BlockDropItemEvent,
             block_piston_extend::BlockPistonExtendEvent,
             block_piston_retract::BlockPistonRetractEvent,
+            brew::BrewEvent, furnace_burn::FurnaceBurnEvent, furnace_smelt::FurnaceSmeltEvent,
         },
         api::events::entity::{
             ChunkEntityLoadEvent, ChunkEntityUnloadEvent, EntityRemoveEvent, EntitySpawnEvent,
@@ -33,9 +34,15 @@ use pumpkin::{
             projectile_hit::ProjectileHitEvent,
             projectile_launch::ProjectileLaunchEvent,
         },
+        api::events::inventory::InventoryMoveItemEvent,
         api::events::player::{
+            craft_item::CraftItemEvent,
             food_level_change::FoodLevelChangeEvent,
+            furnace_extract::FurnaceExtractEvent,
+            inventory_drag::InventoryDragEvent,
+            inventory_open::InventoryOpenEvent,
             player_death::PlayerDeathEvent,
+            player_drop_item::PlayerDropItemEvent,
         },
         server::server_tick_start::ServerTickStartEvent,
     },
@@ -492,6 +499,69 @@ impl Plugin for CabbagePlugin {
                 .await;
             context
                 .register_event::<ProjectileHitEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<PlayerDropItemEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<InventoryOpenEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<InventoryDragEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<InventoryMoveItemEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<CraftItemEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<FurnaceSmeltEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<FurnaceBurnEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<FurnaceExtractEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<BrewEvent, _>(
                     self.event_log_state.clone(),
                     EventPriority::Normal,
                     false,
@@ -1638,6 +1708,238 @@ impl EventHandler<ProjectileHitEvent> for EventLogState {
                 event.projectile.get_entity().entity_type.resource_name,
                 hit_entity_name,
                 hit_block_name
+            );
+
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<PlayerDropItemEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a PlayerDropItemEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let message = format!(
+                "[Cabbage Events] PlayerDropItemEvent: player={}, item={}, count={}",
+                event.player.gameprofile.name,
+                event.item.item.registry_key,
+                event.item.item_count
+            );
+
+            event
+                .player
+                .send_system_message(&TextComponent::text(message.clone()))
+                .await;
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<InventoryOpenEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a InventoryOpenEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let message = format!(
+                "[Cabbage Events] InventoryOpenEvent: player={}, window_type={:?}, block_pos={:?}",
+                event.player.gameprofile.name, event.window_type, event.block_pos
+            );
+
+            event
+                .player
+                .send_system_message(&TextComponent::text(message.clone()))
+                .await;
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<InventoryDragEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a InventoryDragEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let message = format!(
+                "[Cabbage Events] InventoryDragEvent: player={}, window_type={:?}, slots={:?}, click_type={:?}",
+                event.player.gameprofile.name,
+                event.window_type,
+                event.slots,
+                event.click_type
+            );
+
+            event
+                .player
+                .send_system_message(&TextComponent::text(message.clone()))
+                .await;
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<InventoryMoveItemEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a InventoryMoveItemEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let message = format!(
+                "[Cabbage Events] InventoryMoveItemEvent: item={}, count={}, source_pos={:?}, destination_pos={:?}",
+                event.item.item.registry_key,
+                event.item.item_count,
+                event.source_pos,
+                event.destination_pos
+            );
+
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<CraftItemEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a CraftItemEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let message = format!(
+                "[Cabbage Events] CraftItemEvent: player={}, result={}, count={}, window_type={:?}",
+                event.player.gameprofile.name,
+                event.result.item.registry_key,
+                event.result.item_count,
+                event.window_type
+            );
+
+            event
+                .player
+                .send_system_message(&TextComponent::text(message.clone()))
+                .await;
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<FurnaceSmeltEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a FurnaceSmeltEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let message = format!(
+                "[Cabbage Events] FurnaceSmeltEvent: block={}, pos={:?}, input={}, fuel={}, output={}",
+                event.block.name,
+                event.block_position,
+                event.input.item.registry_key,
+                event.fuel.item.registry_key,
+                event.output.item.registry_key
+            );
+
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<FurnaceBurnEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a FurnaceBurnEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let message = format!(
+                "[Cabbage Events] FurnaceBurnEvent: block={}, pos={:?}, fuel={}, burn_time={}",
+                event.block.name, event.block_position, event.fuel.item.registry_key, event.burn_time
+            );
+
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<FurnaceExtractEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a FurnaceExtractEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let message = format!(
+                "[Cabbage Events] FurnaceExtractEvent: player={}, pos={:?}, item={}, count={}, experience={}",
+                event.player.gameprofile.name,
+                event.block_position,
+                event.item.item.registry_key,
+                event.item.item_count,
+                event.experience
+            );
+
+            event
+                .player
+                .send_system_message(&TextComponent::text(message.clone()))
+                .await;
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<BrewEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a BrewEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let message = format!(
+                "[Cabbage Events] BrewEvent: block={}, pos={:?}, ingredient={}, potions={}, fuel={}",
+                event.block.name,
+                event.block_position,
+                event.ingredient.item.registry_key,
+                event.potions.len(),
+                event.fuel
             );
 
             self.log(&message);
