@@ -146,6 +146,24 @@ impl CommandExecutor for MmoStatsExecutor {
     }
 }
 
+fn resolve_player_name(server: &Server, uuid_str: &str) -> String {
+    let Ok(uuid) = uuid::Uuid::parse_str(uuid_str) else {
+        return uuid_str.to_string();
+    };
+
+    if let Some(player) = server.get_player_by_uuid(uuid) {
+        return player.gameprofile.name.clone();
+    }
+
+    if let Ok(mut cache) = server.data.user_cache.try_write() {
+        if let Some(entry) = cache.get_by_uuid(uuid) {
+            return entry.name;
+        }
+    }
+
+    uuid_str.to_string()
+}
+
 struct MmoTopExecutor {
     state: Arc<MmoState>,
 }
@@ -154,7 +172,7 @@ impl CommandExecutor for MmoTopExecutor {
     fn execute<'a>(
         &'a self,
         sender: &'a CommandSender,
-        _server: &'a Server,
+        server: &'a Server,
         args: &'a ConsumedArgs<'a>,
     ) -> CommandResult<'a> {
         Box::pin(async move {
@@ -184,12 +202,13 @@ impl CommandExecutor for MmoTopExecutor {
             match self.state.db().get_top(skill, 10).await {
                 Ok(rows) => {
                     let mut lines = vec![format!("Top {} players", skill)];
-                    for (index, (uuid, level, xp)) in rows.iter().enumerate() {
+                    for (index, (uuid_str, level, xp)) in rows.iter().enumerate() {
+                        let name = resolve_player_name(server, uuid_str);
                         let (_, into, needed) = self.state.curve(skill).level_for_xp(*xp);
                         lines.push(format!(
                             "{}. {} - Level {} ({}/{} XP)",
                             index + 1,
-                            uuid,
+                            name,
                             level,
                             into,
                             needed
