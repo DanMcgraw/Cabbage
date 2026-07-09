@@ -28,9 +28,20 @@ use pumpkin::{
         },
         api::events::entity::{
             ChunkEntityLoadEvent, ChunkEntityUnloadEvent, EntityRemoveEvent, EntitySpawnEvent,
+            entity_breed::EntityBreedEvent,
+            entity_combust_by_entity::EntityCombustByEntityEvent,
             entity_damage::EntityDamageEvent,
             entity_damage_by_entity::EntityDamageByEntityEvent,
             entity_death::EntityDeathEvent,
+            entity_explode::EntityExplodeEvent,
+            entity_pickup_item::EntityPickupItemEvent,
+            entity_shoot_bow::EntityShootBowEvent,
+            entity_tame::EntityTameEvent,
+            entity_target::EntityTargetEvent,
+            entity_target_living_entity::EntityTargetLivingEntityEvent,
+            entity_transform::EntityTransformEvent,
+            explosion_prime::ExplosionPrimeEvent,
+            potion_splash::PotionSplashEvent,
             projectile_hit::ProjectileHitEvent,
             projectile_launch::ProjectileLaunchEvent,
         },
@@ -570,6 +581,83 @@ impl Plugin for CabbagePlugin {
                 .await;
             context
                 .register_event::<BrewEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<EntityBreedEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<EntityTameEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<EntityTargetEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<EntityTargetLivingEntityEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<EntityPickupItemEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<EntityShootBowEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<EntityCombustByEntityEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<EntityExplodeEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<ExplosionPrimeEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<EntityTransformEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<PotionSplashEvent, _>(
                     self.event_log_state.clone(),
                     EventPriority::Normal,
                     false,
@@ -1988,6 +2076,302 @@ impl EventHandler<BrewEvent> for EventLogState {
                 event.ingredient.item.registry_key,
                 event.potions.len(),
                 event.fuel
+            );
+
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<EntityBreedEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a EntityBreedEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let breeder_name = event
+                .breeder
+                .as_ref()
+                .map(|p| p.gameprofile.name.as_str())
+                .unwrap_or("none");
+            let message = format!(
+                "[Cabbage Events] EntityBreedEvent: mother={}, father={}, breeder={}, entity_type={}, experience={}",
+                event.mother.get_entity().entity_type.resource_name,
+                event.father.get_entity().entity_type.resource_name,
+                breeder_name,
+                event.baby_type.resource_name,
+                event.experience
+            );
+
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<EntityTameEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a EntityTameEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let message = format!(
+                "[Cabbage Events] EntityTameEvent: entity={}, owner={}",
+                event.entity.get_entity().entity_type.resource_name,
+                event.owner.gameprofile.name
+            );
+
+            event
+                .owner
+                .send_system_message(&TextComponent::text(message.clone()))
+                .await;
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<EntityTargetEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a EntityTargetEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let target_name = event
+                .target
+                .as_ref()
+                .map(|t| t.get_entity().entity_type.resource_name.as_ref())
+                .unwrap_or("none");
+            let reason = event.reason.unwrap_or("none");
+            let message = format!(
+                "[Cabbage Events] EntityTargetEvent: entity={}, target={}, reason={}",
+                event.entity.get_entity().entity_type.resource_name,
+                target_name,
+                reason
+            );
+
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<EntityTargetLivingEntityEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a EntityTargetLivingEntityEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let message = format!(
+                "[Cabbage Events] EntityTargetLivingEntityEvent: entity={}, target={}",
+                event.entity.get_entity().entity_type.resource_name,
+                event.target.get_entity().entity_type.resource_name
+            );
+
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<EntityPickupItemEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a EntityPickupItemEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let message = format!(
+                "[Cabbage Events] EntityPickupItemEvent: entity={}, item={}, amount={}",
+                event.entity.get_entity().entity_type.resource_name,
+                event.item.item.registry_key,
+                event.amount
+            );
+
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<EntityShootBowEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a EntityShootBowEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let consumable_name = event
+                .consumable
+                .as_ref()
+                .map(|i| i.item.registry_key.as_ref())
+                .unwrap_or("none");
+            let message = format!(
+                "[Cabbage Events] EntityShootBowEvent: player={}, projectile={}, bow={}, consumable={}, force={}",
+                event.player.gameprofile.name,
+                event.projectile.get_entity().entity_type.resource_name,
+                event.bow.item.registry_key,
+                consumable_name,
+                event.force
+            );
+
+            event
+                .player
+                .send_system_message(&TextComponent::text(message.clone()))
+                .await;
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<EntityCombustByEntityEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a EntityCombustByEntityEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let message = format!(
+                "[Cabbage Events] EntityCombustByEntityEvent: entity={}, combuster={}, duration={}",
+                event.entity.get_entity().entity_type.resource_name,
+                event.combuster.get_entity().entity_type.resource_name,
+                event.duration
+            );
+
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<EntityExplodeEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a EntityExplodeEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let entity_name = event
+                .entity
+                .as_ref()
+                .map(|e| e.get_entity().entity_type.resource_name.as_ref())
+                .unwrap_or("none");
+            let message = format!(
+                "[Cabbage Events] EntityExplodeEvent: entity={}, blocks={}, yield={}",
+                entity_name,
+                event.affected_blocks.len(),
+                event.yield_
+            );
+
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<ExplosionPrimeEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a ExplosionPrimeEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let entity_name = event
+                .entity
+                .as_ref()
+                .map(|e| e.get_entity().entity_type.resource_name.as_ref())
+                .unwrap_or("none");
+            let message = format!(
+                "[Cabbage Events] ExplosionPrimeEvent: entity={}, radius={}, fire={}",
+                entity_name,
+                event.radius,
+                event.fire
+            );
+
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<EntityTransformEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a EntityTransformEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let reason = event.reason.unwrap_or("none");
+            let message = format!(
+                "[Cabbage Events] EntityTransformEvent: entity={}, transform_to={}, reason={}",
+                event.entity.get_entity().entity_type.resource_name,
+                event.transform_to.resource_name,
+                reason
+            );
+
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<PotionSplashEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a PotionSplashEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let hit_entity_name = event
+                .hit_entity
+                .as_ref()
+                .map(|e| e.get_entity().entity_type.resource_name.as_ref())
+                .unwrap_or("none");
+            let message = format!(
+                "[Cabbage Events] PotionSplashEvent: entity={}, hit_entity={}, affected={}, potion={}",
+                event.entity.get_entity().entity_type.resource_name,
+                hit_entity_name,
+                event.affected_entities.len(),
+                event.potion.item.registry_key
             );
 
             self.log(&message);
