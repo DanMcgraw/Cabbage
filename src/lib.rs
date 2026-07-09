@@ -20,6 +20,11 @@ use pumpkin::{
     plugin::{
         BoxFuture, Context, EventHandler, EventPriority, PLUGIN_API_VERSION, Plugin, PluginFuture,
         PluginMetadata,
+        api::events::block::{
+            block_damage::BlockDamageEvent, block_drop_item::BlockDropItemEvent,
+            block_piston_extend::BlockPistonExtendEvent,
+            block_piston_retract::BlockPistonRetractEvent,
+        },
         api::events::entity::{
             ChunkEntityLoadEvent, ChunkEntityUnloadEvent, EntityRemoveEvent, EntitySpawnEvent,
         },
@@ -52,7 +57,10 @@ const CLEAR_DROPS_PERMISSION: &str = "Cabbage:command.clear_drops";
 const CLEAR_DROPS_NAMES: [&str; 1] = ["cleardrops"];
 const METRICS_PERMISSION: &str = "Cabbage:command.metrics";
 const METRICS_NAMES: [&str; 1] = ["metrics"];
+const EVENTS_PERMISSION: &str = "Cabbage:command.events";
+const EVENTS_NAMES: [&str; 1] = ["events"];
 const DROPPED_ITEM_ENTITY_ID: &str = "minecraft:item";
+const EVENT_LOG_FILE: &str = "output.log";
 
 #[unsafe(no_mangle)]
 pub static PUMPKIN_API_VERSION: u32 = PLUGIN_API_VERSION;
@@ -83,6 +91,7 @@ struct CabbagePlugin {
     mob_ai_state: Arc<MobAiState>,
     dropped_item_cleanup_state: Arc<DroppedItemCleanupState>,
     metrics_reporter_state: Arc<MetricsReporterState>,
+    event_log_state: Arc<EventLogState>,
 }
 
 impl CabbagePlugin {
@@ -93,6 +102,7 @@ impl CabbagePlugin {
             mob_ai_state: mob_ai_state.clone(),
             dropped_item_cleanup_state: Arc::new(DroppedItemCleanupState::default()),
             metrics_reporter_state: Arc::new(MetricsReporterState::new(mob_ai_state)),
+            event_log_state: Arc::new(EventLogState::default()),
         }
     }
 }
@@ -167,6 +177,50 @@ struct ClearDropsState {
 }
 
 #[derive(Default)]
+struct EventLogState {
+    enabled: AtomicBool,
+    log_path: Mutex<Option<PathBuf>>,
+}
+
+impl EventLogState {
+    fn set_log_path(&self, path: PathBuf) {
+        if let Ok(mut lock) = self.log_path.lock() {
+            *lock = Some(path);
+        }
+    }
+
+    fn toggle(&self) -> bool {
+        !self.enabled.fetch_xor(true, Ordering::SeqCst)
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.enabled.load(Ordering::SeqCst)
+    }
+
+    fn log(&self, message: &str) {
+        let Some(path) = self.log_path.lock().ok().and_then(|path| path.clone()) else {
+            return;
+        };
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| format!("[{}] ", d.as_secs()))
+            .unwrap_or_default();
+
+        let line = format!("{timestamp}{message}\n");
+
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            use std::io::Write;
+            let _ = file.write_all(line.as_bytes());
+        }
+    }
+}
+
+#[derive(Default)]
 struct SavedDropCleanup {
     folders_scanned: usize,
     files_scanned: usize,
@@ -235,8 +289,23 @@ impl Plugin for CabbagePlugin {
                 Err(error) => return Err(error),
             }
 
+            let events_permission = Permission::new(
+                EVENTS_PERMISSION,
+                "Allows toggling Phase 2 event logging to chat and output.log.",
+                PermissionDefault::Op(PermissionLvl::Two),
+            );
+
+            match context.register_permission(events_permission).await {
+                Ok(()) => {}
+                Err(error) if error.contains("already registered") => {}
+                Err(error) => return Err(error),
+            }
+
             self.metrics_reporter_state
                 .load_config(context.get_data_folder());
+
+            self.event_log_state
+                .set_log_path(context.get_data_folder().join(EVENT_LOG_FILE));
 
             spawn_disk_scan(
                 context.server.worlds.load().iter().cloned().collect(),
@@ -335,6 +404,41 @@ impl Plugin for CabbagePlugin {
                     METRICS_PERMISSION,
                 )
                 .await;
+            context
+                .register_command(
+                    events_command_tree(self.event_log_state.clone()),
+                    EVENTS_PERMISSION,
+                )
+                .await;
+
+            context
+                .register_event::<BlockDamageEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<BlockDropItemEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<BlockPistonExtendEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
+            context
+                .register_event::<BlockPistonRetractEvent, _>(
+                    self.event_log_state.clone(),
+                    EventPriority::Normal,
+                    false,
+                )
+                .await;
 
             Ok(())
         })
@@ -345,6 +449,7 @@ impl Plugin for CabbagePlugin {
             context.unregister_command(CABBAGE_NAMES[0]).await;
             context.unregister_command(CLEAR_DROPS_NAMES[0]).await;
             context.unregister_command(METRICS_NAMES[0]).await;
+            context.unregister_command(EVENTS_NAMES[0]).await;
             Ok(())
         })
     }
@@ -428,8 +533,40 @@ impl CommandExecutor for CabbageInfoExecutor {
         Box::pin(async move {
             sender
                 .send_message(TextComponent::text(
-                    "Cabbage commands:\n/cleardrops - Queue dropped item cleanup.\n/metrics - Print current metrics once.\n/metrics log - Toggle periodic console metric logging.",
+                    "Cabbage commands:\n/cleardrops - Queue dropped item cleanup.\n/metrics - Print current metrics once.\n/metrics log - Toggle periodic console metric logging.\n/events - Toggle Phase 2 event logging to chat and output.log.",
                 ))
+                .await;
+
+            Ok(1)
+        })
+    }
+}
+
+struct EventsToggleExecutor {
+    state: Arc<EventLogState>,
+}
+
+impl CommandExecutor for EventsToggleExecutor {
+    fn execute<'a>(
+        &'a self,
+        sender: &'a CommandSender,
+        _server: &'a Server,
+        _args: &'a ConsumedArgs<'a>,
+    ) -> CommandResult<'a> {
+        Box::pin(async move {
+            let enabled = self.state.toggle();
+            let (state_text, color) = if enabled {
+                ("on", NamedColor::Green)
+            } else {
+                ("off", NamedColor::Red)
+            };
+
+            sender
+                .send_message(
+                    TextComponent::text("Phase 2 event logging is ")
+                        .add_child(TextComponent::text(state_text).color_named(color))
+                        .add_text(". Events are written to output.log in the Cabbage data folder."),
+                )
                 .await;
 
             Ok(1)
@@ -869,6 +1006,14 @@ fn metrics_command_tree(state: Arc<MetricsReporterState>) -> CommandTree {
         .then(literal("log").execute(MetricsLogToggleExecutor { state }))
 }
 
+fn events_command_tree(state: Arc<EventLogState>) -> CommandTree {
+    CommandTree::new(
+        EVENTS_NAMES,
+        "Toggle Phase 2 event logging to chat and output.log",
+    )
+    .execute(EventsToggleExecutor { state })
+}
+
 fn spawn_disk_scan(worlds: Vec<Arc<pumpkin::world::World>>, cached_map_chunks: Arc<AtomicUsize>) {
     std::thread::spawn(move || {
         let mut total_chunks = 0;
@@ -1128,6 +1273,111 @@ impl EventHandler<ServerTickStartEvent> for MetricsReporterState {
             }
 
             println!("{}", self.collect_metrics(server).format());
+        })
+    }
+}
+
+impl EventHandler<BlockDamageEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a BlockDamageEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let message = format!(
+                "[Cabbage Events] BlockDamageEvent: player={}, block={}, pos={:?}, insta_break={}",
+                event.player.gameprofile.name,
+                event.block.name,
+                event.block_position,
+                event.insta_break
+            );
+
+            event
+                .player
+                .send_system_message(&TextComponent::text(message.clone()))
+                .await;
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<BlockDropItemEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a BlockDropItemEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let message = format!(
+                "[Cabbage Events] BlockDropItemEvent: player={}, block={}, pos={:?}, items={}",
+                event.player.gameprofile.name,
+                event.block.name,
+                event.block_position,
+                event.items.len()
+            );
+
+            event
+                .player
+                .send_system_message(&TextComponent::text(message.clone()))
+                .await;
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<BlockPistonExtendEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a BlockPistonExtendEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let message = format!(
+                "[Cabbage Events] BlockPistonExtendEvent: block={}, pos={:?}, direction={:?}, moved_blocks={}, broken_blocks={}",
+                event.piston_block.name,
+                event.piston_pos,
+                event.direction,
+                event.moved_blocks.len(),
+                event.broken_blocks.len()
+            );
+
+            self.log(&message);
+        })
+    }
+}
+
+impl EventHandler<BlockPistonRetractEvent> for EventLogState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a BlockPistonRetractEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+
+            let message = format!(
+                "[Cabbage Events] BlockPistonRetractEvent: block={}, pos={:?}, direction={:?}, moved_blocks={}",
+                event.piston_block.name,
+                event.piston_pos,
+                event.direction,
+                event.moved_blocks.len()
+            );
+
+            self.log(&message);
         })
     }
 }
