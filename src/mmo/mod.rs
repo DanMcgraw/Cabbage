@@ -14,6 +14,7 @@ use pumpkin::{
         BoxFuture, Context, EventHandler,
         api::events::{
             block::block_break::BlockBreakEvent, entity::entity_death::EntityDeathEvent,
+            world::feature_generate::FeatureGenerateEvent,
         },
         server::server_tick_start::ServerTickStartEvent,
     },
@@ -254,6 +255,21 @@ impl EventHandler<ServerTickStartEvent> for MmoState {
         Box::pin(async move {
             self.last_tick.store(event.tick, Ordering::Relaxed);
             self.bossbar_state.cleanup_expired(server, event.tick).await;
+        })
+    }
+}
+
+impl EventHandler<FeatureGenerateEvent> for MmoState {
+    fn handle_blocking<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a mut FeatureGenerateEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+            events::handle_feature_generate(self, event).await;
         })
     }
 }

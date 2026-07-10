@@ -77,6 +77,31 @@ pub struct MmoConfig {
     pub message_on_level_up: bool,
     /// How often (in server ticks) to flush cached progress to the database.
     pub save_interval_ticks: u32,
+    /// Placed-feature registry names that should not generate.
+    #[serde(default = "default_disabled_world_features")]
+    pub disabled_world_features: Vec<String>,
+}
+
+fn default_disabled_world_features() -> Vec<String> {
+    vec![
+        "ore_coal_upper".to_string(),
+        "ore_coal_lower".to_string(),
+        "ore_iron_upper".to_string(),
+        "ore_iron_middle".to_string(),
+        "ore_iron_small".to_string(),
+        "ore_gold".to_string(),
+        "ore_gold_lower".to_string(),
+        "ore_redstone".to_string(),
+        "ore_redstone_lower".to_string(),
+        "ore_diamond".to_string(),
+        "ore_diamond_large".to_string(),
+        "ore_diamond_buried".to_string(),
+        "ore_diamond_medium".to_string(),
+        "ore_lapis".to_string(),
+        "ore_lapis_buried".to_string(),
+        "ore_copper".to_string(),
+        "ore_copper_large".to_string(),
+    ]
 }
 
 impl Default for MmoConfig {
@@ -103,6 +128,7 @@ impl Default for MmoConfig {
             skills,
             message_on_level_up: true,
             save_interval_ticks: 6000,
+            disabled_world_features: default_disabled_world_features(),
         }
     }
 }
