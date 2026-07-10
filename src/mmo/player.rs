@@ -1,21 +1,28 @@
 use super::{config::LevelCurve, skills::SkillId};
 
 /// A point-in-time view of a player's skill progress.
+///
+/// Level is derived from total XP on demand, so this struct stores only the
+/// authoritative cumulative XP value.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PlayerSkillSnapshot {
-    pub level: u32,
     pub xp: u64,
 }
 
 impl PlayerSkillSnapshot {
-    pub fn new(level: u32, xp: u64) -> Self {
-        Self { level, xp }
+    pub fn new(xp: u64) -> Self {
+        Self { xp }
+    }
+
+    /// Derive the current level from total XP.
+    pub fn level(&self, curve: &LevelCurve) -> u32 {
+        curve.level_for_xp(self.xp).0
     }
 
     /// Format progress as "Level 5 (1,234 / 1,500 XP)".
     pub fn format_progress(&self, curve: &LevelCurve) -> String {
         let (_, into, needed) = curve.level_for_xp(self.xp);
-        format!("Level {} ({} / {} XP)", self.level, into, needed)
+        format!("Level {} ({} / {} XP)", self.level(curve), into, needed)
     }
 }
 

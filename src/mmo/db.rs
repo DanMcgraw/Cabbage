@@ -35,6 +35,7 @@ enum DbRequest {
     GetTop {
         skill: SkillId,
         limit: u32,
+        curve: LevelCurve,
         respond: oneshot::Sender<Result<Vec<(String, u32, u64)>, String>>,
     },
     GetMobXp {
@@ -57,13 +58,19 @@ enum DbRequest {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlayerSkill {
-    pub level: u32,
     pub xp: u64,
 }
 
 impl Default for PlayerSkill {
     fn default() -> Self {
-        Self { level: 1, xp: 0 }
+        Self { xp: 0 }
+    }
+}
+
+impl PlayerSkill {
+    /// Derive the current level from cumulative XP using the configured curve.
+    pub fn level(&self, curve: &LevelCurve) -> u32 {
+        curve.level_for_xp(self.xp).0
     }
 }
 
@@ -152,9 +159,10 @@ impl MmoDatabase {
                         DbRequest::GetTop {
                             skill,
                             limit,
+                            curve,
                             respond,
                         } => {
-                            let _ = respond.send(Self::do_get_top(&conn, skill, limit));
+                            let _ = respond.send(Self::do_get_top(&conn, skill, limit, &curve));
                         }
                         DbRequest::GetMobXp {
                             mob_resource_name,
@@ -190,7 +198,6 @@ impl MmoDatabase {
             r"CREATE TABLE IF NOT EXISTS player_skills (
                 player_uuid TEXT NOT NULL,
                 skill TEXT NOT NULL,
-                level INTEGER NOT NULL DEFAULT 1,
                 xp INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (player_uuid, skill)
             );",
@@ -208,6 +215,11 @@ impl MmoDatabase {
             conn.execute(sql, [])
                 .map_err(|e| format!("failed to run mmo migration: {e}"))?;
         }
+
+        // Best-effort removal of the legacy level column. Fresh databases will
+        // not have it; existing databases may still carry it from older builds.
+        let _ = conn.execute("ALTER TABLE player_skills DROP COLUMN level", []);
+
         Ok(())
     }
 
@@ -249,15 +261,13 @@ impl MmoDatabase {
         skill: SkillId,
     ) -> Result<PlayerSkill, String> {
         let mut stmt = conn
-            .prepare("SELECT level, xp FROM player_skills WHERE player_uuid = ?1 AND skill = ?2")
+            .prepare("SELECT xp FROM player_skills WHERE player_uuid = ?1 AND skill = ?2")
             .map_err(|e| format!("failed to prepare player skill query: {e}"))?;
 
         let result = stmt
             .query_row(params![player_uuid.to_string(), skill.to_string()], |row| {
-                let level: i64 = row.get(0).unwrap_or(1);
-                let xp: i64 = row.get(1).unwrap_or(0);
+                let xp: i64 = row.get(0).unwrap_or(0);
                 Ok(PlayerSkill {
-                    level: level.max(1) as u32,
                     xp: xp.max(0) as u64,
                 })
             })
@@ -275,20 +285,16 @@ impl MmoDatabase {
     ) -> Result<XpResult, String> {
         let current = Self::do_get_skill(conn, player_uuid, skill)?;
         let new_xp = current.xp.saturating_add(xp);
+        let current_level = current.level(curve);
         let new_level = curve.level_for_xp(new_xp).0;
-        let leveled_up = new_level > current.level;
+        let leveled_up = new_level > current_level;
 
         conn.execute(
-            "INSERT INTO player_skills (player_uuid, skill, level, xp)
-             VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO player_skills (player_uuid, skill, xp)
+             VALUES (?1, ?2, ?3)
              ON CONFLICT(player_uuid, skill)
-             DO UPDATE SET level = excluded.level, xp = excluded.xp",
-            params![
-                player_uuid.to_string(),
-                skill.to_string(),
-                new_level as i64,
-                new_xp as i64,
-            ],
+             DO UPDATE SET xp = excluded.xp",
+            params![player_uuid.to_string(), skill.to_string(), new_xp as i64,],
         )
         .map_err(|e| format!("failed to update player xp: {e}"))?;
 
@@ -309,16 +315,11 @@ impl MmoDatabase {
         let new_level = curve.level_for_xp(xp).0;
 
         conn.execute(
-            "INSERT INTO player_skills (player_uuid, skill, level, xp)
-             VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO player_skills (player_uuid, skill, xp)
+             VALUES (?1, ?2, ?3)
              ON CONFLICT(player_uuid, skill)
-             DO UPDATE SET level = excluded.level, xp = excluded.xp",
-            params![
-                player_uuid.to_string(),
-                skill.to_string(),
-                new_level as i64,
-                xp as i64,
-            ],
+             DO UPDATE SET xp = excluded.xp",
+            params![player_uuid.to_string(), skill.to_string(), xp as i64,],
         )
         .map_err(|e| format!("failed to set player xp: {e}"))?;
 
@@ -329,12 +330,13 @@ impl MmoDatabase {
         conn: &Connection,
         skill: SkillId,
         limit: u32,
+        curve: &LevelCurve,
     ) -> Result<Vec<(String, u32, u64)>, String> {
         let mut stmt = conn
             .prepare(
-                "SELECT player_uuid, level, xp FROM player_skills
+                "SELECT player_uuid, xp FROM player_skills
                  WHERE skill = ?1
-                 ORDER BY level DESC, xp DESC
+                 ORDER BY xp DESC
                  LIMIT ?2",
             )
             .map_err(|e| format!("failed to prepare top players query: {e}"))?;
@@ -342,9 +344,10 @@ impl MmoDatabase {
         let rows = stmt
             .query_map(params![skill.to_string(), limit as i64], |row| {
                 let uuid: String = row.get(0).unwrap_or_default();
-                let level: i64 = row.get(1).unwrap_or(1);
-                let xp: i64 = row.get(2).unwrap_or(0);
-                Ok((uuid, level.max(1) as u32, xp.max(0) as u64))
+                let xp: i64 = row.get(1).unwrap_or(0);
+                let xp = xp.max(0) as u64;
+                let level = curve.level_for_xp(xp).0;
+                Ok((uuid, level, xp))
             })
             .map_err(|e| format!("failed to query top players: {e}"))?;
 
@@ -483,12 +486,14 @@ impl MmoDatabase {
         &self,
         skill: SkillId,
         limit: u32,
+        curve: LevelCurve,
     ) -> Result<Vec<(String, u32, u64)>, String> {
         let (tx, rx) = oneshot::channel();
         self.sender
             .send(DbRequest::GetTop {
                 skill,
                 limit,
+                curve,
                 respond: tx,
             })
             .map_err(|_| "mmo database worker has shut down".to_string())?;
@@ -589,7 +594,7 @@ mod tests {
 
         let skill = db.get_skill(uuid, SkillId::Mining).await.unwrap();
         assert_eq!(skill.xp, 75);
-        assert_eq!(skill.level, 2);
+        assert_eq!(skill.level(&curve), 2);
 
         cleanup(&folder);
     }

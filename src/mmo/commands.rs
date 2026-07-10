@@ -42,10 +42,7 @@ async fn fetch_snapshot(state: &MmoState, player: &Player) -> Result<PlayerSnaps
     let mut snapshot = PlayerSnapshot::default();
     for skill in SkillId::ALL {
         let progress = state.db().get_skill(player.gameprofile.id, *skill).await?;
-        snapshot.set(
-            *skill,
-            super::player::PlayerSkillSnapshot::new(progress.level, progress.xp),
-        );
+        snapshot.set(*skill, super::player::PlayerSkillSnapshot::new(progress.xp));
     }
     Ok(snapshot)
 }
@@ -199,7 +196,12 @@ impl CommandExecutor for MmoTopExecutor {
                 return Ok(0);
             };
 
-            match self.state.db().get_top(skill, 10).await {
+            match self
+                .state
+                .db()
+                .get_top(skill, 10, self.state.curve(skill))
+                .await
+            {
                 Ok(rows) => {
                     let mut lines = vec![format!("Top {} players", skill)];
                     for (index, (uuid_str, level, xp)) in rows.iter().enumerate() {

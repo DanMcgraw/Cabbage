@@ -101,7 +101,6 @@ All tables live in `mmo.db` inside the plugin data folder.
 CREATE TABLE player_skills (
     player_uuid TEXT NOT NULL,
     skill       TEXT NOT NULL,
-    level       INTEGER NOT NULL DEFAULT 1,
     xp          INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (player_uuid, skill)
 );
@@ -117,7 +116,8 @@ CREATE TABLE ore_xp (
 );
 ```
 
-- `player_skills` stores cumulative XP and derived level per (player, skill).
+- `player_skills` stores cumulative XP per (player, skill). The level is
+  derived on read via `LevelCurve::level_for_xp`.
 - `mob_xp` maps mob resource names (e.g. `zombie`, `enderman`) to combat XP.
 - `ore_xp` maps block names (e.g. `diamond_ore`) to mining XP.
 
