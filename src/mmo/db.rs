@@ -9,6 +9,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
 use super::config::LevelCurve;
+use super::ore_reveal::provenance::{ProvenanceChange, ProvenanceKey};
 use super::skills::SkillId;
 
 /// Request sent to the dedicated database worker thread.
@@ -53,6 +54,12 @@ enum DbRequest {
     ReplaceOreXp {
         values: Vec<(String, u64)>,
         respond: oneshot::Sender<Result<(), String>>,
+    },
+    LoadNonNaturalBlocks {
+        respond: oneshot::Sender<Result<Vec<ProvenanceKey>, String>>,
+    },
+    ApplyProvenanceChanges {
+        changes: Vec<ProvenanceChange>,
     },
 }
 
@@ -182,6 +189,18 @@ impl MmoDatabase {
                         DbRequest::ReplaceOreXp { values, respond } => {
                             let _ = respond.send(Self::do_replace_ore_xp(&mut conn, &values));
                         }
+                        DbRequest::LoadNonNaturalBlocks { respond } => {
+                            let _ = respond.send(Self::do_load_non_natural_blocks(&conn));
+                        }
+                        DbRequest::ApplyProvenanceChanges { changes } => {
+                            if let Err(error) =
+                                Self::do_apply_provenance_changes(&mut conn, &changes)
+                            {
+                                log::error!(
+                                    "[Cabbage MMO] failed to persist block provenance: {error}"
+                                );
+                            }
+                        }
                     }
                 }
             })
@@ -208,6 +227,14 @@ impl MmoDatabase {
             r"CREATE TABLE IF NOT EXISTS ore_xp (
                 block_name TEXT PRIMARY KEY,
                 xp INTEGER NOT NULL
+            );",
+            r"CREATE TABLE IF NOT EXISTS non_natural_blocks (
+                world_name TEXT NOT NULL,
+                dimension_name TEXT NOT NULL,
+                x INTEGER NOT NULL,
+                y INTEGER NOT NULL,
+                z INTEGER NOT NULL,
+                PRIMARY KEY (world_name, dimension_name, x, y, z)
             );",
         ];
 
@@ -422,6 +449,59 @@ impl MmoDatabase {
             .map_err(|e| format!("failed to commit ore xp transaction: {e}"))
     }
 
+    fn do_load_non_natural_blocks(conn: &Connection) -> Result<Vec<ProvenanceKey>, String> {
+        let mut statement = conn
+            .prepare("SELECT world_name, dimension_name, x, y, z FROM non_natural_blocks")
+            .map_err(|error| format!("failed to prepare block provenance query: {error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(ProvenanceKey {
+                    world: row.get(0)?,
+                    dimension: row.get(1)?,
+                    x: row.get(2)?,
+                    y: row.get(3)?,
+                    z: row.get(4)?,
+                })
+            })
+            .map_err(|error| format!("failed to query block provenance: {error}"))?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("failed to read block provenance row: {error}"))
+    }
+
+    fn do_apply_provenance_changes(
+        conn: &mut Connection,
+        changes: &[ProvenanceChange],
+    ) -> Result<(), String> {
+        let transaction = conn
+            .transaction()
+            .map_err(|error| format!("failed to start block provenance transaction: {error}"))?;
+        for change in changes {
+            let key = &change.key;
+            if change.non_natural {
+                transaction
+                    .execute(
+                        "INSERT OR IGNORE INTO non_natural_blocks
+                         (world_name, dimension_name, x, y, z) VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![key.world, key.dimension, key.x, key.y, key.z],
+                    )
+                    .map_err(|error| format!("failed to insert block provenance: {error}"))?;
+            } else {
+                transaction
+                    .execute(
+                        "DELETE FROM non_natural_blocks
+                         WHERE world_name = ?1 AND dimension_name = ?2
+                           AND x = ?3 AND y = ?4 AND z = ?5",
+                        params![key.world, key.dimension, key.x, key.y, key.z],
+                    )
+                    .map_err(|error| format!("failed to delete block provenance: {error}"))?;
+            }
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("failed to commit block provenance: {error}"))
+    }
+
     /// Public async API: send a request and await the worker's response.
     pub async fn get_skill(
         &self,
@@ -525,6 +605,24 @@ impl MmoDatabase {
             .map_err(|_| "mmo database worker dropped the response".to_string())?
     }
 
+    pub async fn load_non_natural_blocks(&self) -> Result<Vec<ProvenanceKey>, String> {
+        let (tx, rx) = oneshot::channel();
+        self.sender
+            .send(DbRequest::LoadNonNaturalBlocks { respond: tx })
+            .map_err(|_| "mmo database worker has shut down".to_string())?;
+        rx.await
+            .map_err(|_| "mmo database worker dropped the response".to_string())?
+    }
+
+    pub fn apply_provenance_changes(&self, changes: Vec<ProvenanceChange>) -> Result<(), String> {
+        if changes.is_empty() {
+            return Ok(());
+        }
+        self.sender
+            .send(DbRequest::ApplyProvenanceChanges { changes })
+            .map_err(|_| "mmo database worker has shut down".to_string())
+    }
+
     #[allow(dead_code)]
     pub async fn replace_mob_xp(&self, values: Vec<(String, u64)>) -> Result<(), String> {
         let (tx, rx) = oneshot::channel();
@@ -609,6 +707,35 @@ mod tests {
                 .is_some()
         );
         assert!(db.get_ore_xp("dirt".to_string()).await.unwrap().is_none());
+        cleanup(&folder);
+    }
+
+    #[tokio::test]
+    async fn block_provenance_round_trips() {
+        let (db, folder) = open_test_db();
+        let key = ProvenanceKey {
+            world: "world".to_string(),
+            dimension: "minecraft:overworld".to_string(),
+            x: 4,
+            y: 12,
+            z: -9,
+        };
+        db.apply_provenance_changes(vec![ProvenanceChange {
+            key: key.clone(),
+            non_natural: true,
+        }])
+        .unwrap();
+        assert_eq!(
+            db.load_non_natural_blocks().await.unwrap(),
+            vec![key.clone()]
+        );
+
+        db.apply_provenance_changes(vec![ProvenanceChange {
+            key,
+            non_natural: false,
+        }])
+        .unwrap();
+        assert!(db.load_non_natural_blocks().await.unwrap().is_empty());
         cleanup(&folder);
     }
 }

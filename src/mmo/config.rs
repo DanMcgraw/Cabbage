@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::ore_reveal::config::OreRevealConfig;
 use super::skills::SkillId;
 
 fn default_true() -> bool {
@@ -80,6 +81,9 @@ pub struct MmoConfig {
     /// Placed-feature registry names that should not generate.
     #[serde(default = "default_disabled_world_features")]
     pub disabled_world_features: Vec<String>,
+    /// Rules for revealing ore veins after natural stone is mined.
+    #[serde(default)]
+    pub ore_reveal: OreRevealConfig,
 }
 
 fn default_disabled_world_features() -> Vec<String> {
@@ -129,6 +133,7 @@ impl Default for MmoConfig {
             message_on_level_up: true,
             save_interval_ticks: 6000,
             disabled_world_features: default_disabled_world_features(),
+            ore_reveal: OreRevealConfig::default(),
         }
     }
 }
@@ -239,5 +244,14 @@ mod tests {
         assert_eq!(level, 3);
         assert_eq!(into, 50);
         assert_eq!(needed, 400);
+    }
+
+    #[test]
+    fn older_mmo_config_gets_default_ore_reveal_rules() {
+        let config: MmoConfig = ron::from_str(
+            "(enabled:true,skills:{},message_on_level_up:true,save_interval_ticks:6000,disabled_world_features:[])",
+        )
+        .unwrap();
+        assert_eq!(config.ore_reveal, OreRevealConfig::default());
     }
 }

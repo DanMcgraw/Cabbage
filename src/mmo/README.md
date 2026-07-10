@@ -3,7 +3,9 @@
 This module implements a small MMORPG-style levelling system for Pumpkin.
 It currently supports **Mining** and **Combat** skills, persists player
 progress in SQLite, and shows a transient bossbar (similar to mcMMO) when a
-player earns XP.
+player earns XP. It also replaces disabled world-generated ores with a
+configurable discovery mechanic: mining natural stone can expose a biome- and
+height-dependent ore vein behind the mined face.
 
 ## Module Layout
 
@@ -16,6 +18,7 @@ src/mmo/
 |-- config.rs          # RON config, per-skill level curves
 |-- db.rs              # SQLite worker thread and async DB API
 |-- events.rs          # BlockBreakEvent / EntityDeathEvent XP handlers
+|-- ore_reveal/        # ore config, probability, shape, and provenance tracking
 |-- player.rs          # player-related utilities
 |-- skills.rs          # SkillId enum and skill metadata
 ```
@@ -30,6 +33,7 @@ src/mmo/
 | `config.rs` | `PluginConfig`, `MmoConfig`, `SkillConfig`, and `LevelCurve`. Computes XP thresholds from RON values. |
 | `db.rs` | `MmoDatabase` — a dedicated SQLite worker thread with an async request/response API. |
 | `events.rs` | Event-driven XP awards: ore blocks → Mining, mob kills → Combat. |
+| `ore_reveal/` | Validated ore rules, deterministic vein growth, world replacement, and player-placed host tracking. |
 | `player.rs` | Small helpers for resolving players from server state. |
 | `skills.rs` | `SkillId` enum, canonical skill list, and display names. |
 
@@ -114,12 +118,23 @@ CREATE TABLE ore_xp (
     block_name TEXT PRIMARY KEY,
     xp         INTEGER NOT NULL
 );
+
+CREATE TABLE non_natural_blocks (
+    world_name    TEXT NOT NULL,
+    dimension_name TEXT NOT NULL,
+    x INTEGER NOT NULL,
+    y INTEGER NOT NULL,
+    z INTEGER NOT NULL,
+    PRIMARY KEY (world_name, dimension_name, x, y, z)
+);
 ```
 
 - `player_skills` stores cumulative XP per (player, skill). The level is
   derived on read via `LevelCurve::level_for_xp`.
 - `mob_xp` maps mob resource names (e.g. `zombie`, `enderman`) to combat XP.
 - `ore_xp` maps block names (e.g. `diamond_ore`) to mining XP.
+- `non_natural_blocks` is a sparse denylist of player-placed stone/deepslate,
+  loaded into memory at startup and persisted in per-tick batches.
 
 Default values are seeded on first open; admin commands can overwrite them.
 
@@ -139,12 +154,50 @@ PluginConfig(
             Mining: (max_level: 99, base_xp: 50, xp_multiplier: 1.15),
             Combat: (max_level: 99, base_xp: 60, xp_multiplier: 1.14),
         },
+        ore_reveal: (
+            enabled: true,
+            host_blocks: ["stone", "deepslate"],
+            max_total_frequency: 0.25,
+            shape: (
+                max_radius: 5,
+                branch_chance: 0.22,
+                forward_bias: 1.6,
+                require_hidden_targets: true,
+                max_vein_size: 32,
+            ),
+            ores: [
+                (
+                    id: "diamond",
+                    stone_block: "diamond_ore",
+                    deepslate_block: "deepslate_diamond_ore",
+                    base_frequency: 0.001,
+                    size: (min: 2, max: 4),
+                    height_bands: [
+                        (min_y: -64, max_y: 16, frequency: 1.0, size: 1.0),
+                    ],
+                ),
+            ],
+            biome_multipliers: {
+                "badlands": (
+                    frequency: 1.0,
+                    size: 1.0,
+                    ore_frequency: {"diamond": 0.75},
+                    ore_size: {},
+                ),
+            },
+        ),
     )),
 )
 ```
 
 `LevelCurve` precomputes cumulative XP thresholds from `base_xp` and
-`xp_multiplier` so level lookups are O(1).
+`xp_multiplier` so level lookups are O(1). The shipped ore defaults include
+coal, iron, copper, gold, redstone, lapis, diamond, and emerald. Frequencies
+are per eligible natural block break. Matching biome and height frequency
+multipliers are multiplied together; size multipliers are applied to the
+random inclusive `min..max` size. An empty `height_bands` list makes an ore
+eligible at every height. Biome keys use Pumpkin registry IDs such as
+`badlands`, `stony_peaks`, and `dripstone_caves`.
 
 ## Threading Model
 

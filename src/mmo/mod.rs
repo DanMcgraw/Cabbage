@@ -13,7 +13,11 @@ use pumpkin::{
     plugin::{
         BoxFuture, Context, EventHandler,
         api::events::{
-            block::block_break::BlockBreakEvent, entity::entity_death::EntityDeathEvent,
+            block::{
+                block_break::BlockBreakEvent, block_broken::BlockBrokenEvent,
+                block_place::BlockPlaceEvent,
+            },
+            entity::entity_death::EntityDeathEvent,
             world::feature_generate::FeatureGenerateEvent,
         },
         server::server_tick_start::ServerTickStartEvent,
@@ -27,6 +31,7 @@ pub(crate) mod commands;
 pub(crate) mod config;
 pub(crate) mod db;
 pub(crate) mod events;
+pub(crate) mod ore_reveal;
 pub(crate) mod player;
 pub(crate) mod skills;
 
@@ -49,6 +54,7 @@ pub struct MmoState {
     data_folder: PathBuf,
     curves: Mutex<HashMap<SkillId, LevelCurve>>,
     bossbar_state: BossbarState,
+    ore_reveal_state: ore_reveal::OreRevealState,
     last_tick: AtomicI32,
 }
 
@@ -59,6 +65,9 @@ impl MmoState {
         let mmo_config = plugin_config.mmo.clone().unwrap_or_default();
 
         let db = Arc::new(MmoDatabase::open(data_folder.clone())?);
+        let non_natural = db.load_non_natural_blocks().await?;
+        let ore_reveal_state =
+            ore_reveal::OreRevealState::new(&mmo_config.ore_reveal, non_natural)?;
         let curves = build_curves(&mmo_config);
 
         Ok(Arc::new(Self {
@@ -67,6 +76,7 @@ impl MmoState {
             data_folder,
             curves: Mutex::new(curves),
             bossbar_state: BossbarState::new(),
+            ore_reveal_state,
             last_tick: AtomicI32::new(0),
         }))
     }
@@ -132,6 +142,7 @@ impl MmoState {
     pub async fn reload_config(&self) -> Result<(), String> {
         let plugin_config = load_plugin_config(&self.data_folder)?;
         let mmo_config = plugin_config.mmo.clone().unwrap_or_default();
+        self.ore_reveal_state.reload(&mmo_config.ore_reveal)?;
 
         if let Ok(mut guard) = self.config.lock() {
             *guard = mmo_config.clone();
@@ -246,6 +257,32 @@ impl EventHandler<EntityDeathEvent> for MmoState {
     }
 }
 
+impl EventHandler<BlockPlaceEvent> for MmoState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a BlockPlaceEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            self.ore_reveal_state.handle_block_place(event);
+        })
+    }
+}
+
+impl EventHandler<BlockBrokenEvent> for MmoState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a BlockBrokenEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            self.ore_reveal_state
+                .handle_block_broken(event, self.is_enabled())
+                .await;
+        })
+    }
+}
+
 impl EventHandler<ServerTickStartEvent> for MmoState {
     fn handle<'a>(
         &'a self,
@@ -255,6 +292,9 @@ impl EventHandler<ServerTickStartEvent> for MmoState {
         Box::pin(async move {
             self.last_tick.store(event.tick, Ordering::Relaxed);
             self.bossbar_state.cleanup_expired(server, event.tick).await;
+            if event.tick.rem_euclid(20) == 0 {
+                self.ore_reveal_state.flush_provenance(&self.db);
+            }
         })
     }
 }

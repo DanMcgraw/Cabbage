@@ -435,6 +435,20 @@ impl Plugin for CabbagePlugin {
                     )
                     .await;
                 context
+                    .register_event::<pumpkin::plugin::api::events::block::block_place::BlockPlaceEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        false,
+                    )
+                    .await;
+                context
+                    .register_event::<pumpkin::plugin::api::events::block::block_broken::BlockBrokenEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        false,
+                    )
+                    .await;
+                context
                     .register_event::<EntityDeathEvent, _>(
                         mmo_state.clone(),
                         EventPriority::Normal,
