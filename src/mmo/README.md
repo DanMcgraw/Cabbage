@@ -109,16 +109,6 @@ CREATE TABLE player_skills (
     PRIMARY KEY (player_uuid, skill)
 );
 
-CREATE TABLE mob_xp (
-    mob_resource_name TEXT PRIMARY KEY,
-    xp                INTEGER NOT NULL
-);
-
-CREATE TABLE ore_xp (
-    block_name TEXT PRIMARY KEY,
-    xp         INTEGER NOT NULL
-);
-
 CREATE TABLE non_natural_blocks (
     world_name    TEXT NOT NULL,
     dimension_name TEXT NOT NULL,
@@ -131,12 +121,12 @@ CREATE TABLE non_natural_blocks (
 
 - `player_skills` stores cumulative XP per (player, skill). The level is
   derived on read via `LevelCurve::level_for_xp`.
-- `mob_xp` maps mob resource names (e.g. `zombie`, `enderman`) to combat XP.
-- `ore_xp` maps block names (e.g. `diamond_ore`) to mining XP.
 - `non_natural_blocks` is a sparse denylist of player-placed stone/deepslate,
   loaded into memory at startup and persisted in per-tick batches.
 
-Default values are seeded on first open; admin commands can overwrite them.
+Mob and block XP rewards are static balance configuration and live in RON.
+When upgrading, Cabbage migrates any customized `mob_xp` and `ore_xp` rows
+into RON once, then drops those obsolete SQLite tables.
 
 ## Configuration
 
@@ -154,6 +144,22 @@ PluginConfig(
             Mining: (max_level: 99, base_xp: 50, xp_multiplier: 1.15),
             Combat: (max_level: 99, base_xp: 60, xp_multiplier: 1.14),
         },
+        reward_config_version: 1,
+        xp_rewards: (
+            mobs: {
+                "zombie": 12,
+                "skeleton": 14,
+                "creeper": 18,
+            },
+            blocks: {
+                "coal_ore": 8,
+                "deepslate_coal_ore": 10,
+                "diamond_ore": 60,
+                "deepslate_diamond_ore": 70,
+                "emerald_ore": 50,
+                "deepslate_emerald_ore": 55,
+            },
+        ),
         ore_reveal: (
             enabled: true,
             host_blocks: ["stone", "deepslate"],
@@ -203,6 +209,7 @@ eligible at every height. Biome keys use Pumpkin registry IDs such as
 
 - All Pumpkin event handlers run on the async Tokio runtime.
 - SQLite access is **never** performed directly on the game thread.
+- Mob and block reward lookups are in-memory reads from the reloaded RON config.
 - `MmoDatabase` spawns a single dedicated worker thread that owns the
   `rusqlite::Connection`. Async methods send a request over an `mpsc`
   channel and await the response via a `futures::channel::oneshot`.
@@ -217,7 +224,7 @@ eligible at every height. Biome keys use Pumpkin registry IDs such as
 3. Wire an event handler in `events.rs` that awards XP and calls
    `state.show_xp_bossbar(...)`.
 4. Register the event in `mod.rs` (if a new event type is needed).
-5. Add a default XP source table (or reuse `mob_xp`/`ore_xp`) in `db.rs`.
+5. Add its reward source to `xp_rewards` in `config.rs`.
 
 ## Notes
 

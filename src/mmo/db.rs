@@ -1,11 +1,12 @@
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::mpsc::{self, Sender},
     thread::{self, JoinHandle},
 };
 
 use futures::channel::oneshot;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, params};
 use uuid::Uuid;
 
 use super::config::LevelCurve;
@@ -39,20 +40,10 @@ enum DbRequest {
         curve: LevelCurve,
         respond: oneshot::Sender<Result<Vec<(String, u32, u64)>, String>>,
     },
-    GetMobXp {
-        mob_resource_name: String,
-        respond: oneshot::Sender<Result<Option<u64>, String>>,
+    LoadLegacyXpRewards {
+        respond: oneshot::Sender<Result<Option<LegacyXpRewards>, String>>,
     },
-    GetOreXp {
-        block_name: String,
-        respond: oneshot::Sender<Result<Option<u64>, String>>,
-    },
-    ReplaceMobXp {
-        values: Vec<(String, u64)>,
-        respond: oneshot::Sender<Result<(), String>>,
-    },
-    ReplaceOreXp {
-        values: Vec<(String, u64)>,
+    DropLegacyXpRewardTables {
         respond: oneshot::Sender<Result<(), String>>,
     },
     LoadNonNaturalBlocks {
@@ -89,6 +80,12 @@ pub struct XpResult {
     pub leveled_up: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyXpRewards {
+    pub mobs: HashMap<String, u64>,
+    pub blocks: HashMap<String, u64>,
+}
+
 /// Handle to the dedicated database worker thread.
 pub struct MmoDatabase {
     sender: Sender<DbRequest>,
@@ -119,11 +116,6 @@ impl MmoDatabase {
                     log::error!("[Cabbage MMO] failed to run migrations: {e}");
                     return;
                 }
-                if let Err(e) = Self::seed_defaults(&conn) {
-                    log::error!("[Cabbage MMO] failed to seed xp tables: {e}");
-                    return;
-                }
-
                 while let Ok(request) = receiver.recv() {
                     match request {
                         DbRequest::GetSkill {
@@ -171,23 +163,11 @@ impl MmoDatabase {
                         } => {
                             let _ = respond.send(Self::do_get_top(&conn, skill, limit, &curve));
                         }
-                        DbRequest::GetMobXp {
-                            mob_resource_name,
-                            respond,
-                        } => {
-                            let _ = respond.send(Self::do_get_mob_xp(&conn, &mob_resource_name));
+                        DbRequest::LoadLegacyXpRewards { respond } => {
+                            let _ = respond.send(Self::do_load_legacy_xp_rewards(&conn));
                         }
-                        DbRequest::GetOreXp {
-                            block_name,
-                            respond,
-                        } => {
-                            let _ = respond.send(Self::do_get_ore_xp(&conn, &block_name));
-                        }
-                        DbRequest::ReplaceMobXp { values, respond } => {
-                            let _ = respond.send(Self::do_replace_mob_xp(&mut conn, &values));
-                        }
-                        DbRequest::ReplaceOreXp { values, respond } => {
-                            let _ = respond.send(Self::do_replace_ore_xp(&mut conn, &values));
+                        DbRequest::DropLegacyXpRewardTables { respond } => {
+                            let _ = respond.send(Self::do_drop_legacy_xp_reward_tables(&mut conn));
                         }
                         DbRequest::LoadNonNaturalBlocks { respond } => {
                             let _ = respond.send(Self::do_load_non_natural_blocks(&conn));
@@ -220,14 +200,6 @@ impl MmoDatabase {
                 xp INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (player_uuid, skill)
             );",
-            r"CREATE TABLE IF NOT EXISTS mob_xp (
-                mob_resource_name TEXT PRIMARY KEY,
-                xp INTEGER NOT NULL
-            );",
-            r"CREATE TABLE IF NOT EXISTS ore_xp (
-                block_name TEXT PRIMARY KEY,
-                xp INTEGER NOT NULL
-            );",
             r"CREATE TABLE IF NOT EXISTS non_natural_blocks (
                 world_name TEXT NOT NULL,
                 dimension_name TEXT NOT NULL,
@@ -247,38 +219,6 @@ impl MmoDatabase {
         // not have it; existing databases may still carry it from older builds.
         let _ = conn.execute("ALTER TABLE player_skills DROP COLUMN level", []);
 
-        Ok(())
-    }
-
-    fn seed_defaults(conn: &Connection) -> Result<(), String> {
-        let mob_sql = r"
-            INSERT OR IGNORE INTO mob_xp (mob_resource_name, xp) VALUES
-                ('zombie', 12), ('skeleton', 14), ('creeper', 18),
-                ('spider', 12), ('enderman', 28), ('witch', 24),
-                ('drowned', 14), ('husk', 14), ('stray', 14),
-                ('phantom', 20), ('slime', 8), ('cave_spider', 14),
-                ('piglin', 16), ('piglin_brute', 32), ('zombified_piglin', 16),
-                ('blaze', 22), ('ghast', 28), ('wither_skeleton', 30);
-        ";
-
-        let ore_sql = r"
-            INSERT OR IGNORE INTO ore_xp (block_name, xp) VALUES
-                ('coal_ore', 8), ('deepslate_coal_ore', 10),
-                ('iron_ore', 15), ('deepslate_iron_ore', 18),
-                ('copper_ore', 12), ('deepslate_copper_ore', 14),
-                ('gold_ore', 25), ('deepslate_gold_ore', 28),
-                ('redstone_ore', 12), ('deepslate_redstone_ore', 14),
-                ('lapis_ore', 20), ('deepslate_lapis_ore', 22),
-                ('diamond_ore', 60), ('deepslate_diamond_ore', 70),
-                ('emerald_ore', 50), ('deepslate_emerald_ore', 55),
-                ('nether_quartz_ore', 16), ('nether_gold_ore', 22),
-                ('ancient_debris', 150);
-        ";
-
-        conn.execute(mob_sql, [])
-            .map_err(|e| format!("failed to seed mob xp table: {e}"))?;
-        conn.execute(ore_sql, [])
-            .map_err(|e| format!("failed to seed ore xp table: {e}"))?;
         Ok(())
     }
 
@@ -385,68 +325,62 @@ impl MmoDatabase {
         Ok(results)
     }
 
-    fn do_get_mob_xp(conn: &Connection, mob_resource_name: &str) -> Result<Option<u64>, String> {
-        let result = conn
-            .query_row(
-                "SELECT xp FROM mob_xp WHERE mob_resource_name = ?1",
-                params![mob_resource_name],
-                |row| {
-                    let xp: i64 = row.get(0).unwrap_or(0);
-                    Ok(xp.max(0) as u64)
-                },
-            )
-            .optional()
-            .map_err(|e| format!("failed to query mob xp: {e}"))?;
-        Ok(result)
-    }
-
-    fn do_get_ore_xp(conn: &Connection, block_name: &str) -> Result<Option<u64>, String> {
-        let result = conn
-            .query_row(
-                "SELECT xp FROM ore_xp WHERE block_name = ?1",
-                params![block_name],
-                |row| {
-                    let xp: i64 = row.get(0).unwrap_or(0);
-                    Ok(xp.max(0) as u64)
-                },
-            )
-            .optional()
-            .map_err(|e| format!("failed to query ore xp: {e}"))?;
-        Ok(result)
-    }
-
-    fn do_replace_mob_xp(conn: &mut Connection, values: &[(String, u64)]) -> Result<(), String> {
-        let tx = conn
-            .transaction()
-            .map_err(|e| format!("failed to start mob xp transaction: {e}"))?;
-        tx.execute("DELETE FROM mob_xp", [])
-            .map_err(|e| format!("failed to clear mob xp table: {e}"))?;
-        for (name, xp) in values {
-            tx.execute(
-                "INSERT INTO mob_xp (mob_resource_name, xp) VALUES (?1, ?2)",
-                params![name.as_str(), *xp as i64],
-            )
-            .map_err(|e| format!("failed to insert mob xp: {e}"))?;
+    fn do_load_legacy_xp_rewards(conn: &Connection) -> Result<Option<LegacyXpRewards>, String> {
+        let mob_exists = Self::table_exists(conn, "mob_xp")?;
+        let block_exists = Self::table_exists(conn, "ore_xp")?;
+        if !mob_exists && !block_exists {
+            return Ok(None);
         }
-        tx.commit()
-            .map_err(|e| format!("failed to commit mob xp transaction: {e}"))
+
+        let mobs = if mob_exists {
+            Self::read_legacy_rewards(conn, "SELECT mob_resource_name, xp FROM mob_xp")?
+        } else {
+            HashMap::new()
+        };
+        let blocks = if block_exists {
+            Self::read_legacy_rewards(conn, "SELECT block_name, xp FROM ore_xp")?
+        } else {
+            HashMap::new()
+        };
+        Ok(Some(LegacyXpRewards { mobs, blocks }))
     }
 
-    fn do_replace_ore_xp(conn: &mut Connection, values: &[(String, u64)]) -> Result<(), String> {
-        let tx = conn
+    fn do_drop_legacy_xp_reward_tables(conn: &mut Connection) -> Result<(), String> {
+        let transaction = conn
             .transaction()
-            .map_err(|e| format!("failed to start ore xp transaction: {e}"))?;
-        tx.execute("DELETE FROM ore_xp", [])
-            .map_err(|e| format!("failed to clear ore xp table: {e}"))?;
-        for (name, xp) in values {
-            tx.execute(
-                "INSERT INTO ore_xp (block_name, xp) VALUES (?1, ?2)",
-                params![name.as_str(), *xp as i64],
+            .map_err(|error| format!("failed to start XP reward cleanup: {error}"))?;
+        transaction
+            .execute_batch("DROP TABLE IF EXISTS mob_xp; DROP TABLE IF EXISTS ore_xp;")
+            .map_err(|error| format!("failed to remove legacy XP reward tables: {error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("failed to commit XP reward cleanup: {error}"))
+    }
+
+    fn table_exists(conn: &Connection, table: &str) -> Result<bool, String> {
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                params![table],
+                |row| row.get(0),
             )
-            .map_err(|e| format!("failed to insert ore xp: {e}"))?;
-        }
-        tx.commit()
-            .map_err(|e| format!("failed to commit ore xp transaction: {e}"))
+            .map_err(|error| format!("failed to inspect legacy XP tables: {error}"))?;
+        Ok(count > 0)
+    }
+
+    fn read_legacy_rewards(conn: &Connection, sql: &str) -> Result<HashMap<String, u64>, String> {
+        let mut statement = conn
+            .prepare(sql)
+            .map_err(|error| format!("failed to prepare legacy XP query: {error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                let name: String = row.get(0)?;
+                let xp: i64 = row.get(1)?;
+                Ok((name, xp.max(0) as u64))
+            })
+            .map_err(|error| format!("failed to query legacy XP rewards: {error}"))?;
+        rows.collect::<Result<HashMap<_, _>, _>>()
+            .map_err(|error| format!("failed to read legacy XP reward: {error}"))
     }
 
     fn do_load_non_natural_blocks(conn: &Connection) -> Result<Vec<ProvenanceKey>, String> {
@@ -581,25 +515,19 @@ impl MmoDatabase {
             .map_err(|_| "mmo database worker dropped the response".to_string())?
     }
 
-    pub async fn get_mob_xp(&self, mob_resource_name: String) -> Result<Option<u64>, String> {
+    pub async fn load_legacy_xp_rewards(&self) -> Result<Option<LegacyXpRewards>, String> {
         let (tx, rx) = oneshot::channel();
         self.sender
-            .send(DbRequest::GetMobXp {
-                mob_resource_name,
-                respond: tx,
-            })
+            .send(DbRequest::LoadLegacyXpRewards { respond: tx })
             .map_err(|_| "mmo database worker has shut down".to_string())?;
         rx.await
             .map_err(|_| "mmo database worker dropped the response".to_string())?
     }
 
-    pub async fn get_ore_xp(&self, block_name: String) -> Result<Option<u64>, String> {
+    pub async fn drop_legacy_xp_reward_tables(&self) -> Result<(), String> {
         let (tx, rx) = oneshot::channel();
         self.sender
-            .send(DbRequest::GetOreXp {
-                block_name,
-                respond: tx,
-            })
+            .send(DbRequest::DropLegacyXpRewardTables { respond: tx })
             .map_err(|_| "mmo database worker has shut down".to_string())?;
         rx.await
             .map_err(|_| "mmo database worker dropped the response".to_string())?
@@ -621,32 +549,6 @@ impl MmoDatabase {
         self.sender
             .send(DbRequest::ApplyProvenanceChanges { changes })
             .map_err(|_| "mmo database worker has shut down".to_string())
-    }
-
-    #[allow(dead_code)]
-    pub async fn replace_mob_xp(&self, values: Vec<(String, u64)>) -> Result<(), String> {
-        let (tx, rx) = oneshot::channel();
-        self.sender
-            .send(DbRequest::ReplaceMobXp {
-                values,
-                respond: tx,
-            })
-            .map_err(|_| "mmo database worker has shut down".to_string())?;
-        rx.await
-            .map_err(|_| "mmo database worker dropped the response".to_string())?
-    }
-
-    #[allow(dead_code)]
-    pub async fn replace_ore_xp(&self, values: Vec<(String, u64)>) -> Result<(), String> {
-        let (tx, rx) = oneshot::channel();
-        self.sender
-            .send(DbRequest::ReplaceOreXp {
-                values,
-                respond: tx,
-            })
-            .map_err(|_| "mmo database worker has shut down".to_string())?;
-        rx.await
-            .map_err(|_| "mmo database worker dropped the response".to_string())?
     }
 }
 
@@ -698,15 +600,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_ore_xp_present() {
+    async fn fresh_database_has_no_legacy_xp_tables() {
         let (db, folder) = open_test_db();
-        assert!(
-            db.get_ore_xp("diamond_ore".to_string())
-                .await
-                .unwrap()
-                .is_some()
-        );
-        assert!(db.get_ore_xp("dirt".to_string()).await.unwrap().is_none());
+        assert!(db.load_legacy_xp_rewards().await.unwrap().is_none());
+        cleanup(&folder);
+    }
+
+    #[tokio::test]
+    async fn legacy_xp_tables_are_read_and_removed() {
+        let folder = test_db_folder();
+        let conn = Connection::open(folder.join("mmo.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE mob_xp (mob_resource_name TEXT PRIMARY KEY, xp INTEGER NOT NULL);
+             CREATE TABLE ore_xp (block_name TEXT PRIMARY KEY, xp INTEGER NOT NULL);
+             INSERT INTO mob_xp VALUES ('zombie', 99);
+             INSERT INTO ore_xp VALUES ('diamond_ore', 123);",
+        )
+        .unwrap();
+        drop(conn);
+
+        let db = MmoDatabase::open(folder.clone()).unwrap();
+        let rewards = db.load_legacy_xp_rewards().await.unwrap().unwrap();
+        assert_eq!(rewards.mobs.get("zombie"), Some(&99));
+        assert_eq!(rewards.blocks.get("diamond_ore"), Some(&123));
+        assert!(db.load_legacy_xp_rewards().await.unwrap().is_some());
+        db.drop_legacy_xp_reward_tables().await.unwrap();
+        assert!(db.load_legacy_xp_rewards().await.unwrap().is_none());
         cleanup(&folder);
     }
 

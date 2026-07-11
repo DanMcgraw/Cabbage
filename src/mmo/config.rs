@@ -84,6 +84,82 @@ pub struct MmoConfig {
     /// Rules for revealing ore veins after natural stone is mined.
     #[serde(default)]
     pub ore_reveal: OreRevealConfig,
+    /// Schema version for one-time migration of reward values from SQLite.
+    #[serde(default)]
+    pub reward_config_version: u32,
+    /// Static XP rewards, kept in RON so all balance settings reload together.
+    #[serde(default)]
+    pub xp_rewards: XpRewardsConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct XpRewardsConfig {
+    #[serde(default = "default_mob_xp_rewards")]
+    pub mobs: HashMap<String, u64>,
+    #[serde(default = "default_block_xp_rewards")]
+    pub blocks: HashMap<String, u64>,
+}
+
+impl Default for XpRewardsConfig {
+    fn default() -> Self {
+        Self {
+            mobs: default_mob_xp_rewards(),
+            blocks: default_block_xp_rewards(),
+        }
+    }
+}
+
+fn default_mob_xp_rewards() -> HashMap<String, u64> {
+    [
+        ("zombie", 12),
+        ("skeleton", 14),
+        ("creeper", 18),
+        ("spider", 12),
+        ("enderman", 28),
+        ("witch", 24),
+        ("drowned", 14),
+        ("husk", 14),
+        ("stray", 14),
+        ("phantom", 20),
+        ("slime", 8),
+        ("cave_spider", 14),
+        ("piglin", 16),
+        ("piglin_brute", 32),
+        ("zombified_piglin", 16),
+        ("blaze", 22),
+        ("ghast", 28),
+        ("wither_skeleton", 30),
+    ]
+    .into_iter()
+    .map(|(name, xp)| (name.to_string(), xp))
+    .collect()
+}
+
+fn default_block_xp_rewards() -> HashMap<String, u64> {
+    [
+        ("coal_ore", 8),
+        ("deepslate_coal_ore", 10),
+        ("iron_ore", 15),
+        ("deepslate_iron_ore", 18),
+        ("copper_ore", 12),
+        ("deepslate_copper_ore", 14),
+        ("gold_ore", 25),
+        ("deepslate_gold_ore", 28),
+        ("redstone_ore", 12),
+        ("deepslate_redstone_ore", 14),
+        ("lapis_ore", 20),
+        ("deepslate_lapis_ore", 22),
+        ("diamond_ore", 60),
+        ("deepslate_diamond_ore", 70),
+        ("emerald_ore", 50),
+        ("deepslate_emerald_ore", 55),
+        ("nether_quartz_ore", 16),
+        ("nether_gold_ore", 22),
+        ("ancient_debris", 150),
+    ]
+    .into_iter()
+    .map(|(name, xp)| (name.to_string(), xp))
+    .collect()
 }
 
 fn default_disabled_world_features() -> Vec<String> {
@@ -105,6 +181,7 @@ fn default_disabled_world_features() -> Vec<String> {
         "ore_lapis_buried".to_string(),
         "ore_copper".to_string(),
         "ore_copper_large".to_string(),
+        "ore_emerald".to_string(),
     ]
 }
 
@@ -134,6 +211,8 @@ impl Default for MmoConfig {
             save_interval_ticks: 6000,
             disabled_world_features: default_disabled_world_features(),
             ore_reveal: OreRevealConfig::default(),
+            reward_config_version: 0,
+            xp_rewards: XpRewardsConfig::default(),
         }
     }
 }
@@ -253,5 +332,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.ore_reveal, OreRevealConfig::default());
+        assert_eq!(config.reward_config_version, 0);
+        assert_eq!(config.xp_rewards, XpRewardsConfig::default());
+    }
+
+    #[test]
+    fn default_worldgen_blacklist_includes_emerald() {
+        assert!(default_disabled_world_features().contains(&"ore_emerald".to_string()));
+    }
+
+    #[test]
+    fn default_xp_rewards_match_expected_values() {
+        let rewards = XpRewardsConfig::default();
+        assert_eq!(rewards.mobs.get("zombie"), Some(&12));
+        assert_eq!(rewards.blocks.get("diamond_ore"), Some(&60));
+        assert_eq!(rewards.blocks.get("deepslate_emerald_ore"), Some(&55));
     }
 }

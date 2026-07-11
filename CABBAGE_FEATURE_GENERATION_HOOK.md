@@ -144,7 +144,7 @@ disabled_world_features: [
 ],
 ```
 
-> Note: `ore_emerald`, `ore_ancient_debris_large`, `ore_debris_small`, and Nether-specific ores (`ore_gold_nether`, `ore_quartz_nether`, etc.) are intentionally excluded from this default. Add or remove names as desired.
+> Note: `ore_emerald` is included because emerald is supplied by Cabbage's ore-reveal system. Ancient debris and Nether-specific ores remain intentionally excluded from this default.
 
 ---
 

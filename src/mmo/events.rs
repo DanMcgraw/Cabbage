@@ -15,23 +15,19 @@ use pumpkin_util::text::{TextComponent, color::NamedColor};
 
 use super::{MmoState, skills::SkillId};
 
-/// Award mining XP when a player breaks an ore block.
+/// Award mining XP when a broken block has a configured reward.
 pub async fn handle_block_break(state: &MmoState, event: &BlockBreakEvent) {
     let Some(player) = event.player.as_ref() else {
         return;
     };
 
     let block_name = event.block.name;
-    if !block_name.ends_with("_ore") {
-        return;
-    }
-
-    let db = state.db();
     let current_tick = state.current_tick();
 
-    let Some(xp) = db.get_ore_xp(block_name.to_string()).await.ok().flatten() else {
+    let Some(xp) = state.block_xp_reward(block_name) else {
         return;
     };
+    let db = state.db();
 
     let uuid = player.gameprofile.id;
     let skill = SkillId::Mining;
@@ -75,13 +71,13 @@ pub async fn handle_entity_death(state: &MmoState, server: Arc<Server>, event: &
         return;
     };
 
-    let db = state.db();
     let current_tick = state.current_tick();
 
     let mob_name = event.entity.get_entity().entity_type.resource_name;
-    let Some(xp) = db.get_mob_xp(mob_name.to_string()).await.ok().flatten() else {
+    let Some(xp) = state.mob_xp_reward(mob_name) else {
         return;
     };
+    let db = state.db();
 
     let uuid = player.gameprofile.id;
     let skill = SkillId::Combat;
@@ -141,14 +137,20 @@ fn find_player_by_uuid(server: &Server, uuid: uuid::Uuid) -> Option<Arc<Player>>
 /// Cancel feature placement if the feature is in the MMO blacklist.
 pub async fn handle_feature_generate(state: &MmoState, event: &mut FeatureGenerateEvent) {
     let feature_name = placed_feature_name(event.feature);
-    if state
-        .config()
-        .disabled_world_features
-        .iter()
-        .any(|name| name == &feature_name)
-    {
+    if should_disable_world_feature(&state.config(), &feature_name) {
         event.cancelled = true;
     }
+}
+
+fn should_disable_world_feature(config: &super::config::MmoConfig, feature_name: &str) -> bool {
+    // Existing config files already contain a serialized blacklist, so adding
+    // emerald to the default alone would not migrate them. Keep emerald tied
+    // to the reveal system even for those existing installations.
+    (config.ore_reveal.enabled && feature_name == "ore_emerald")
+        || config
+            .disabled_world_features
+            .iter()
+            .any(|name| name == feature_name)
 }
 
 /// Convert a `PlacedFeature` enum variant to its snake_case registry name.
@@ -162,4 +164,25 @@ fn placed_feature_name(feature: pumpkin_data::placed_feature::PlacedFeature) -> 
         snake.push(ch.to_ascii_lowercase());
     }
     snake
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn emerald_worldgen_is_disabled_for_existing_configs() {
+        let mut config = super::super::config::MmoConfig::default();
+        config.disabled_world_features.clear();
+        assert!(should_disable_world_feature(&config, "ore_emerald"));
+        assert!(!should_disable_world_feature(&config, "ore_diamond"));
+    }
+
+    #[test]
+    fn emerald_worldgen_can_follow_reveal_disable_switch() {
+        let mut config = super::super::config::MmoConfig::default();
+        config.disabled_world_features.clear();
+        config.ore_reveal.enabled = false;
+        assert!(!should_disable_world_feature(&config, "ore_emerald"));
+    }
 }

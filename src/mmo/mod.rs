@@ -61,10 +61,33 @@ pub struct MmoState {
 impl MmoState {
     /// Initialize the MMO module: load or create config, open the database, and compute curves.
     pub async fn new(data_folder: PathBuf) -> Result<Arc<Self>, String> {
-        let plugin_config = load_plugin_config(&data_folder)?;
-        let mmo_config = plugin_config.mmo.clone().unwrap_or_default();
+        let mut plugin_config = load_plugin_config(&data_folder)?;
+        let mut mmo_config = plugin_config.mmo.clone().unwrap_or_default();
 
         let db = Arc::new(MmoDatabase::open(data_folder.clone())?);
+        let legacy_rewards = db.load_legacy_xp_rewards().await?;
+        let migrate_legacy_rewards = mmo_config.reward_config_version == 0;
+        if migrate_legacy_rewards {
+            if let Some(legacy) = legacy_rewards.as_ref() {
+                if !legacy.mobs.is_empty() {
+                    mmo_config.xp_rewards.mobs = legacy.mobs.clone();
+                }
+                if !legacy.blocks.is_empty() {
+                    mmo_config.xp_rewards.blocks = legacy.blocks.clone();
+                }
+            }
+            mmo_config.reward_config_version = 1;
+            plugin_config.mmo = Some(mmo_config.clone());
+            save_plugin_config(&data_folder, &plugin_config)?;
+        }
+        if legacy_rewards.is_some() {
+            db.drop_legacy_xp_reward_tables().await?;
+            if migrate_legacy_rewards {
+                log::info!("[Cabbage MMO] migrated XP rewards from SQLite to config.ron");
+            } else {
+                log::info!("[Cabbage MMO] removed obsolete SQLite XP reward tables");
+            }
+        }
         let non_natural = db.load_non_natural_blocks().await?;
         let ore_reveal_state =
             ore_reveal::OreRevealState::new(&mmo_config.ore_reveal, non_natural)?;
@@ -102,6 +125,20 @@ impl MmoState {
 
     pub fn db(&self) -> Arc<MmoDatabase> {
         self.db.clone()
+    }
+
+    pub fn mob_xp_reward(&self, mob_name: &str) -> Option<u64> {
+        self.config
+            .lock()
+            .ok()
+            .and_then(|config| config.xp_rewards.mobs.get(mob_name).copied())
+    }
+
+    pub fn block_xp_reward(&self, block_name: &str) -> Option<u64> {
+        self.config
+            .lock()
+            .ok()
+            .and_then(|config| config.xp_rewards.blocks.get(block_name).copied())
     }
 
     /// Last server tick observed by this module.
