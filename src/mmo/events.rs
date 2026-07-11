@@ -1,17 +1,21 @@
 use std::sync::Arc;
 
 use pumpkin::{
-    entity::{
-        Entity, EntityBase, player::Player, projectile::firework_rocket::FireworkRocketEntity,
-    },
+    entity::{EntityBase, player::Player},
     plugin::api::events::{
         block::block_break::BlockBreakEvent, entity::entity_death::EntityDeathEvent,
         world::feature_generate::FeatureGenerateEvent,
     },
     server::Server,
 };
-use pumpkin_data::sound::{Sound, SoundCategory};
-use pumpkin_util::text::{TextComponent, color::NamedColor};
+use pumpkin_data::{
+    particle::Particle,
+    sound::{Sound, SoundCategory},
+};
+use pumpkin_util::{
+    math::vector3::Vector3,
+    text::{TextComponent, color::NamedColor},
+};
 
 use super::{MmoState, skills::SkillId};
 
@@ -105,8 +109,8 @@ pub async fn handle_entity_death(state: &MmoState, server: Arc<Server>, event: &
     }
 }
 
-/// Play an anvil sound at the player, and spawn fireworks when they hit a
-/// multiple-of-10 level milestone.
+/// Play an anvil sound at the player, and celebrate a multiple-of-10 level
+/// milestone with firework particles and sounds above them.
 async fn celebrate_level_up(player: &Arc<Player>, new_level: u32) {
     let world = player.get_entity().world.load_full();
     let pos = player.get_entity().pos.load();
@@ -114,14 +118,27 @@ async fn celebrate_level_up(player: &Arc<Player>, new_level: u32) {
     world.play_sound(Sound::BlockAnvilUse, SoundCategory::Players, &pos);
 
     if new_level % 10 == 0 {
-        let rocket_entity = Entity::new(
-            world.clone(),
-            pos,
-            &pumpkin_data::entity::EntityType::FIREWORK_ROCKET,
+        // Use particles and sounds instead of spawning a firework rocket entity.
+        // Pumpkin's firework entity currently has incomplete visuals/sounds and
+        // its collision/sync can freeze or glitch the player.
+        let firework_pos = pos + Vector3::new(0.0, 2.0, 0.0);
+        world.play_sound(
+            Sound::EntityFireworkRocketLaunch,
+            SoundCategory::Players,
+            &firework_pos,
         );
-        let rocket = FireworkRocketEntity::new(rocket_entity);
-        let rocket_arc: Arc<dyn EntityBase> = Arc::new(rocket);
-        world.spawn_entity(rocket_arc).await;
+        world.spawn_particle(
+            firework_pos,
+            Vector3::new(0.3, 0.3, 0.3),
+            0.1,
+            30,
+            Particle::Firework,
+        );
+        world.play_sound(
+            Sound::EntityFireworkRocketTwinkle,
+            SoundCategory::Players,
+            &firework_pos,
+        );
     }
 }
 
