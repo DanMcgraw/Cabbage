@@ -308,7 +308,7 @@ impl Plugin for CabbagePlugin {
             self.event_log_state
                 .set_log_path(context.get_data_folder().join(EVENT_LOG_FILE));
 
-            match mmo::MmoState::new(context.get_data_folder()).await {
+            match mmo::MmoState::new(context.clone()).await {
                 Ok(state) => {
                     self.mmo_state = Some(state);
                 }
@@ -443,13 +443,6 @@ impl Plugin for CabbagePlugin {
                     .await;
                 context
                     .register_event::<pumpkin::plugin::api::events::block::block_broken::BlockBrokenEvent, _>(
-                        mmo_state.clone(),
-                        EventPriority::Normal,
-                        false,
-                    )
-                    .await;
-                context
-                    .register_event::<EntityDeathEvent, _>(
                         mmo_state.clone(),
                         EventPriority::Normal,
                         false,

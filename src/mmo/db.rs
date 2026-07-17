@@ -52,6 +52,13 @@ enum DbRequest {
     ApplyProvenanceChanges {
         changes: Vec<ProvenanceChange>,
     },
+    CombatMigrationStatus {
+        respond: oneshot::Sender<Result<CombatMigrationStatus, String>>,
+    },
+    MigrateCombatXp {
+        target: SkillId,
+        respond: oneshot::Sender<Result<CombatMigrationOutcome, String>>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +93,29 @@ pub struct LegacyXpRewards {
     pub blocks: HashMap<String, u64>,
 }
 
+/// Storage key the retired two-branch Combat skill used in `player_skills`.
+pub const LEGACY_COMBAT_SKILL_KEY: &str = "Combat";
+
+/// Current SQLite schema version. Bump when adding migrations; each version's
+/// migration runs exactly once, in order.
+pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+
+/// Snapshot of the legacy Combat XP preservation record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CombatMigrationStatus {
+    pub schema_version: u32,
+    pub players_with_legacy_xp: u64,
+    pub total_legacy_xp: u64,
+    pub migrated_to: Option<String>,
+}
+
+/// Result of moving legacy Combat XP into a destination skill.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CombatMigrationOutcome {
+    pub players_migrated: u64,
+    pub xp_moved: u64,
+}
+
 /// Handle to the dedicated database worker thread.
 pub struct MmoDatabase {
     sender: Sender<DbRequest>,
@@ -112,7 +142,7 @@ impl MmoDatabase {
                     }
                 };
 
-                if let Err(e) = Self::migrate(&conn) {
+                if let Err(e) = Self::migrate(&mut conn) {
                     log::error!("[Cabbage MMO] failed to run migrations: {e}");
                     return;
                 }
@@ -181,6 +211,12 @@ impl MmoDatabase {
                                 );
                             }
                         }
+                        DbRequest::CombatMigrationStatus { respond } => {
+                            let _ = respond.send(Self::do_combat_migration_status(&conn));
+                        }
+                        DbRequest::MigrateCombatXp { target, respond } => {
+                            let _ = respond.send(Self::do_migrate_combat_xp(&mut conn, target));
+                        }
                     }
                 }
             })
@@ -192,7 +228,7 @@ impl MmoDatabase {
         })
     }
 
-    fn migrate(conn: &Connection) -> Result<(), String> {
+    fn migrate(conn: &mut Connection) -> Result<(), String> {
         let statements = [
             r"CREATE TABLE IF NOT EXISTS player_skills (
                 player_uuid TEXT NOT NULL,
@@ -208,6 +244,14 @@ impl MmoDatabase {
                 z INTEGER NOT NULL,
                 PRIMARY KEY (world_name, dimension_name, x, y, z)
             );",
+            r"CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );",
+            r"CREATE TABLE IF NOT EXISTS legacy_combat_xp (
+                player_uuid TEXT PRIMARY KEY,
+                xp INTEGER NOT NULL DEFAULT 0
+            );",
         ];
 
         for sql in statements {
@@ -219,7 +263,129 @@ impl MmoDatabase {
         // not have it; existing databases may still carry it from older builds.
         let _ = conn.execute("ALTER TABLE player_skills DROP COLUMN level", []);
 
+        // Schema v1: retire the Combat skill. Preserve any stored Combat XP in
+        // the legacy_combat_xp record; administrators choose its destination
+        // later via config or `/mmo migrate combat <skill>`. Idempotent: the
+        // version row guards re-entry even if the server restarts mid-upgrade.
+        let schema_version = Self::schema_version(conn)?;
+        if schema_version < CURRENT_SCHEMA_VERSION {
+            let transaction = conn
+                .transaction()
+                .map_err(|e| format!("failed to start combat retirement migration: {e}"))?;
+            transaction
+                .execute(
+                    "INSERT INTO legacy_combat_xp (player_uuid, xp)
+                     SELECT player_uuid, xp FROM player_skills WHERE skill = ?1
+                     ON CONFLICT(player_uuid) DO UPDATE SET xp = excluded.xp",
+                    params![LEGACY_COMBAT_SKILL_KEY],
+                )
+                .map_err(|e| format!("failed to preserve legacy combat xp: {e}"))?;
+            transaction
+                .execute(
+                    "DELETE FROM player_skills WHERE skill = ?1",
+                    params![LEGACY_COMBAT_SKILL_KEY],
+                )
+                .map_err(|e| format!("failed to remove legacy combat rows: {e}"))?;
+            transaction
+                .execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '1')",
+                    [],
+                )
+                .map_err(|e| format!("failed to record schema version: {e}"))?;
+            transaction
+                .commit()
+                .map_err(|e| format!("failed to commit combat retirement migration: {e}"))?;
+            log::info!("[Cabbage MMO] retired Combat skill; XP preserved in legacy record");
+        }
+
         Ok(())
+    }
+
+    fn schema_version(conn: &Connection) -> Result<u32, String> {
+        let version: Option<String> = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        Ok(version.and_then(|v| v.parse::<u32>().ok()).unwrap_or(0))
+    }
+
+    fn do_combat_migration_status(conn: &Connection) -> Result<CombatMigrationStatus, String> {
+        let (players, total_xp): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(xp), 0) FROM legacy_combat_xp",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|e| format!("failed to read legacy combat record: {e}"))?;
+        let migrated_to: Option<String> = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'combat_migrated_to'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        Ok(CombatMigrationStatus {
+            schema_version: Self::schema_version(conn)?,
+            players_with_legacy_xp: players.max(0) as u64,
+            total_legacy_xp: total_xp.max(0) as u64,
+            migrated_to,
+        })
+    }
+
+    fn do_migrate_combat_xp(
+        conn: &mut Connection,
+        target: SkillId,
+    ) -> Result<CombatMigrationOutcome, String> {
+        let transaction = conn
+            .transaction()
+            .map_err(|e| format!("failed to start combat migration: {e}"))?;
+
+        let rows: Vec<(String, i64)> = {
+            let mut stmt = transaction
+                .prepare("SELECT player_uuid, xp FROM legacy_combat_xp")
+                .map_err(|e| format!("failed to prepare legacy combat query: {e}"))?;
+            let mapped = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(|e| format!("failed to read legacy combat rows: {e}"))?;
+            mapped
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("failed to read legacy combat row: {e}"))?
+        };
+
+        let mut xp_moved = 0i64;
+        for (player_uuid, xp) in &rows {
+            transaction
+                .execute(
+                    "INSERT INTO player_skills (player_uuid, skill, xp)
+                     VALUES (?1, ?2, ?3)
+                     ON CONFLICT(player_uuid, skill)
+                     DO UPDATE SET xp = xp + excluded.xp",
+                    params![player_uuid, target.as_str(), xp],
+                )
+                .map_err(|e| format!("failed to move combat xp: {e}"))?;
+            xp_moved += xp;
+        }
+
+        transaction
+            .execute("DELETE FROM legacy_combat_xp", [])
+            .map_err(|e| format!("failed to clear legacy combat record: {e}"))?;
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('combat_migrated_to', ?1)",
+                params![target.as_str()],
+            )
+            .map_err(|e| format!("failed to record combat migration: {e}"))?;
+        transaction
+            .commit()
+            .map_err(|e| format!("failed to commit combat migration: {e}"))?;
+
+        Ok(CombatMigrationOutcome {
+            players_migrated: rows.len() as u64,
+            xp_moved: xp_moved.max(0) as u64,
+        })
     }
 
     fn do_get_skill(
@@ -550,6 +716,33 @@ impl MmoDatabase {
             .send(DbRequest::ApplyProvenanceChanges { changes })
             .map_err(|_| "mmo database worker has shut down".to_string())
     }
+
+    /// Snapshot of the legacy Combat XP preservation record.
+    pub async fn combat_migration_status(&self) -> Result<CombatMigrationStatus, String> {
+        let (tx, rx) = oneshot::channel();
+        self.sender
+            .send(DbRequest::CombatMigrationStatus { respond: tx })
+            .map_err(|_| "mmo database worker has shut down".to_string())?;
+        rx.await
+            .map_err(|_| "mmo database worker dropped the response".to_string())?
+    }
+
+    /// One-time, idempotent migration of preserved legacy Combat XP into the
+    /// given destination skill.
+    pub async fn migrate_combat_xp(
+        &self,
+        target: SkillId,
+    ) -> Result<CombatMigrationOutcome, String> {
+        let (tx, rx) = oneshot::channel();
+        self.sender
+            .send(DbRequest::MigrateCombatXp {
+                target,
+                respond: tx,
+            })
+            .map_err(|_| "mmo database worker has shut down".to_string())?;
+        rx.await
+            .map_err(|_| "mmo database worker dropped the response".to_string())?
+    }
 }
 
 #[cfg(test)]
@@ -583,6 +776,7 @@ mod tests {
             max_level: 99,
             base_xp: 50,
             xp_multiplier: 1.15,
+            enabled: true,
         });
 
         let result = db
@@ -655,6 +849,108 @@ mod tests {
         }])
         .unwrap();
         assert!(db.load_non_natural_blocks().await.unwrap().is_empty());
+        cleanup(&folder);
+    }
+
+    fn seed_legacy_two_skill_db(folder: &PathBuf) -> Uuid {
+        let conn = Connection::open(folder.join("mmo.db")).unwrap();
+        let uuid = Uuid::new_v4();
+        conn.execute_batch(
+            "CREATE TABLE player_skills (
+                player_uuid TEXT NOT NULL,
+                skill TEXT NOT NULL,
+                xp INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (player_uuid, skill)
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO player_skills (player_uuid, skill, xp) VALUES (?1, 'Mining', 500)",
+            params![uuid.to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO player_skills (player_uuid, skill, xp) VALUES (?1, 'Combat', 750)",
+            params![uuid.to_string()],
+        )
+        .unwrap();
+        drop(conn);
+        uuid
+    }
+
+    #[tokio::test]
+    async fn combat_xp_is_preserved_in_legacy_record() {
+        let folder = test_db_folder();
+        let uuid = seed_legacy_two_skill_db(&folder);
+
+        let db = MmoDatabase::open(folder.clone()).unwrap();
+        let status = db.combat_migration_status().await.unwrap();
+        assert_eq!(status.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(status.players_with_legacy_xp, 1);
+        assert_eq!(status.total_legacy_xp, 750);
+        assert_eq!(status.migrated_to, None);
+
+        // Mining rows are untouched; Combat rows left player_skills.
+        let mining = db.get_skill(uuid, SkillId::Mining).await.unwrap();
+        assert_eq!(mining.xp, 500);
+
+        // Re-opening must not re-run or duplicate the migration.
+        drop(db);
+        let db = MmoDatabase::open(folder.clone()).unwrap();
+        let status = db.combat_migration_status().await.unwrap();
+        assert_eq!(status.players_with_legacy_xp, 1);
+        assert_eq!(status.total_legacy_xp, 750);
+        cleanup(&folder);
+    }
+
+    #[tokio::test]
+    async fn combat_migration_moves_xp_once() {
+        let folder = test_db_folder();
+        let uuid = seed_legacy_two_skill_db(&folder);
+
+        let db = MmoDatabase::open(folder.clone()).unwrap();
+        let outcome = db.migrate_combat_xp(SkillId::Blades).await.unwrap();
+        assert_eq!(outcome.players_migrated, 1);
+        assert_eq!(outcome.xp_moved, 750);
+
+        let blades = db.get_skill(uuid, SkillId::Blades).await.unwrap();
+        assert_eq!(blades.xp, 750);
+
+        let status = db.combat_migration_status().await.unwrap();
+        assert_eq!(status.players_with_legacy_xp, 0);
+        assert_eq!(status.migrated_to.as_deref(), Some("Blades"));
+
+        // A second run is a no-op.
+        let outcome = db.migrate_combat_xp(SkillId::Blades).await.unwrap();
+        assert_eq!(outcome.players_migrated, 0);
+        assert_eq!(outcome.xp_moved, 0);
+        let blades = db.get_skill(uuid, SkillId::Blades).await.unwrap();
+        assert_eq!(blades.xp, 750);
+        cleanup(&folder);
+    }
+
+    #[tokio::test]
+    async fn combat_migration_adds_to_existing_destination_xp() {
+        let folder = test_db_folder();
+        let uuid = seed_legacy_two_skill_db(&folder);
+
+        let db = MmoDatabase::open(folder.clone()).unwrap();
+        let curve = LevelCurve::new(&super::super::config::SkillConfig::default());
+        db.add_xp(uuid, SkillId::Blades, 50, curve).await.unwrap();
+
+        let outcome = db.migrate_combat_xp(SkillId::Blades).await.unwrap();
+        assert_eq!(outcome.xp_moved, 750);
+        let blades = db.get_skill(uuid, SkillId::Blades).await.unwrap();
+        assert_eq!(blades.xp, 800);
+        cleanup(&folder);
+    }
+
+    #[tokio::test]
+    async fn fresh_database_reports_current_schema_version() {
+        let (db, folder) = open_test_db();
+        let status = db.combat_migration_status().await.unwrap();
+        assert_eq!(status.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(status.players_with_legacy_xp, 0);
         cleanup(&folder);
     }
 }

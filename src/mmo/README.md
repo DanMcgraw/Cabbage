@@ -1,9 +1,10 @@
 # Cabbage MMO Module
 
-This module implements a small MMORPG-style levelling system for Pumpkin.
-It currently supports **Mining** and **Combat** skills, persists player
-progress in SQLite, and shows a transient bossbar (similar to mcMMO) when a
-player earns XP. It also replaces disabled world-generated ores with a
+This module implements a three-branch MMORPG-style levelling system for
+Pumpkin, following the phased plan in `src/mmo/plan.md`. It supports **23
+skills** across the Frontier, Warfare, and Enterprise branches, persists
+player progress in SQLite, and shows a transient bossbar (similar to mcMMO)
+when a player earns XP. It also replaces disabled world-generated ores with a
 configurable discovery mechanic: mining natural stone can expose a biome- and
 height-dependent ore vein behind the mined face.
 
@@ -12,43 +13,56 @@ height-dependent ore vein behind the mined face.
 ```text
 src/mmo/
 |-- README.md          # this file
-|-- mod.rs             # MmoState, event handler wiring, public helpers
-|-- bossbar.rs         # transient skill-progress bossbars
+|-- plan.md            # phased implementation plan
+|-- mod.rs             # MmoState, lifecycle, event registration, feature blacklist
+|-- skills.rs          # SkillId (23 skills), BranchId, branch/skill metadata
+|-- progression.rs     # central award_xp path, XpSource, branch mastery, snapshots
+|-- perks/             # perk scaffolding: tick-based cooldown tracker
+|-- persistence/       # typed versioned codecs for Pumpkin player/item/entity/block data
+|-- frontier/          # Frontier skill handlers (Mining live; rest land in Phase 1)
+|-- warfare/           # Warfare skill handlers (Phase 2)
+|-- enterprise/        # Enterprise skill handlers (Phase 3)
+|-- ui/                # bossbars now; menus only when the platform supports them
 |-- commands.rs        # /mmo command tree and admin subcommands
-|-- config.rs          # RON config, per-skill level curves
-|-- db.rs              # SQLite worker thread and async DB API
-|-- events.rs          # BlockBreakEvent / EntityDeathEvent XP handlers
-|-- ore_reveal/        # ore config, probability, shape, and provenance tracking
-|-- player.rs          # player-related utilities
-|-- skills.rs          # SkillId enum and skill metadata
+|-- config.rs          # RON config, per-skill level curves, global perk caps
+|-- db.rs              # SQLite worker thread, schema migrations, async DB API
+`-- ore_reveal/        # ore config, probability, shape, and provenance tracking
 ```
 
-## Responsibilities
+## Skill Model
 
-| File | What it owns |
-|------|--------------|
-| `mod.rs` | `MmoState` — the single shared state used by all event handlers. Loads/saves RON config, owns the DB handle, level curves, and bossbar tracker. |
-| `bossbar.rs` | `BossbarState` — per-player, per-skill bossbar entries with an expiry tick. Sends/updates bars and removes stale ones. |
-| `commands.rs` | `/mmo` player info and `/mmo admin` XP management commands. |
-| `config.rs` | `PluginConfig`, `MmoConfig`, `SkillConfig`, and `LevelCurve`. Computes XP thresholds from RON values. |
-| `db.rs` | `MmoDatabase` — a dedicated SQLite worker thread with an async request/response API. |
-| `events.rs` | Event-driven XP awards: ore blocks → Mining, mob kills → Combat. |
-| `ore_reveal/` | Validated ore rules, deterministic vein growth, world replacement, and player-placed host tracking. |
-| `player.rs` | Small helpers for resolving players from server state. |
-| `skills.rs` | `SkillId` enum, canonical skill list, and display names. |
+| Branch | Skills |
+|---|---|
+| Frontier | Agriculture, Herbalism, Woodcutting, Mining, Excavation, Fishing, Husbandry, Taming |
+| Warfare | Blades, Axes, Archery, Unarmed, Defense, Acrobatics, Sorcery |
+| Enterprise | Smithing, Repair, Salvage, Alchemy, Enchanting, Tinkering, Trading, Charisma |
+
+Each skill levels independently (default max level 100); branch mastery is the
+average of its member skill levels. The legacy `Combat` skill is retired: its
+stored XP is preserved in a `legacy_combat_xp` record (SQLite schema v1) until
+an administrator migrates it via `combat_migration.target` in config.ron or
+`/mmo migrate combat <skill>`. `Mining` XP remains Mining XP.
 
 ## Data Flow
 
 ### Earning XP
 
+All XP flows through one central path: `progression::award_xp(state, player,
+skill, amount, source)`. It enforces module/skill enabled checks, max-level
+behavior, the configured per-award clamp, level-up presentation, bossbar
+refresh, and audit logging.
+
 ```text
-Pumpkin event (BlockBreak / EntityDeath)
+Pumpkin event (BlockBreak, ...)
         │
         ▼
 MmoState event handler (mod.rs)
         │
         ▼
-events::handle_block_break / handle_entity_death
+frontier::mining::handle_block_break (skill handler)
+        │
+        ▼
+progression::award_xp
         │
         ├──► MmoDatabase::add_xp ──► dedicated SQLite worker thread
         │       │
@@ -56,12 +70,9 @@ events::handle_block_break / handle_entity_death
         │   INSERT/UPDATE player_skills
         │   returns XpResult { new_level, new_xp, leveled_up }
         │
-        ├──► send level-up chat message (if configured)
+        ├──► send level-up chat message + celebration (if configured)
         │
         └──► MmoState::show_xp_bossbar
-                │
-                ├──► MmoDatabase::get_skill
-                ├──► LevelCurve::level_for_xp
                 └──► BossbarState::show_skill_progress
                         └──► player.send_bossbar
 ```
@@ -79,23 +90,20 @@ MmoState tick handler
                 └──► player.remove_bossbar for expired entries
 ```
 
-## Public API
+## Persistence
 
-### From outside the module
+- **Skill XP** lives in SQLite (`player_skills`), the durable authority.
+- **Item quality/provenance** rides on the `ItemStack` under the `cabbage`
+  namespace (`persistence::item::ItemDataV1`).
+- **Player capability state** uses `Context` player data
+  (`persistence::player::PlayerProfileV1`).
+- **Pet profiles** use `Context` entity data (`persistence::entity::PetDataV1`).
+- **Crop state** uses `Context` block metadata
+  (`persistence::block::CropDataV1`).
 
-```rust
-use std::sync::Arc;
-use cabbage::mmo::{MmoState, SkillId, show_xp_bossbar};
-
-// Trigger the skill-progress bossbar for a player manually.
-show_xp_bossbar(state.clone(), player, SkillId::Mining).await;
-```
-
-### From event handlers that already hold `&MmoState`
-
-```rust
-state.show_xp_bossbar(&player, SkillId::Combat, current_tick).await;
-```
+All payloads are versioned `NbtCompound`s decoded through typed codecs;
+malformed or version-incompatible data decodes to `None` instead of crashing
+an event handler.
 
 ## Database Schema
 
@@ -117,12 +125,26 @@ CREATE TABLE non_natural_blocks (
     z INTEGER NOT NULL,
     PRIMARY KEY (world_name, dimension_name, x, y, z)
 );
+
+CREATE TABLE meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE legacy_combat_xp (
+    player_uuid TEXT PRIMARY KEY,
+    xp INTEGER NOT NULL DEFAULT 0
+);
 ```
 
 - `player_skills` stores cumulative XP per (player, skill). The level is
   derived on read via `LevelCurve::level_for_xp`.
 - `non_natural_blocks` is a sparse denylist of player-placed stone/deepslate,
   loaded into memory at startup and persisted in per-tick batches.
+- `meta` records the schema version (`schema_version`) and migration markers
+  (`combat_migrated_to`). Migrations are idempotent and run on open.
+- `legacy_combat_xp` preserves retired Combat XP until an administrator
+  migrates it.
 
 Mob and block XP rewards are static balance configuration and live in RON.
 When upgrading, Cabbage migrates any customized `mob_xp` and `ore_xp` rows
@@ -130,7 +152,10 @@ into RON once, then drops those obsolete SQLite tables.
 
 ## Configuration
 
-The plugin config is stored as RON in the Cabbage data folder:
+The plugin config is stored as RON in the Cabbage data folder. `config_version`
+tracks the MMO config schema; older files gain safe defaults for missing
+sections and are saved back on upgrade. Unknown skill names in the `skills`
+map (e.g. the retired `Combat`) are skipped with a warning.
 
 ```ron
 PluginConfig(
@@ -138,93 +163,58 @@ PluginConfig(
     mob_ai: true,
     mmo: Some(MmoConfig(
         enabled: true,
+        config_version: 1,
         message_on_level_up: true,
         save_interval_ticks: 6000,
         skills: {
-            Mining: (max_level: 99, base_xp: 50, xp_multiplier: 1.15),
-            Combat: (max_level: 99, base_xp: 60, xp_multiplier: 1.14),
+            Mining: (max_level: 100, base_xp: 50, xp_multiplier: 1.15, enabled: true),
+            // ... every skill in the three branches
         },
+        progression: (max_xp_per_award: 10000),
+        perks: (
+            enabled: true,
+            batch_break_max_blocks: 16,      // hard-capped at 128
+            batch_break_cooldown_ticks: 100,
+            max_damage_multiplier: 2.0,
+            max_proc_chance: 0.35,
+            max_effect_area_radius: 4,
+        ),
+        combat_migration: (target: None),    // or Some(Blades) etc.
         reward_config_version: 1,
         xp_rewards: (
-            mobs: {
-                "zombie": 12,
-                "skeleton": 14,
-                "creeper": 18,
-            },
-            blocks: {
-                "coal_ore": 8,
-                "deepslate_coal_ore": 10,
-                "diamond_ore": 60,
-                "deepslate_diamond_ore": 70,
-                "emerald_ore": 50,
-                "deepslate_emerald_ore": 55,
-            },
+            mobs: { "zombie": 12, /* ... */ },
+            blocks: { "coal_ore": 8, /* ... */ },
         ),
-        ore_reveal: (
-            enabled: true,
-            host_blocks: ["stone", "deepslate"],
-            max_total_frequency: 0.25,
-            shape: (
-                max_radius: 5,
-                branch_chance: 0.22,
-                forward_bias: 1.6,
-                require_hidden_targets: true,
-                max_vein_size: 32,
-            ),
-            ores: [
-                (
-                    id: "diamond",
-                    stone_block: "diamond_ore",
-                    deepslate_block: "deepslate_diamond_ore",
-                    base_frequency: 0.001,
-                    size: (min: 2, max: 4),
-                    height_bands: [
-                        (min_y: -64, max_y: 16, frequency: 1.0, size: 1.0),
-                    ],
-                ),
-            ],
-            biome_multipliers: {
-                "badlands": (
-                    frequency: 1.0,
-                    size: 1.0,
-                    ore_frequency: {"diamond": 0.75},
-                    ore_size: {},
-                ),
-            },
-        ),
+        ore_reveal: ( /* see ore_reveal/ defaults */ ),
     )),
 )
 ```
 
 `LevelCurve` precomputes cumulative XP thresholds from `base_xp` and
-`xp_multiplier` so level lookups are O(1). The shipped ore defaults include
-coal, iron, copper, gold, redstone, lapis, diamond, and emerald. Frequencies
-are per eligible natural block break. Matching biome and height frequency
-multipliers are multiplied together; size multipliers are applied to the
-random inclusive `min..max` size. An empty `height_bands` list makes an ore
-eligible at every height. Biome keys use Pumpkin registry IDs such as
-`badlands`, `stony_peaks`, and `dripstone_caves`.
+`xp_multiplier` so level lookups are O(1). Out-of-range values (batch caps,
+proc chances, curve parameters) are clamped on load via `MmoConfig::sanitized`.
+
+## Commands
+
+- `/mmo` — command help plus your own skill summary.
+- `/mmo stats [player]` — all skills by branch, with branch mastery.
+- `/mmo top <skill>` — top players for any skill.
+- `/mmo reload` — reload config.ron (admin).
+- `/mmo setxp <player> <skill> <xp>` — set a player's skill XP (admin).
+- `/mmo migrate status` — legacy Combat XP preservation status (admin).
+- `/mmo migrate combat <skill>` — move preserved Combat XP to a skill (admin).
 
 ## Threading Model
 
 - All Pumpkin event handlers run on the async Tokio runtime.
 - SQLite access is **never** performed directly on the game thread.
-- Mob and block reward lookups are in-memory reads from the reloaded RON config.
+- Reward lookups are in-memory reads from the reloaded RON config.
 - `MmoDatabase` spawns a single dedicated worker thread that owns the
   `rusqlite::Connection`. Async methods send a request over an `mpsc`
   channel and await the response via a `futures::channel::oneshot`.
-- `BossbarState` uses a short-lived `std::sync::Mutex` only to touch its
-  internal `HashMap`; network calls (`send_bossbar`, `remove_bossbar`) are
-  awaited without holding the lock.
-
-## Adding a New Skill
-
-1. Add the variant to `SkillId` in `skills.rs`.
-2. Add a default `SkillConfig` entry in `config.rs` (`MmoConfig::default`).
-3. Wire an event handler in `events.rs` that awards XP and calls
-   `state.show_xp_bossbar(...)`.
-4. Register the event in `mod.rs` (if a new event type is needed).
-5. Add its reward source to `xp_rewards` in `config.rs`.
+- `BossbarState` and `CooldownTracker` use short-lived `std::sync::Mutex`es
+  only to touch their internal maps; network calls are awaited without
+  holding locks.
 
 ## Notes
 

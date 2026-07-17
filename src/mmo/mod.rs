@@ -17,7 +17,6 @@ use pumpkin::{
                 block_break::BlockBreakEvent, block_broken::BlockBrokenEvent,
                 block_place::BlockPlaceEvent,
             },
-            entity::entity_death::EntityDeathEvent,
             world::feature_generate::FeatureGenerateEvent,
         },
         server::server_tick_start::ServerTickStartEvent,
@@ -26,43 +25,53 @@ use pumpkin::{
 };
 use pumpkin_util::permission::{Permission, PermissionDefault, PermissionLvl};
 
-pub(crate) mod bossbar;
 pub(crate) mod commands;
 pub(crate) mod config;
 pub(crate) mod db;
-pub(crate) mod events;
+pub(crate) mod enterprise;
+pub(crate) mod frontier;
 pub(crate) mod ore_reveal;
-pub(crate) mod player;
+pub(crate) mod perks;
+pub(crate) mod persistence;
+pub(crate) mod progression;
 pub(crate) mod skills;
+pub(crate) mod ui;
+pub(crate) mod warfare;
 
 pub use commands::{MMO_NAMES, MMO_PERMISSION, mmo_command_tree};
 pub use config::{LevelCurve, MmoConfig, PluginConfig, SkillConfig};
 pub use skills::SkillId;
 
-use bossbar::BossbarState;
 use commands::MMO_ADMIN_PERMISSION;
-use config::LegacyPluginConfig;
+use config::{CURRENT_CONFIG_VERSION, LegacyPluginConfig};
 use db::MmoDatabase;
+use perks::CooldownTracker;
+use ui::BossbarState;
 
 const CONFIG_FILE: &str = "config.ron";
 const LEGACY_CONFIG_FILE: &str = "config.json";
 
 /// Shared state for the MMO levelling module.
 pub struct MmoState {
+    context: Arc<Context>,
     config: Mutex<MmoConfig>,
     db: Arc<MmoDatabase>,
     data_folder: PathBuf,
     curves: Mutex<HashMap<SkillId, LevelCurve>>,
     bossbar_state: BossbarState,
     ore_reveal_state: ore_reveal::OreRevealState,
+    perk_cooldowns: CooldownTracker,
     last_tick: AtomicI32,
 }
 
 impl MmoState {
-    /// Initialize the MMO module: load or create config, open the database, and compute curves.
-    pub async fn new(data_folder: PathBuf) -> Result<Arc<Self>, String> {
+    /// Initialize the MMO module: load or create config, open the database,
+    /// run pending migrations, and compute curves.
+    pub async fn new(context: Arc<Context>) -> Result<Arc<Self>, String> {
+        let data_folder = context.get_data_folder();
         let mut plugin_config = load_plugin_config(&data_folder)?;
-        let mut mmo_config = plugin_config.mmo.clone().unwrap_or_default();
+        let mut mmo_config = plugin_config.mmo.clone().unwrap_or_default().sanitized();
+        let mut config_dirty = false;
 
         let db = Arc::new(MmoDatabase::open(data_folder.clone())?);
         let legacy_rewards = db.load_legacy_xp_rewards().await?;
@@ -77,8 +86,7 @@ impl MmoState {
                 }
             }
             mmo_config.reward_config_version = 1;
-            plugin_config.mmo = Some(mmo_config.clone());
-            save_plugin_config(&data_folder, &plugin_config)?;
+            config_dirty = true;
         }
         if legacy_rewards.is_some() {
             db.drop_legacy_xp_reward_tables().await?;
@@ -88,20 +96,60 @@ impl MmoState {
                 log::info!("[Cabbage MMO] removed obsolete SQLite XP reward tables");
             }
         }
+
+        // Config schema upgrade: fill any missing skill curves so the saved
+        // file documents every skill, and record the current version.
+        if mmo_config.config_version < CURRENT_CONFIG_VERSION {
+            mmo_config.config_version = CURRENT_CONFIG_VERSION;
+            for skill in SkillId::ALL {
+                mmo_config.skills.entry(*skill).or_default();
+            }
+            config_dirty = true;
+        }
+        if config_dirty {
+            plugin_config.mmo = Some(mmo_config.clone());
+            save_plugin_config(&data_folder, &plugin_config)?;
+        }
+
+        // Legacy Combat XP: if the admin configured a destination skill, run
+        // the one-time migration now; otherwise it stays preserved until an
+        // administrator chooses one (see `/mmo migrate`).
+        if let Some(target) = mmo_config.combat_migration.target {
+            let status = db.combat_migration_status().await?;
+            if status.players_with_legacy_xp > 0 {
+                let outcome = db.migrate_combat_xp(target).await?;
+                log::info!(
+                    "[Cabbage MMO] migrated legacy Combat XP to {target}: \
+                     {} player(s), {} XP",
+                    outcome.players_migrated,
+                    outcome.xp_moved
+                );
+            }
+        }
+
         let non_natural = db.load_non_natural_blocks().await?;
         let ore_reveal_state =
             ore_reveal::OreRevealState::new(&mmo_config.ore_reveal, non_natural)?;
         let curves = build_curves(&mmo_config);
 
         Ok(Arc::new(Self {
+            context,
             config: Mutex::new(mmo_config),
             db,
             data_folder,
             curves: Mutex::new(curves),
             bossbar_state: BossbarState::new(),
             ore_reveal_state,
+            perk_cooldowns: CooldownTracker::new(),
             last_tick: AtomicI32::new(0),
         }))
+    }
+
+    /// Plugin context, for Pumpkin persistent-data stores (player/entity/
+    /// block data) used by the persistence codecs.
+    #[allow(dead_code)] // used by per-skill handlers landing in Phases 1-3
+    pub(crate) fn context(&self) -> &Arc<Context> {
+        &self.context
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -127,6 +175,7 @@ impl MmoState {
         self.db.clone()
     }
 
+    #[allow(dead_code)] // consumed by Warfare kill XP (Phase 2)
     pub fn mob_xp_reward(&self, mob_name: &str) -> Option<u64> {
         self.config
             .lock()
@@ -139,6 +188,12 @@ impl MmoState {
             .lock()
             .ok()
             .and_then(|config| config.xp_rewards.blocks.get(block_name).copied())
+    }
+
+    /// Shared perk cooldown tracker (tick-based).
+    #[allow(dead_code)] // consumed by perk handlers landing in Phases 1-3
+    pub(crate) fn perk_cooldowns(&self) -> &CooldownTracker {
+        &self.perk_cooldowns
     }
 
     /// Last server tick observed by this module.
@@ -178,7 +233,7 @@ impl MmoState {
     /// Reload the RON config and rebuild levelling curves.
     pub async fn reload_config(&self) -> Result<(), String> {
         let plugin_config = load_plugin_config(&self.data_folder)?;
-        let mmo_config = plugin_config.mmo.clone().unwrap_or_default();
+        let mmo_config = plugin_config.mmo.clone().unwrap_or_default().sanitized();
         self.ore_reveal_state.reload(&mmo_config.ore_reveal)?;
 
         if let Ok(mut guard) = self.config.lock() {
@@ -264,6 +319,38 @@ pub async fn register_permissions(context: &Arc<Context>) -> Result<(), String> 
     Ok(())
 }
 
+/// Cancel feature placement if the feature is in the MMO blacklist.
+fn handle_feature_generate(state: &MmoState, event: &mut FeatureGenerateEvent) {
+    let feature_name = placed_feature_name(event.feature);
+    if should_disable_world_feature(&state.config(), &feature_name) {
+        event.cancelled = true;
+    }
+}
+
+fn should_disable_world_feature(config: &MmoConfig, feature_name: &str) -> bool {
+    // Existing config files already contain a serialized blacklist, so adding
+    // emerald to the default alone would not migrate them. Keep emerald tied
+    // to the reveal system even for those existing installations.
+    (config.ore_reveal.enabled && feature_name == "ore_emerald")
+        || config
+            .disabled_world_features
+            .iter()
+            .any(|name| name == feature_name)
+}
+
+/// Convert a `PlacedFeature` enum variant to its snake_case registry name.
+fn placed_feature_name(feature: pumpkin_data::placed_feature::PlacedFeature) -> String {
+    let pascal = format!("{feature:?}");
+    let mut snake = String::with_capacity(pascal.len());
+    for (i, ch) in pascal.chars().enumerate() {
+        if ch.is_uppercase() && i > 0 {
+            snake.push('_');
+        }
+        snake.push(ch.to_ascii_lowercase());
+    }
+    snake
+}
+
 impl EventHandler<BlockBreakEvent> for MmoState {
     fn handle<'a>(
         &'a self,
@@ -274,22 +361,7 @@ impl EventHandler<BlockBreakEvent> for MmoState {
             if !self.is_enabled() {
                 return;
             }
-            events::handle_block_break(self, event).await;
-        })
-    }
-}
-
-impl EventHandler<EntityDeathEvent> for MmoState {
-    fn handle<'a>(
-        &'a self,
-        server: &'a Arc<Server>,
-        event: &'a EntityDeathEvent,
-    ) -> BoxFuture<'a, ()> {
-        Box::pin(async move {
-            if !self.is_enabled() {
-                return;
-            }
-            events::handle_entity_death(self, server.clone(), event).await;
+            frontier::mining::handle_block_break(self, event).await;
         })
     }
 }
@@ -346,7 +418,28 @@ impl EventHandler<FeatureGenerateEvent> for MmoState {
             if !self.is_enabled() {
                 return;
             }
-            events::handle_feature_generate(self, event).await;
+            handle_feature_generate(self, event);
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn emerald_worldgen_is_disabled_for_existing_configs() {
+        let mut config = MmoConfig::default();
+        config.disabled_world_features.clear();
+        assert!(should_disable_world_feature(&config, "ore_emerald"));
+        assert!(!should_disable_world_feature(&config, "ore_diamond"));
+    }
+
+    #[test]
+    fn emerald_worldgen_can_follow_reveal_disable_switch() {
+        let mut config = MmoConfig::default();
+        config.disabled_world_features.clear();
+        config.ore_reveal.enabled = false;
+        assert!(!should_disable_world_feature(&config, "ore_emerald"));
     }
 }

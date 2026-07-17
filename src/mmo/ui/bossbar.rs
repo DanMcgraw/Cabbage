@@ -11,7 +11,7 @@ use pumpkin::{
 use pumpkin_util::text::{TextComponent, color::NamedColor};
 use uuid::Uuid;
 
-use super::skills::SkillId;
+use super::super::skills::{BranchId, SkillId};
 
 const BOSSBAR_DURATION_TICKS: i32 = 100; // 5 seconds at 20 TPS
 
@@ -111,9 +111,10 @@ impl BossbarState {
 
 fn skill_title(skill: SkillId, level: u32, into: u64, needed: u64) -> TextComponent {
     let name = skill.display_name();
-    let color = match skill {
-        SkillId::Mining => NamedColor::Aqua,
-        SkillId::Combat => NamedColor::Red,
+    let color = match skill.branch() {
+        BranchId::Frontier => NamedColor::Green,
+        BranchId::Warfare => NamedColor::Red,
+        BranchId::Enterprise => NamedColor::Gold,
     };
 
     TextComponent::text(format!("{name} Level {level}"))
@@ -122,8 +123,9 @@ fn skill_title(skill: SkillId, level: u32, into: u64, needed: u64) -> TextCompon
 }
 
 fn skill_color(skill: SkillId) -> BossbarColor {
-    match skill {
-        SkillId::Mining => BossbarColor::Blue,
-        SkillId::Combat => BossbarColor::Red,
+    match skill.branch() {
+        BranchId::Frontier => BossbarColor::Green,
+        BranchId::Warfare => BossbarColor::Red,
+        BranchId::Enterprise => BossbarColor::Yellow,
     }
 }

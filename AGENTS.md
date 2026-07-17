@@ -26,14 +26,19 @@ Cabbage/
     |-- lib.rs                 # plugin metadata, lifecycle, command/event registration
     |-- mmo/                   # MMO skilling module (see src/mmo/README.md)
     |   |-- README.md
+    |   |-- plan.md            # phased MMO implementation plan
     |   |-- mod.rs             # MmoState and event handler wiring
-    |   |-- bossbar.rs         # transient skill-progress bossbars
+    |   |-- skills.rs          # SkillId (23 skills), BranchId, metadata
+    |   |-- progression.rs     # central award_xp path and branch mastery
+    |   |-- perks/             # perk scaffolding (cooldowns)
+    |   |-- persistence/       # typed Pumpkin player/item/entity/block codecs
+    |   |-- frontier/          # Frontier skill handlers
+    |   |-- warfare/           # Warfare skill handlers
+    |   |-- enterprise/        # Enterprise skill handlers
+    |   |-- ui/                # bossbars
     |   |-- commands.rs        # /mmo command tree and admin subcommands
     |   |-- config.rs          # RON config and per-skill level curves
-    |   |-- db.rs              # SQLite worker thread and async DB API
-    |   |-- events.rs          # BlockBreakEvent / EntityDeathEvent XP handlers
-    |   |-- player.rs          # player-related utilities
-    |   |-- skills.rs          # SkillId enum and skill metadata
+    |   |-- db.rs              # SQLite worker thread, migrations, async DB API
     |   `-- ore_reveal/        # ore config, probability, shape, provenance
     `-- mob_ai/                # custom multithreaded mob AI engine
         |-- mod.rs             # event handler and state ownership
