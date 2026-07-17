@@ -3,9 +3,9 @@
 //! Warfare skills: Blades, Axes, Archery, Unarmed, Defense, Acrobatics,
 //! Sorcery. Melee weapons are classified from the attack event's weapon
 //! snapshot, never inferred later from a possibly changed inventory. Kill XP
-//! is awarded exactly once through the hardened `EntityDeathEvent` path
-//! (`kills` module), attributed via recent-attack and projectile-provenance
-//! records kept here.
+//! is awarded exactly once through Pumpkin's authoritative
+//! `PlayerKillEntityEvent`; projectile provenance retained here is used for
+//! per-hit Archery XP, not death inference.
 
 pub(crate) mod archery;
 pub(crate) mod config;
@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 use super::skills::SkillId;
 
-/// How long an attack record remains valid for kill attribution, in ticks.
+/// How long recent damage state remains valid for Riposte, in ticks.
 pub(crate) const RECENT_ATTACK_WINDOW_TICKS: i32 = 100;
 
 /// How long a projectile→shooter record is kept, in ticks.
@@ -59,12 +59,8 @@ pub(crate) fn classify_weapon(stack: &ItemStack) -> WeaponClass {
 /// mana. Volatile by design; a restart clears everything.
 #[derive(Debug, Default)]
 pub(crate) struct WarfareState {
-    /// player → (weapon skill, tick) of their most recent melee attack.
-    recent_melee: Mutex<HashMap<Uuid, (SkillId, i32)>>,
     /// projectile entity → shooter player.
     projectile_owners: Mutex<HashMap<Uuid, (Uuid, i32)>>,
-    /// (victim, shooter) → tick of the most recent projectile hit.
-    recent_projectile_hits: Mutex<HashMap<(Uuid, Uuid), i32>>,
     /// player → tick of the most recent damage taken (for Riposte).
     last_damage_taken: Mutex<HashMap<Uuid, i32>>,
     /// player → (mana, tick of last update). Regen is computed lazily.
@@ -74,23 +70,6 @@ pub(crate) struct WarfareState {
 impl WarfareState {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    pub fn record_melee_attack(&self, player: Uuid, skill: SkillId, tick: i32) {
-        if let Ok(mut recent) = self.recent_melee.lock() {
-            recent.insert(player, (skill, tick));
-        }
-    }
-
-    /// The player's weapon skill if their last melee attack is still inside
-    /// the attribution window.
-    pub fn recent_melee_skill(&self, player: Uuid, tick: i32) -> Option<SkillId> {
-        self.recent_melee
-            .lock()
-            .ok()
-            .and_then(|recent| recent.get(&player).copied())
-            .filter(|(_, at_tick)| tick - at_tick <= RECENT_ATTACK_WINDOW_TICKS)
-            .map(|(skill, _)| skill)
     }
 
     pub fn record_projectile_owner(&self, projectile: Uuid, shooter: Uuid, tick: i32) {
@@ -106,22 +85,6 @@ impl WarfareState {
             .and_then(|owners| owners.get(&projectile).copied())
             .filter(|(_, at_tick)| tick - at_tick <= PROJECTILE_RECORD_TTL_TICKS)
             .map(|(shooter, _)| shooter)
-    }
-
-    pub fn record_projectile_hit(&self, victim: Uuid, shooter: Uuid, tick: i32) {
-        if let Ok(mut hits) = self.recent_projectile_hits.lock() {
-            hits.insert((victim, shooter), tick);
-        }
-    }
-
-    /// Whether `shooter` hit `victim` with a projectile inside the
-    /// attribution window.
-    pub fn recent_projectile_hit(&self, victim: Uuid, shooter: Uuid, tick: i32) -> bool {
-        self.recent_projectile_hits
-            .lock()
-            .ok()
-            .and_then(|hits| hits.get(&(victim, shooter)).copied())
-            .is_some_and(|at_tick| tick - at_tick <= RECENT_ATTACK_WINDOW_TICKS)
     }
 
     pub fn record_damage_taken(&self, player: Uuid, tick: i32) {
@@ -158,14 +121,8 @@ impl WarfareState {
 
     /// Drop stale records so the maps cannot grow without bound.
     pub fn sweep(&self, tick: i32) {
-        if let Ok(mut recent) = self.recent_melee.lock() {
-            recent.retain(|_, (_, at_tick)| tick - *at_tick <= RECENT_ATTACK_WINDOW_TICKS);
-        }
         if let Ok(mut owners) = self.projectile_owners.lock() {
             owners.retain(|_, (_, at_tick)| tick - *at_tick <= PROJECTILE_RECORD_TTL_TICKS);
-        }
-        if let Ok(mut hits) = self.recent_projectile_hits.lock() {
-            hits.retain(|_, at_tick| tick - *at_tick <= RECENT_ATTACK_WINDOW_TICKS);
         }
         if let Ok(mut taken) = self.last_damage_taken.lock() {
             taken.retain(|_, at_tick| tick - *at_tick <= RECENT_ATTACK_WINDOW_TICKS);
@@ -178,31 +135,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn melee_record_expires_outside_window() {
-        let state = WarfareState::new();
-        let player = Uuid::new_v4();
-        state.record_melee_attack(player, SkillId::Blades, 100);
-        assert_eq!(
-            state.recent_melee_skill(player, 100 + RECENT_ATTACK_WINDOW_TICKS),
-            Some(SkillId::Blades)
-        );
-        assert_eq!(
-            state.recent_melee_skill(player, 101 + RECENT_ATTACK_WINDOW_TICKS),
-            None
-        );
-    }
-
-    #[test]
     fn projectile_records_resolve_owner_and_hits() {
         let state = WarfareState::new();
         let shooter = Uuid::new_v4();
         let projectile = Uuid::new_v4();
-        let victim = Uuid::new_v4();
         state.record_projectile_owner(projectile, shooter, 0);
-        state.record_projectile_hit(victim, shooter, 10);
         assert_eq!(state.projectile_owner(projectile, 20), Some(shooter));
-        assert!(state.recent_projectile_hit(victim, shooter, 20));
-        assert!(!state.recent_projectile_hit(victim, Uuid::new_v4(), 20));
     }
 
     #[test]
@@ -218,8 +156,8 @@ mod tests {
     fn sweep_drops_stale_records() {
         let state = WarfareState::new();
         let player = Uuid::new_v4();
-        state.record_melee_attack(player, SkillId::Axes, 0);
+        state.record_projectile_owner(Uuid::new_v4(), player, 0);
         state.sweep(10_000);
-        assert_eq!(state.recent_melee_skill(player, 10_000), None);
+        assert!(state.projectile_owners.lock().unwrap().is_empty());
     }
 }

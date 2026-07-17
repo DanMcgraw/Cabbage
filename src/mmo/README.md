@@ -18,13 +18,13 @@ src/mmo/
 |-- mod.rs             # MmoState, lifecycle, event registration, feature blacklist
 |-- skills.rs          # SkillId (23 skills), BranchId, branch/skill metadata
 |-- progression.rs     # central award_xp path, XpSource, branch mastery, snapshots
-|-- audit.rs           # append-only audit log (mmo-audit.log)
+|-- audit.rs           # queued append-only audit worker (mmo-audit.log)
 |-- perks/             # perk scaffolding: cooldowns, batch breaks, level gates
 |-- persistence/       # typed versioned codecs for Pumpkin player/item/entity/block data
 |-- frontier/          # Frontier skill handlers + branch config
 |-- warfare/           # Warfare skill handlers + branch config
 |-- enterprise/        # Enterprise skill handlers + branch config
-|-- ui/                # bossbars now; menus only when the platform supports them
+|-- ui/                # bossbars and protected native skill menu
 |-- commands.rs        # /mmo command tree and admin subcommands
 |-- config.rs          # RON config, per-skill level curves, global perk caps
 |-- db.rs              # SQLite worker thread, schema migrations, async DB API
@@ -82,26 +82,33 @@ events fired per broken block cannot re-trigger the perk recursively.
 Warfare XP attribution: melee weapons are classified from the attack event's
 weapon snapshot (`_sword` → Blades, `_axe` → Axes, empty hand → Unarmed, bow
 and crossbow → the projectile path). Kill XP is awarded exactly once from
-`EntityDeathEvent`, attributed by recent-attack records and projectile
-provenance — never by inspecting a possibly changed inventory after death.
-Archery additionally earns small per-hit XP through recorded projectile
-owners. Defense XP comes from damage taken; Acrobatics XP from fall damage;
-Sorcery XP from casting.
+Pumpkin's authoritative `PlayerKillEntityEvent`; its damage attribution and
+weapon snapshot select the skill without consulting the player's later
+inventory. Archery additionally earns small per-hit XP through projectile
+owner provenance. Defense XP comes from damage taken; Acrobatics XP from fall
+damage; Sorcery XP from casting.
 
 Enterprise notes: Smithing earns craft and furnace-extraction XP; Alchemy
-earns potion-consumption XP (brewing itself is not attributable — `BrewEvent`
-carries no player — and potency mutation has no safe hook, both documented as
-blocked). `CraftItemEvent` is observational in this Pumpkin build, so
-creator/provenance markers are written onto honored anvil outputs instead.
+earns XP only for explicitly configured potion item keys after a committed
+consumption (brewing itself is not attributable — `BrewEvent` carries no
+player — and potency mutation has no safe hook, both documented as blocked).
+Repair, Salvage, and Enchanting correlate previews with Pumpkin transaction
+IDs and award XP only from their committed completion events. `CraftItemEvent`
+is observational in this Pumpkin build, so creator/provenance markers are
+written onto honored anvil outputs instead.
 Trading and Charisma stay **disabled**: there is no villager-trade commit
 transaction or general economy hook yet. Their config sections and the
 `rep_v1` reputation ledger exist so server owners can migrate in later
 without a schema change.
 
-XP-only Frontier sources: Husbandry (breeding, animal products) and Taming
-(tames, owner-validated pet feeding). Husbandry trait rolls are **blocked**:
-`EntityBreedEvent` does not expose the baby entity, so traits cannot be
-attached yet (see the platform-gaps table in `plan.md`).
+XP-only Frontier sources: Husbandry uses committed breeding and animal-product
+events, with bounded configurable newborn trait rolls. Taming uses completed
+tames and owner-validated, consumed pet feeds. Pumpkin does not yet emit the
+feed completion for heal/trust interactions with already-tamed pets, so bond
+feeding remains dormant rather than awarding pre-action XP. Likewise, the
+bone-meal completion event is currently wired for bamboo but not ordinary
+crops; Agriculture listens to the committed event and will begin tracking
+fertilizer provenance when Pumpkin emits it for those crops.
 
 Player-placed ores, logs, plants, and diggable blocks never earn XP or feed
 perks: placements of tracked block types are recorded in the shared
@@ -133,7 +140,7 @@ progression::award_xp
         │       │
         │       ▼
         │   INSERT/UPDATE player_skills
-        │   returns XpResult { new_level, new_xp, leveled_up }
+        │   returns XpResult { awarded_xp, new_level, new_xp, leveled_up }
         │
         ├──► send level-up chat message + celebration (if configured)
         │
@@ -292,6 +299,7 @@ proc chances, curve parameters) are clamped on load via `MmoConfig::sanitized`.
 ## Commands
 
 - `/mmo` — command help plus your own skill summary.
+- `/mmo menu` — protected native 9×3 summary menu for all 23 skills.
 - `/mmo stats [player]` — all skills by branch, with branch mastery.
 - `/mmo top <skill>` — top players for any skill.
 - `/mmo reload` — reload config.ron (admin).
@@ -301,8 +309,12 @@ proc chances, curve parameters) are clamped on load via `MmoConfig::sanitized`.
 
 ## Threading Model
 
-- All Pumpkin event handlers run on the async Tokio runtime.
+- MMO handlers that inspect live Pumpkin state or transactions are registered
+  as blocking handlers so each receives the authoritative mutable event in
+  Pumpkin's ordered dispatch path.
 - SQLite access is **never** performed directly on the game thread.
+- XP awards use one atomic worker request that clamps at max level and returns
+  the actual amount awarded; bossbar presentation does not reread the row.
 - Reward lookups are in-memory reads from the reloaded RON config.
 - `MmoDatabase` spawns a single dedicated worker thread that owns the
   `rusqlite::Connection`. Async methods send a request over an `mpsc`
@@ -310,6 +322,8 @@ proc chances, curve parameters) are clamped on load via `MmoConfig::sanitized`.
 - `BossbarState` and `CooldownTracker` use short-lived `std::sync::Mutex`es
   only to touch their internal maps; network calls are awaited without
   holding locks.
+- `AuditLog` owns a dedicated writer thread; event handlers enqueue lines and
+  never perform append/flush I/O on the event path.
 
 ## Notes
 

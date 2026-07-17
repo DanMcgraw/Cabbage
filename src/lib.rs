@@ -431,28 +431,28 @@ impl Plugin for CabbagePlugin {
                     .register_event::<pumpkin::plugin::api::events::block::block_break::BlockBreakEvent, _>(
                         mmo_state.clone(),
                         EventPriority::Normal,
-                        false,
+                        true,
                     )
                     .await;
                 context
                     .register_event::<pumpkin::plugin::api::events::block::block_place::BlockPlaceEvent, _>(
                         mmo_state.clone(),
                         EventPriority::Normal,
-                        false,
+                        true,
                     )
                     .await;
                 context
                     .register_event::<pumpkin::plugin::api::events::block::block_broken::BlockBrokenEvent, _>(
                         mmo_state.clone(),
                         EventPriority::Normal,
-                        false,
+                        true,
                     )
                     .await;
                 context
                     .register_event::<ServerTickStartEvent, _>(
                         mmo_state.clone(),
                         EventPriority::Normal,
-                        false,
+                        true,
                     )
                     .await;
                 context
@@ -466,7 +466,7 @@ impl Plugin for CabbagePlugin {
                     .register_event::<pumpkin::plugin::api::events::player::player_interact_event::PlayerInteractEvent, _>(
                         mmo_state.clone(),
                         EventPriority::Normal,
-                        false,
+                        true,
                     )
                     .await;
                 context
@@ -477,31 +477,45 @@ impl Plugin for CabbagePlugin {
                     )
                     .await;
                 context
-                    .register_event::<EntityBreedEvent, _>(
+                    .register_event::<pumpkin::plugin::api::events::entity::entity_breed::EntityBreedCompleteEvent, _>(
                         mmo_state.clone(),
                         EventPriority::Normal,
-                        false,
+                        true,
                     )
                     .await;
                 context
                     .register_event::<EntityTameEvent, _>(
                         mmo_state.clone(),
                         EventPriority::Normal,
-                        false,
+                        true,
                     )
                     .await;
                 context
-                    .register_event::<pumpkin::plugin::api::events::player::player_interact_entity_event::PlayerInteractEntityEvent, _>(
+                    .register_event::<pumpkin::plugin::api::events::entity::entity_feed::EntityFeedCompleteEvent, _>(
                         mmo_state.clone(),
                         EventPriority::Normal,
-                        false,
+                        true,
                     )
                     .await;
                 context
-                    .register_event::<pumpkin::plugin::api::events::player::player_item_use_finish::PlayerItemUseFinishEvent, _>(
+                    .register_event::<pumpkin::plugin::api::events::entity::entity_product::AnimalProductCollectCompleteEvent, _>(
                         mmo_state.clone(),
                         EventPriority::Normal,
-                        false,
+                        true,
+                    )
+                    .await;
+                context
+                    .register_event::<pumpkin::plugin::api::events::block::bone_meal::BoneMealApplyCompleteEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        true,
+                    )
+                    .await;
+                context
+                    .register_event::<pumpkin::plugin::api::events::player::player_item_use_complete::PlayerItemUseCompleteEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        true,
                     )
                     .await;
                 context
@@ -515,21 +529,21 @@ impl Plugin for CabbagePlugin {
                     .register_event::<EntityShootBowEvent, _>(
                         mmo_state.clone(),
                         EventPriority::Normal,
-                        false,
+                        true,
                     )
                     .await;
                 context
                     .register_event::<ProjectileHitEvent, _>(
                         mmo_state.clone(),
                         EventPriority::Normal,
-                        false,
+                        true,
                     )
                     .await;
                 context
-                    .register_event::<EntityDeathEvent, _>(
+                    .register_event::<pumpkin::plugin::api::events::entity::player_kill::PlayerKillEntityEvent, _>(
                         mmo_state.clone(),
                         EventPriority::Normal,
-                        false,
+                        true,
                     )
                     .await;
                 context
@@ -547,10 +561,10 @@ impl Plugin for CabbagePlugin {
                     )
                     .await;
                 context
-                    .register_event::<pumpkin::plugin::api::events::player::anvil_repair::AnvilRepairEvent, _>(
+                    .register_event::<pumpkin::plugin::api::events::player::anvil_repair::AnvilCompleteEvent, _>(
                         mmo_state.clone(),
                         EventPriority::Normal,
-                        false,
+                        true,
                     )
                     .await;
                 context
@@ -561,10 +575,10 @@ impl Plugin for CabbagePlugin {
                     )
                     .await;
                 context
-                    .register_event::<pumpkin::plugin::api::events::player::grindstone::GrindstoneTakeEvent, _>(
+                    .register_event::<pumpkin::plugin::api::events::player::grindstone::GrindstoneCompleteEvent, _>(
                         mmo_state.clone(),
                         EventPriority::Normal,
-                        false,
+                        true,
                     )
                     .await;
                 context
@@ -575,24 +589,24 @@ impl Plugin for CabbagePlugin {
                     )
                     .await;
                 context
-                    .register_event::<pumpkin::plugin::api::events::player::enchant_item::EnchantItemEvent, _>(
+                    .register_event::<pumpkin::plugin::api::events::player::enchant_item::EnchantItemCompleteEvent, _>(
                         mmo_state.clone(),
                         EventPriority::Normal,
-                        false,
+                        true,
                     )
                     .await;
                 context
                     .register_event::<CraftItemEvent, _>(
                         mmo_state.clone(),
                         EventPriority::Normal,
-                        false,
+                        true,
                     )
                     .await;
                 context
                     .register_event::<FurnaceExtractEvent, _>(
                         mmo_state.clone(),
                         EventPriority::Normal,
-                        false,
+                        true,
                     )
                     .await;
                 context

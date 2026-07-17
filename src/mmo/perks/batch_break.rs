@@ -109,12 +109,14 @@ pub(crate) async fn try_batch_break(
 
     // Charge the cooldown before breaking: this is the recursion guard (see
     // the doc comment above).
-    state.perk_cooldowns().try_activate(
+    if !state.perk_cooldowns().try_activate(
         player_uuid,
         cooldown_key,
         current_tick,
         config.perks.batch_break_cooldown_ticks,
-    );
+    ) {
+        return None;
+    }
 
     let broken = state
         .context()

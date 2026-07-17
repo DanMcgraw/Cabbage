@@ -42,16 +42,21 @@ impl CooldownTracker {
         current_tick: i32,
         cooldown_ticks: u32,
     ) -> bool {
-        if self.remaining_ticks(player, perk, current_tick) > 0 {
-            return false;
-        }
         if let Ok(mut ready) = self.ready_at_tick.lock() {
+            if ready
+                .get(&(player, perk))
+                .copied()
+                .is_some_and(|ready_at| ready_at.saturating_sub(current_tick) > 0)
+            {
+                return false;
+            }
             ready.insert(
                 (player, perk),
                 current_tick.saturating_add(cooldown_ticks as i32),
             );
+            return true;
         }
-        true
+        false
     }
 
     /// Drop all cooldowns for a player (e.g. on disconnect).
@@ -103,6 +108,31 @@ mod tests {
         assert!(tracker.try_activate(b, "test.one", 0, 100));
         assert!(tracker.try_activate(a, "test.two", 0, 100));
         assert!(!tracker.try_activate(a, "test.one", 50, 100));
+    }
+
+    #[test]
+    fn activation_is_atomic_across_threads() {
+        use std::sync::{Arc, Barrier};
+
+        let tracker = Arc::new(CooldownTracker::new());
+        let player = Uuid::new_v4();
+        let barrier = Arc::new(Barrier::new(9));
+        let mut workers = Vec::new();
+        for _ in 0..8 {
+            let tracker = tracker.clone();
+            let barrier = barrier.clone();
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                tracker.try_activate(player, "test.concurrent", 100, 50)
+            }));
+        }
+        barrier.wait();
+        let activations = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap_or(false))
+            .filter(|activated| *activated)
+            .count();
+        assert_eq!(activations, 1);
     }
 
     #[test]

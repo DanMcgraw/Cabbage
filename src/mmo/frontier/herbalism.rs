@@ -6,7 +6,8 @@
 //! so player-placed plants earn nothing.
 
 use pumpkin::plugin::api::events::{
-    block::block_broken::BlockBrokenEvent, player::player_item_use_finish::PlayerItemUseFinishEvent,
+    block::block_broken::BlockBrokenEvent,
+    player::player_item_use_complete::PlayerItemUseCompleteEvent,
 };
 use pumpkin_data::item_stack::ItemStack;
 use rand::Rng;
@@ -57,14 +58,14 @@ pub async fn handle_block_broken(
 
 /// Award Herbalism XP and a bounded healing bonus for eating configured
 /// plant-based consumables.
-pub async fn handle_item_use_finish(state: &MmoState, event: &PlayerItemUseFinishEvent) {
+pub async fn handle_item_use_complete(state: &MmoState, event: &PlayerItemUseCompleteEvent) {
     let player = &event.player;
-    if event.cancelled || !earns_xp(player) {
+    if !earns_xp(player) || event.consumed_count == 0 {
         return;
     }
     let config = state.config();
     let herbalism = &config.frontier.herbalism;
-    let key = event.item.item.registry_key;
+    let key = event.item_before.item.registry_key;
     let Some(xp) = herbalism.consumable_xp.get(key).copied() else {
         return;
     };

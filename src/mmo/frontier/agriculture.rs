@@ -8,12 +8,8 @@
 //! player-placed crops cannot exist at maturity in survival, so no
 //! provenance tracking is needed here.
 
-use pumpkin::{
-    entity::EntityBase,
-    plugin::api::events::{
-        block::block_broken::BlockBrokenEvent,
-        player::player_interact_event::{InteractAction, PlayerInteractEvent},
-    },
+use pumpkin::plugin::api::events::{
+    block::block_broken::BlockBrokenEvent, block::bone_meal::BoneMealApplyCompleteEvent,
 };
 use pumpkin_data::{Block, BlockStateId, item::Item, item_stack::ItemStack};
 use rand::Rng;
@@ -102,15 +98,13 @@ pub async fn handle_block_broken(state: &MmoState, event: &BlockBrokenEvent) {
 }
 
 /// Mark a crop as fertilized when a player applies bone meal to it.
-pub async fn handle_player_interact(state: &MmoState, event: &PlayerInteractEvent) {
-    if event.action != InteractAction::RightClickBlock || event.cancelled {
+pub async fn handle_bone_meal_complete(state: &MmoState, event: &BoneMealApplyCompleteEvent) {
+    if event.consumed_count == 0 || !event.growth_occurred {
         return;
     }
-    let Some(position) = event.clicked_pos else {
-        return;
-    };
+    let block = Block::from_state_id(event.state_before);
     let config = state.config();
-    if !config.frontier.agriculture.is_crop(event.block.name) {
+    if !config.frontier.agriculture.is_crop(block.name) {
         return;
     }
     let player = &event.player;
@@ -118,17 +112,11 @@ pub async fn handle_player_interact(state: &MmoState, event: &PlayerInteractEven
         return;
     }
 
-    let held = player.inventory().held_item().lock().await.clone();
-    if held.item_count == 0 || held.item.registry_key != "bone_meal" {
-        return;
-    }
-
     let data = CropDataV1 {
         fertilizer_tier: 1,
         quality_seed: rand::rng().random::<u64>(),
     };
-    let world = player.get_entity().world.load_full();
-    if let Err(error) = data.write(state.context(), &world, &position) {
+    if let Err(error) = data.write(state.context(), &event.world, &event.position) {
         log::warn!("[Cabbage MMO] failed to record fertilizer data: {error}");
     }
 }

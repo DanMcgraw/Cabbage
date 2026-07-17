@@ -6,10 +6,11 @@
 //! player-facing messages; console echo is configurable.
 
 use std::{
-    fs::{File, OpenOptions},
-    io::Write,
+    fs::OpenOptions,
+    io::{BufWriter, Write},
     path::PathBuf,
-    sync::Mutex,
+    sync::mpsc::{self, Sender},
+    thread::{self, JoinHandle},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -35,20 +36,67 @@ impl Default for AuditConfig {
 
 const AUDIT_LOG_FILE: &str = "mmo-audit.log";
 
-/// Append-only audit log writer, lazily opened on first use.
-#[derive(Debug, Default)]
+enum AuditRequest {
+    Line(String),
+    Shutdown,
+}
+
+/// Append-only audit writer backed by a dedicated file-I/O thread.
+#[derive(Debug)]
 pub(crate) struct AuditLog {
-    file: Mutex<Option<File>>,
+    sender: Sender<AuditRequest>,
+    worker: Option<JoinHandle<()>>,
 }
 
 impl AuditLog {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(data_folder: PathBuf) -> Result<Self, String> {
+        let (sender, receiver) = mpsc::channel();
+        let worker = thread::Builder::new()
+            .name("cabbage-mmo-audit".to_string())
+            .spawn(move || {
+                let path = data_folder.join(AUDIT_LOG_FILE);
+                let mut writer: Option<BufWriter<std::fs::File>> = None;
+                while let Ok(request) = receiver.recv() {
+                    match request {
+                        AuditRequest::Line(line) => {
+                            if writer.is_none() {
+                                let opened = std::fs::create_dir_all(&data_folder).and_then(|()| {
+                                    OpenOptions::new().create(true).append(true).open(&path)
+                                });
+                                match opened {
+                                    Ok(file) => writer = Some(BufWriter::new(file)),
+                                    Err(error) => {
+                                        log::warn!(
+                                            "[Cabbage MMO] failed to open audit log: {error}"
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+                            let write_error = writer
+                                .as_mut()
+                                .and_then(|output| output.write_all(line.as_bytes()).err());
+                            if let Some(error) = write_error {
+                                log::warn!("[Cabbage MMO] failed to write audit log: {error}");
+                                writer = None;
+                            }
+                        }
+                        AuditRequest::Shutdown => break,
+                    }
+                }
+                if let Some(mut writer) = writer {
+                    writer.flush().ok();
+                }
+            })
+            .map_err(|error| format!("failed to spawn MMO audit worker: {error}"))?;
+        Ok(Self {
+            sender,
+            worker: Some(worker),
+        })
     }
 
-    /// Write one audit line. Failures are logged and swallowed: auditing
-    /// must never break gameplay.
-    pub fn log(&self, data_folder: &PathBuf, config: &AuditConfig, message: &str) {
+    /// Queue one audit line without performing file I/O on the event path.
+    pub fn log(&self, config: &AuditConfig, message: &str) {
         if !config.enabled {
             return;
         }
@@ -56,28 +104,21 @@ impl AuditLog {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let line = format!("[{timestamp}] {message}\n");
-
-        if let Ok(mut guard) = self.file.lock() {
-            if guard.is_none() {
-                let path = data_folder.join(AUDIT_LOG_FILE);
-                let opened = std::fs::create_dir_all(data_folder)
-                    .and_then(|()| OpenOptions::new().create(true).append(true).open(&path));
-                match opened {
-                    Ok(file) => *guard = Some(file),
-                    Err(error) => {
-                        log::warn!("[Cabbage MMO] failed to open audit log: {error}");
-                        return;
-                    }
-                }
-            }
-            if let Some(file) = guard.as_mut() {
-                let _ = file.write_all(line.as_bytes());
-            }
-        }
+        let _ = self
+            .sender
+            .send(AuditRequest::Line(format!("[{timestamp}] {message}\n")));
 
         if config.console {
             log::info!("[Cabbage MMO audit] {message}");
+        }
+    }
+}
+
+impl Drop for AuditLog {
+    fn drop(&mut self) {
+        let _ = self.sender.send(AuditRequest::Shutdown);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
         }
     }
 }

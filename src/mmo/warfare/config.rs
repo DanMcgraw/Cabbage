@@ -81,8 +81,8 @@ impl Default for AxesConfig {
     }
 }
 
-/// Archery: hit-based XP. Kill XP is attributed once through the hardened
-/// `EntityDeathEvent` path, like every weapon skill.
+/// Archery: hit-based XP. Kill XP is attributed once through
+/// `PlayerKillEntityEvent`, like every weapon skill.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ArcheryConfig {
     /// XP per projectile hit on a living target.

@@ -5,7 +5,7 @@
 //! content (see the plan's Phase 3 intro).
 
 use pumpkin::plugin::api::events::player::{
-    enchant_item::EnchantItemEvent, enchant_item_generate::EnchantItemGenerateEvent,
+    enchant_item::EnchantItemCompleteEvent, enchant_item_generate::EnchantItemGenerateEvent,
 };
 
 use super::super::{
@@ -35,8 +35,8 @@ pub async fn handle_enchant_generate(state: &MmoState, event: &mut EnchantItemGe
 }
 
 /// Award Enchanting XP scaled by the commit's level cost.
-pub async fn handle_enchant_item(state: &MmoState, event: &EnchantItemEvent) {
-    if event.cancelled || !earns_xp(&event.player) {
+pub async fn handle_enchant_complete(state: &MmoState, event: &EnchantItemCompleteEvent) {
+    if !earns_xp(&event.player) {
         return;
     }
     let config = state.config();

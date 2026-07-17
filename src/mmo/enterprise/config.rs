@@ -199,7 +199,9 @@ pub struct AlchemyConfig {
     /// XP per consumed potion, keyed by item registry key.
     #[serde(default = "default_potion_xp")]
     pub potion_xp: HashMap<String, u64>,
-    /// XP for potions without a configured value.
+    /// Legacy compatibility value retained in serialized configs. Runtime
+    /// rewards require an explicit `potion_xp` key so ordinary foods cannot
+    /// accidentally earn Alchemy XP.
     pub default_potion_xp: u64,
 }
 

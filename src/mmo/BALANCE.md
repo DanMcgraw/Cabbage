@@ -23,7 +23,7 @@ value lives in `config.ron` and can be tuned per server.
 | Herbalism | plants 2–6, consumables 3–25 | Quality yield (8% +1 item), consumable healing (+1.0 health) |
 | Excavation | diggable blocks 4–8 | Archaeology loot (3–8% per table), Earthmover (sneak+break, ≤16 blocks) |
 | Fishing | catches 5–60, default 10 | Reel (+2 vanilla XP), treasure replacement (off) |
-| Husbandry | breeding 15–40, default 15; products 8–10 | — |
+| Husbandry | breeding 15–40, default 15; products 8–10 | Newborn trait roll (15%, bounded by global proc cap; configured trait list) |
 | Taming | tames 30–50, default 30; pet feeding 4 | — |
 
 Player-placed blocks never earn XP (shared provenance denylist). Batch perks
@@ -67,8 +67,10 @@ proc chances by `perks.max_proc_chance` (35%).
 
 ## Audit and telemetry
 
-- `mmo-audit.log` in the plugin data folder records admin/migration XP
-  grants, batch breaks, quality rolls, and anvil/grindstone/enchant commits.
+- `mmo-audit.log` in the plugin data folder records every successful XP
+  grant, batch breaks, quality rolls, and anvil/grindstone/enchant commits.
+- Audit writes are queued to a dedicated writer thread rather than performed
+  in an event handler.
 - `audit.enabled` (default true), `audit.console` (default false) control it.
 
 ## Migration guide (two-skill → three-branch)
@@ -96,7 +98,7 @@ proc chances by `perks.max_proc_chance` (35%).
 
 Per the phased plan, major perks (25/50/75) and capstones (100) are enabled
 one at a time only after a skill's basic XP flow has been live-tested; none
-are on by default. The native Pumpkin GUI lifecycle was evaluated and is not
-yet sufficient for protected menus (no native open path, no click
-attribution), so presentation stays on commands, bossbars, and action-bar
-prompts until then.
+are on by default. `/mmo menu` uses Pumpkin's native protected GUI lifecycle
+to show all 23 skill levels and progress in a read-only 9×3 inventory. More
+interactive perk/capstone menus remain follow-on work after their gameplay is
+live-tested.

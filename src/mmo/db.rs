@@ -81,8 +81,8 @@ impl PlayerSkill {
 
 #[derive(Debug, Clone)]
 pub struct XpResult {
+    pub awarded_xp: u64,
     pub new_level: u32,
-    #[allow(dead_code)]
     pub new_xp: u64,
     pub leveled_up: bool,
 }
@@ -417,21 +417,26 @@ impl MmoDatabase {
         curve: &LevelCurve,
     ) -> Result<XpResult, String> {
         let current = Self::do_get_skill(conn, player_uuid, skill)?;
-        let new_xp = current.xp.saturating_add(xp);
+        let max_xp = curve.xp_for_level(curve.max_level());
+        let awarded_xp = xp.min(max_xp.saturating_sub(current.xp));
+        let new_xp = current.xp.saturating_add(awarded_xp);
         let current_level = current.level(curve);
         let new_level = curve.level_for_xp(new_xp).0;
         let leveled_up = new_level > current_level;
 
-        conn.execute(
-            "INSERT INTO player_skills (player_uuid, skill, xp)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(player_uuid, skill)
-             DO UPDATE SET xp = excluded.xp",
-            params![player_uuid.to_string(), skill.to_string(), new_xp as i64,],
-        )
-        .map_err(|e| format!("failed to update player xp: {e}"))?;
+        if awarded_xp > 0 {
+            conn.execute(
+                "INSERT INTO player_skills (player_uuid, skill, xp)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(player_uuid, skill)
+                 DO UPDATE SET xp = excluded.xp",
+                params![player_uuid.to_string(), skill.to_string(), new_xp as i64,],
+            )
+            .map_err(|e| format!("failed to update player xp: {e}"))?;
+        }
 
         Ok(XpResult {
+            awarded_xp,
             new_level,
             new_xp,
             leveled_up,
@@ -784,12 +789,41 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.new_xp, 75);
+        assert_eq!(result.awarded_xp, 75);
         assert!(result.leveled_up);
 
         let skill = db.get_skill(uuid, SkillId::Mining).await.unwrap();
         assert_eq!(skill.xp, 75);
         assert_eq!(skill.level(&curve), 2);
 
+        cleanup(&folder);
+    }
+
+    #[tokio::test]
+    async fn xp_awards_clamp_atomically_at_max_level() {
+        let (db, folder) = open_test_db();
+        let uuid = Uuid::new_v4();
+        let curve = LevelCurve::new(&super::super::config::SkillConfig {
+            max_level: 5,
+            base_xp: 100,
+            xp_multiplier: 2.0,
+            enabled: true,
+        });
+        let max_xp = curve.xp_for_level(curve.max_level());
+
+        db.set_xp(uuid, SkillId::Mining, max_xp - 5, curve.clone())
+            .await
+            .unwrap();
+        let first = db
+            .add_xp(uuid, SkillId::Mining, 100, curve.clone())
+            .await
+            .unwrap();
+        let second = db.add_xp(uuid, SkillId::Mining, 100, curve).await.unwrap();
+
+        assert_eq!(first.awarded_xp, 5);
+        assert_eq!(first.new_xp, max_xp);
+        assert_eq!(second.awarded_xp, 0);
+        assert_eq!(second.new_xp, max_xp);
         cleanup(&folder);
     }
 

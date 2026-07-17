@@ -6,7 +6,7 @@
 
 use pumpkin::{
     entity::EntityBase,
-    plugin::api::events::player::grindstone::{GrindstoneEvent, GrindstoneTakeEvent},
+    plugin::api::events::player::grindstone::{GrindstoneCompleteEvent, GrindstoneEvent},
 };
 use pumpkin_data::item_stack::ItemStack;
 use rand::Rng;
@@ -46,12 +46,13 @@ pub async fn handle_grindstone(state: &MmoState, event: &mut GrindstoneEvent) {
     }
     let bonus = (event.experience as f64 * bonus_fraction).round() as i32;
     event.experience = event.experience.saturating_add(bonus);
+    state.mark_perk_preview(event.transaction.id, SALVAGE_COOLDOWN_KEY);
 }
 
 /// Award Salvage XP, charge the cooldown, and roll material recovery when
 /// the grindstone output is taken.
-pub async fn handle_grindstone_take(state: &MmoState, event: &GrindstoneTakeEvent) {
-    if event.cancelled || !earns_xp(&event.player) {
+pub async fn handle_grindstone_complete(state: &MmoState, event: &GrindstoneCompleteEvent) {
+    if !earns_xp(&event.player) {
         return;
     }
     let config = state.config();
@@ -60,7 +61,7 @@ pub async fn handle_grindstone_take(state: &MmoState, event: &GrindstoneTakeEven
     let player_uuid = player.gameprofile.id;
     let current_tick = state.current_tick();
 
-    if config.perks.enabled {
+    if config.perks.enabled && state.take_perk_preview(event.transaction.id, SALVAGE_COOLDOWN_KEY) {
         state.perk_cooldowns().try_activate(
             player_uuid,
             SALVAGE_COOLDOWN_KEY,

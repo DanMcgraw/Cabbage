@@ -45,8 +45,11 @@ pub enum XpSource {
     Salvage,
     Enchant,
     Tame,
+    PetFeed,
     Breed,
+    AnimalProduct,
     Melee,
+    Cast,
     Projectile,
     DamageTaken,
     Fall,
@@ -70,8 +73,11 @@ impl fmt::Display for XpSource {
             XpSource::Salvage => "salvage",
             XpSource::Enchant => "enchant",
             XpSource::Tame => "tame",
+            XpSource::PetFeed => "pet_feed",
             XpSource::Breed => "breed",
+            XpSource::AnimalProduct => "animal_product",
             XpSource::Melee => "melee",
+            XpSource::Cast => "cast",
             XpSource::Projectile => "projectile",
             XpSource::DamageTaken => "damage_taken",
             XpSource::Fall => "fall",
@@ -119,17 +125,6 @@ pub async fn award_xp(
     let uuid = player.gameprofile.id;
     let db = state.db();
 
-    let current = match db.get_skill(uuid, skill).await {
-        Ok(current) => current,
-        Err(error) => {
-            log::warn!("[Cabbage MMO] failed to read {skill} XP for {uuid}: {error}");
-            return None;
-        }
-    };
-    if curve.level_for_xp(current.xp).0 >= skill_config.max_level {
-        return None;
-    }
-
     let amount = amount.min(config.progression.max_xp_per_award);
     let result = match db.add_xp(uuid, skill, amount, curve).await {
         Ok(result) => result,
@@ -140,15 +135,19 @@ pub async fn award_xp(
             return None;
         }
     };
+    if result.awarded_xp == 0 {
+        return None;
+    }
+    let amount = result.awarded_xp;
 
     if matches!(source, XpSource::Admin | XpSource::Migration) {
         log::info!("[Cabbage MMO] awarded {amount} {skill} XP to {uuid} via {source}");
-        state.audit(&format!(
-            "xp grant: {amount} {skill} XP to {uuid} via {source}"
-        ));
     } else {
         log::debug!("[Cabbage MMO] awarded {amount} {skill} XP to {uuid} via {source}");
     }
+    state.audit(&format!(
+        "xp grant: {amount} {skill} XP to {uuid} via {source}"
+    ));
 
     if result.leveled_up {
         if config.message_on_level_up {
@@ -164,7 +163,9 @@ pub async fn award_xp(
     }
 
     let current_tick = state.current_tick();
-    state.show_xp_bossbar(player, skill, current_tick).await;
+    state
+        .show_xp_bossbar_at_xp(player, skill, result.new_xp, current_tick)
+        .await;
 
     Some(AwardOutcome {
         xp: amount,

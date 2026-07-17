@@ -2,5 +2,6 @@
 //! native plugin GUI lifecycle is confirmed sufficient (see plan Phase 4).
 
 pub(crate) mod bossbar;
+pub(crate) mod menu;
 
 pub(crate) use bossbar::BossbarState;

@@ -30,13 +30,14 @@ Pumpkin now provides the following Cabbage-consumable building blocks:
 | Durable player, entity, and block state | `Context::{get,set,remove}_player_data`, `Context::{get,set,remove}_entity_data`, and `Context::{get,set}_block_metadata` |
 | Durable item provenance and quality | `ItemStack::{get,set,remove}_custom_data` |
 | Safe Timber, Vein Miner, and Earthmover actions | `Context::break_blocks` (maximum 128 unique positions) |
-| Repair and Salvage | `AnvilPrepareEvent`, `AnvilRepairEvent`, `GrindstoneEvent`, and `GrindstoneTakeEvent` |
-| Enchanting | `EnchantItemGenerateEvent` and `EnchantItemEvent` |
-| Food/potion perks | `PlayerItemUseFinishEvent` |
+| Repair and Salvage | Preview events plus `AnvilCompleteEvent` and `GrindstoneCompleteEvent`, correlated by `PluginTransactionId` |
+| Enchanting | `EnchantItemGenerateEvent` plus `EnchantItemCompleteEvent` |
+| Food/potion perks | `PlayerItemUseCompleteEvent` |
 | Fishing perks | `PlayerFishEvent` with mutable catch and XP |
 | Taming persistence | `EntityTameEvent` plus entity data |
 | Melee perks | `PlayerAttackValidateEvent` and `PlayerAttackDamageEvent` |
-| Existing supporting transactions | `CraftItemEvent`, `BrewEvent`, furnace events, breeding, block break/place/drop, and projectile launch/hit events |
+| Existing supporting transactions | `CraftItemEvent`, `BrewEvent`, furnace events, committed breeding/feed/product/bone-meal events, authoritative player kills, block break/place/drop, and projectile launch/hit events |
+| Protected native presentation | `Context::open_plugin_gui`, `PluginGuiSpec`, owned `PluginGuiHandler` callbacks, and protected transfer policy |
 
 Before beginning, compile Cabbage against this same Pumpkin checkout and
 confirm the native plugin API versions match. Do not retain a compatibility
@@ -61,9 +62,9 @@ loss of transactional guarantees.
    modifiers, cooldowns, proc chances, area sizes, batch blocks, and XP
    attribution. Never replace validation by directly editing inventory/world
    state outside the supplied transaction/event path.
-6. **Commands and vanilla interactions are the initial activation paths.** A
-   client-side keybind is out of scope. GUI work starts only after the native
-   plugin GUI lifecycle is confirmed sufficient for protected menus.
+6. **Commands and vanilla interactions are the activation paths.** A
+   client-side keybind is out of scope. Read-only skill presentation uses the
+   native protected GUI lifecycle; command output remains the fallback.
 
 ## Target skill model
 
@@ -101,7 +102,7 @@ src/mmo/
 |-- frontier/           # skill handlers and configuration
 |-- warfare/            # skill handlers and configuration
 |-- enterprise/         # skill handlers and configuration
-|-- ui/                 # bossbars now; menus only when supported
+|-- ui/                 # bossbars and protected native menus
 |-- db.rs               # retain SQLite worker and migrations
 `-- ore_reveal/         # retain as the Mining-specific feature
 ```
@@ -158,10 +159,10 @@ Woodcutting, Fishing, and Agriculture) before turning on the whole branch.
 | Mining | Migrate current XP and ore reveal; add Prospector and a bounded Vein Miner. | Block break/drop; `Context::break_blocks`; item data for tool perks. |
 | Woodcutting | XP for natural logs, Heartwood roll, and bounded Timber. Natural-tree detection belongs in Cabbage. | Block break/drop; `Context::break_blocks`; item data. |
 | Agriculture | Harvest XP, fertilizer/quality provenance, and a conservative harvest bonus. | Block break/drop; `Context` block metadata. |
-| Herbalism | Plant/forage XP, quality yield, and consumable-healing bonuses. | Block break/drop; `PlayerItemUseFinishEvent`. |
+| Herbalism | Plant/forage XP, quality yield, and consumable-healing bonuses. | Block break/drop; `PlayerItemUseCompleteEvent`. |
 | Excavation | Diggable-block XP, archaeology-style loot rules, and bounded Earthmover. | Block break/drop; `Context::break_blocks`. |
 | Fishing | Catch XP, configurable treasure replacement, and reel/treasure perks. | `PlayerFishEvent`. |
-| Husbandry | Feeding/breeding/product XP and configured trait rolls. | Entity-interaction/breeding events; entity data. |
+| Husbandry | Committed breeding/product XP and configured newborn trait rolls. | `EntityBreedCompleteEvent`, `AnimalProductCollectCompleteEvent`; entity data. |
 | Taming | Record Cabbage pet profile on tame; implement only owner-validated commands and bonuses. | `EntityTameEvent`; entity data. |
 
 Frontier rules:
@@ -174,9 +175,9 @@ Frontier rules:
 - Start crop quality at harvest time from stored data. Add accelerated growth
   only if a stable growth-transition API is available; do not simulate random
   ticks in the plugin.
-- Make pet commands commands or existing interactions until a protected menu is
-  proven; never treat entity data as proof of ownership without checking
-  Pumpkin's actual tameable owner state.
+- Never treat entity data as proof of ownership without checking Pumpkin's
+  actual tameable owner state. Award feed/bond XP only from committed consumed
+  feeds, never from a pre-action interaction.
 
 ## Phase 2 — Warfare vertical slice
 
@@ -200,10 +201,9 @@ Warfare rules:
   remain within configured caps and cancellation must be deliberate.
 - Classify the held item from the event snapshot; do not infer weapon class
   later from a potentially changed inventory.
-- Award kill XP once from an authoritative killer/projectile-owner path. Until
-  Pumpkin provides a stronger kill-attribution transaction, retain and harden
-  the current `EntityDeathEvent` lookup rather than double-awarding on hit and
-  death.
+- Award kill XP once from `PlayerKillEntityEvent`, using its authoritative
+  damage attribution and weapon snapshot. Do not keep a parallel recent-hit
+  inference path or award again from `EntityDeathEvent`.
 - Do not implement extended reach, projectile deflection, or permanent
   attributes by workarounds. Keep those perks disabled pending the platform
   capabilities listed below.
@@ -217,10 +217,10 @@ progression.
 | Skill | First Cabbage implementation | Pumpkin transaction/data path |
 |---|---|---|
 | Smithing | Craft/smelt XP and durable creator/provenance markers. | Craft and furnace events; item custom data. |
-| Repair | Anvil prepare cost discount; XP only when output is taken. | `AnvilPrepareEvent`, `AnvilRepairEvent`. |
-| Salvage | Grindstone output/XP modifier and material-recovery rolls. | `GrindstoneEvent`, `GrindstoneTakeEvent`. |
-| Alchemy | Brewing XP and consumable potency/duration rules that remain bounded. | `BrewEvent`, `PlayerItemUseFinishEvent`. |
-| Enchanting | Offer adjustment and commit-time cost/rune rules. | `EnchantItemGenerateEvent`, `EnchantItemEvent`; item data. |
+| Repair | Anvil prepare cost discount; XP only when output is committed. | `AnvilPrepareEvent`, `AnvilCompleteEvent`, transaction ID. |
+| Salvage | Grindstone output/XP modifier and material-recovery rolls. | `GrindstoneEvent`, `GrindstoneCompleteEvent`, transaction ID. |
+| Alchemy | Configured potion-consumption XP; bounded potency rules when safe hooks exist. | `BrewEvent`, `PlayerItemUseCompleteEvent`. |
+| Enchanting | Offer adjustment and commit-time cost/rune rules. | `EnchantItemGenerateEvent`, `EnchantItemCompleteEvent`; item data. |
 | Tinkering | Custom-item provenance and small, contained receiver behavior. | Item/block data, crafting, and protected UI when available. |
 | Trading | Configuration and reputation ledger only; no prices are modified until a trade commit transaction exists. | Pending villager-trade API. |
 | Charisma | Cabbage reputation/NPC/party effects; no general economy system in Pumpkin. | Cabbage data plus only existing validated effects. |
@@ -237,11 +237,10 @@ Enterprise rules:
 
 ## Phase 4 — presentation, capstones, and live operations
 
-- **GUI evaluation outcome (this checkout):** `PluginGui`/
-  `PluginScreenHandler` exist only as WASM-facing API. There is no native
-  open path and no click/close attribution to a native plugin, so protected
-  menus are **not** built. Presentation stays on commands, bossbars, and
-  action-bar prompts until the native GUI lifecycle is sufficient.
+- **GUI outcome:** Pumpkin now exposes a native protected GUI lifecycle.
+  `/mmo menu` opens a read-only 9×3 skill summary through
+  `Context::open_plugin_gui`; its owned callback and transfer policy prevent
+  item movement. Interactive perk menus remain follow-on content.
 - Add major perks at 25/50/75 only after the skill's basic XP flow has been
   live-tested. Add level-100 capstones last, one at a time, with telemetry
   and a configuration kill switch. Level gates live in
@@ -266,14 +265,15 @@ them through unsafe inventory/world changes.
 | Reach-changing melee perks | Target-validation support that permits the intended bounded reach change and is documented for Java/Bedrock. |
 | Crop-growth acceleration beyond existing grow events | Targeted cancellable growth-transition or bounded growth-request API. |
 | Player crop-harvest attribution | Dedicated harvest transaction with crop state/tool/drops, if `BlockBreakEvent` cannot meet the XP rule. |
-| Exact projectile kill attribution | Player-kill event carrying the killer, weapon, damage source, and projectile owner. |
 | Trading perks that change exchanges | Cancellable prepare/commit villager trade transaction. |
 | Smithing-table-specific perks | Mutable smithing prepare/commit transaction. |
-| Full custom menus | Native plugin GUI handles and lifecycle/click events that protect menus from all inventory transfer actions. |
+| Brewing XP and potion-effect mutation | Player-attributed brew completion and a bounded effect-adjustment transaction. |
+| Ordinary-crop bone-meal provenance | Emit `BoneMealApplyCompleteEvent` for normal ageable crops, not only bamboo. |
+| Existing-pet bond feeds | Emit `EntityFeedCompleteEvent` for consumed heal/trust interactions with already-tamed pets. |
 
 ## Implementation sequence and checkpoints
 
-1. **Foundation:** complete Phase 0 and verify the 22-skill migration on a copy
+1. **Foundation:** complete Phase 0 and verify the 23-skill migration on a copy
    of a live database/config.
 2. **Frontier MVP:** Mining migration, Woodcutting, Fishing, and Agriculture;
    test a restart, block provenance, and batch-break limits.

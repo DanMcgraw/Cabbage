@@ -441,11 +441,7 @@ pub struct ProductReward {
     pub xp: u64,
 }
 
-/// Husbandry configuration: breeding XP and animal-product XP.
-///
-/// Trait rolls are **blocked**: `EntityBreedEvent` does not expose the baby
-/// entity, so traits cannot be attached to it. They stay documented as
-/// blocked in `src/mmo/plan.md` until Pumpkin exposes the baby.
+/// Husbandry configuration: breeding XP, animal products, and newborn traits.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HusbandryConfig {
     /// XP per bred animal, keyed by entity resource name.
@@ -456,6 +452,12 @@ pub struct HusbandryConfig {
     /// XP for collecting animal products, keyed by entity resource name.
     #[serde(default = "default_product_xp")]
     pub product_xp: HashMap<String, ProductReward>,
+    /// Chance that a successfully spawned baby receives one Cabbage trait.
+    #[serde(default = "default_trait_roll_chance")]
+    pub trait_roll_chance: f64,
+    /// Trait identifiers eligible for the newborn roll.
+    #[serde(default = "default_husbandry_traits")]
+    pub traits: Vec<String>,
 }
 
 impl Default for HusbandryConfig {
@@ -464,8 +466,21 @@ impl Default for HusbandryConfig {
             breed_xp: default_breed_xp(),
             default_breed_xp: 15,
             product_xp: default_product_xp(),
+            trait_roll_chance: default_trait_roll_chance(),
+            traits: default_husbandry_traits(),
         }
     }
+}
+
+fn default_trait_roll_chance() -> f64 {
+    0.15
+}
+
+fn default_husbandry_traits() -> Vec<String> {
+    ["hardy", "swift", "fertile"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
 }
 
 fn default_breed_xp() -> HashMap<String, u64> {
@@ -606,6 +621,7 @@ impl FrontierConfig {
         for loot in self.excavation.bonus_loot.values_mut() {
             clamp_chance(&mut loot.chance);
         }
+        clamp_chance(&mut self.husbandry.trait_roll_chance);
         self.fishing.reel_exp_bonus = self.fishing.reel_exp_bonus.clamp(0, 100);
         self
     }

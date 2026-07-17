@@ -31,10 +31,6 @@ pub async fn handle_attack_damage(state: &MmoState, event: &mut PlayerAttackDama
 
     let current_tick = state.current_tick();
     let player_uuid = player.gameprofile.id;
-    state
-        .warfare()
-        .record_melee_attack(player_uuid, skill, current_tick);
-
     let config = state.config();
     if !config.perks.enabled {
         return;

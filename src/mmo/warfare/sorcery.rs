@@ -90,7 +90,7 @@ pub async fn handle_player_interact(state: &MmoState, event: &PlayerInteractEven
         player,
         SkillId::Sorcery,
         sorcery.spell_xp,
-        XpSource::Melee,
+        XpSource::Cast,
     )
     .await;
 }

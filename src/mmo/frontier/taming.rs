@@ -5,11 +5,10 @@
 //! is never treated as proof of ownership: feeding checks Pumpkin's actual
 //! tameable owner state (`EntityBase::owner_uuid`).
 
-use pumpkin::plugin::api::events::{
-    entity::entity_tame::EntityTameEvent,
-    player::player_interact_entity_event::PlayerInteractEntityEvent,
+use pumpkin::plugin::api::events::entity::{
+    entity_feed::{EntityFeedCompleteEvent, FeedOutcome},
+    entity_tame::EntityTameEvent,
 };
-use pumpkin_protocol::java::server::play::ActionType;
 
 use super::super::{
     MmoState,
@@ -43,12 +42,15 @@ pub async fn handle_entity_tame(state: &MmoState, event: &EntityTameEvent) {
 }
 
 /// Award bond and XP when an owner feeds their own tamed pet.
-pub async fn handle_player_interact_entity(state: &MmoState, event: &PlayerInteractEntityEvent) {
-    if event.cancelled || matches!(event.action, ActionType::Attack) {
-        return;
-    }
+pub async fn handle_feed_complete(state: &MmoState, event: &EntityFeedCompleteEvent) {
     let player = &event.player;
-    if !earns_xp(player) {
+    if !earns_xp(player)
+        || event.consumed_count == 0
+        || !matches!(
+            event.outcome,
+            FeedOutcome::Healed | FeedOutcome::TrustIncreased
+        )
+    {
         return;
     }
 
@@ -60,12 +62,11 @@ pub async fn handle_player_interact_entity(state: &MmoState, event: &PlayerInter
     let config = state.config();
     let taming = &config.frontier.taming;
 
-    let held = player.inventory().held_item().lock().await.clone();
-    if held.item_count == 0
+    if event.item_before.item_count == 0
         || !taming
             .bond_food_items
             .iter()
-            .any(|item| item == held.item.registry_key)
+            .any(|item| item == event.item_before.item.registry_key)
     {
         return;
     }
@@ -75,11 +76,13 @@ pub async fn handle_player_interact_entity(state: &MmoState, event: &PlayerInter
     let Some(mut profile) = PetDataV1::read(&context, event.target.as_ref()) else {
         return;
     };
-    if profile.bond < taming.bond_cap {
-        profile.bond += 1;
-        if let Err(error) = profile.write(&context, event.target.as_ref()) {
-            log::warn!("[Cabbage MMO] failed to update pet bond: {error}");
-        }
+    if profile.bond >= taming.bond_cap {
+        return;
+    }
+    profile.bond += 1;
+    if let Err(error) = profile.write(&context, event.target.as_ref()) {
+        log::warn!("[Cabbage MMO] failed to update pet bond: {error}");
+        return;
     }
 
     progression::award_xp(
@@ -87,7 +90,7 @@ pub async fn handle_player_interact_entity(state: &MmoState, event: &PlayerInter
         player,
         SkillId::Taming,
         taming.bond_feed_xp,
-        XpSource::Tame,
+        XpSource::PetFeed,
     )
     .await;
 }

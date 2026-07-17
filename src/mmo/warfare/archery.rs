@@ -37,9 +37,9 @@ pub async fn handle_projectile_hit(
     server: &Arc<Server>,
     event: &ProjectileHitEvent,
 ) {
-    let Some(victim) = event.hit_entity.as_ref() else {
+    if event.hit_entity.is_none() {
         return;
-    };
+    }
     let projectile_uuid = event.projectile.get_entity().entity_uuid;
     let current_tick = state.current_tick();
     let Some(shooter_uuid) = state
@@ -48,11 +48,6 @@ pub async fn handle_projectile_hit(
     else {
         return;
     };
-
-    let victim_uuid = victim.get_entity().entity_uuid;
-    state
-        .warfare()
-        .record_projectile_hit(victim_uuid, shooter_uuid, current_tick);
 
     let Some(shooter) = find_player_by_uuid(server, shooter_uuid) else {
         return;

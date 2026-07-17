@@ -71,6 +71,7 @@ impl CommandExecutor for MmoRootExecutor {
             let mut lines = vec![
                 "Cabbage MMO commands:".to_string(),
                 "/mmo - Show your skill summary.".to_string(),
+                "/mmo menu - Open the protected skill menu.".to_string(),
                 "/mmo stats [player] - Show skill levels by branch.".to_string(),
                 "/mmo top <skill> - Show top players for a skill.".to_string(),
             ];
@@ -110,6 +111,38 @@ impl CommandExecutor for MmoRootExecutor {
 
 struct MmoStatsExecutor {
     state: Arc<MmoState>,
+}
+
+struct MmoMenuExecutor {
+    state: Arc<MmoState>,
+}
+
+impl CommandExecutor for MmoMenuExecutor {
+    fn execute<'a>(
+        &'a self,
+        sender: &'a CommandSender,
+        _server: &'a Server,
+        _args: &'a ConsumedArgs<'a>,
+    ) -> CommandResult<'a> {
+        Box::pin(async move {
+            let Some(player) = sender.as_player() else {
+                sender
+                    .send_message(
+                        TextComponent::text("Only players can open the MMO menu.")
+                            .color_named(NamedColor::Red),
+                    )
+                    .await;
+                return Ok(0);
+            };
+            if let Err(error) = super::ui::menu::open_skill_menu(&self.state, player).await {
+                sender
+                    .send_message(TextComponent::text(error).color_named(NamedColor::Red))
+                    .await;
+                return Ok(0);
+            }
+            Ok(1)
+        })
+    }
 }
 
 impl CommandExecutor for MmoStatsExecutor {
@@ -528,6 +561,9 @@ pub fn mmo_command_tree(state: Arc<MmoState>) -> CommandTree {
                     ),
                 ),
         )
+        .then(literal("menu").execute(MmoMenuExecutor {
+            state: state.clone(),
+        }))
         .then(literal("top").then(
             pumpkin::command::tree::builder::argument("skill", SimpleArgConsumer).execute(
                 MmoTopExecutor {
