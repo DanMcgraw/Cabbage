@@ -4,10 +4,7 @@ mod shape;
 
 use std::sync::RwLock;
 
-use pumpkin::{
-    plugin::api::events::block::{block_broken::BlockBrokenEvent, block_place::BlockPlaceEvent},
-    world::World,
-};
+use pumpkin::{plugin::api::events::block::block_broken::BlockBrokenEvent, world::World};
 use pumpkin_data::{Block, BlockDirection};
 use pumpkin_util::{GameMode, math::position::BlockPos};
 use pumpkin_world::world::BlockFlags;
@@ -18,18 +15,15 @@ use self::{
     provenance::{ProvenanceKey, ProvenanceTracker},
     shape::grow_vein,
 };
-use super::db::MmoDatabase;
 
 pub(super) struct OreRevealState {
     config: RwLock<CompiledOreRevealConfig>,
-    provenance: ProvenanceTracker,
 }
 
 impl OreRevealState {
-    pub fn new(config: &OreRevealConfig, non_natural: Vec<ProvenanceKey>) -> Result<Self, String> {
+    pub fn new(config: &OreRevealConfig) -> Result<Self, String> {
         Ok(Self {
             config: RwLock::new(config.compile()?),
-            provenance: ProvenanceTracker::new(non_natural),
         })
     }
 
@@ -41,27 +35,27 @@ impl OreRevealState {
             .map_err(|_| "ore reveal configuration lock is poisoned".to_string())
     }
 
-    pub fn handle_block_place(&self, event: &BlockPlaceEvent) {
-        if event.cancelled || !event.can_build {
-            return;
-        }
-        let is_host = self
-            .config
+    /// Whether this block type hosts ore veins and must be provenance-tracked
+    /// when player-placed.
+    pub(crate) fn is_host_block(&self, block: &Block) -> bool {
+        self.config
             .read()
-            .map(|config| config.is_host(event.block_placed))
-            .unwrap_or(false);
-        if is_host {
-            self.provenance.mark(ProvenanceKey::new(
-                &event.player.world(),
-                event.block_position,
-            ));
-        }
+            .map(|config| config.is_host(block))
+            .unwrap_or(false)
     }
 
-    pub async fn handle_block_broken(&self, event: &BlockBrokenEvent, allow_reveal: bool) {
-        let key = ProvenanceKey::new(&event.world, event.block_position);
-        let was_non_natural = self.provenance.take(&key);
-
+    /// Potentially reveal an ore vein behind a broken host block.
+    ///
+    /// `was_non_natural` comes from the shared provenance tracker (taken once
+    /// by the central block-broken coordinator) and excludes player-placed
+    /// hosts from both reveals and XP progression.
+    pub async fn handle_block_broken(
+        &self,
+        event: &BlockBrokenEvent,
+        allow_reveal: bool,
+        provenance: &ProvenanceTracker,
+        was_non_natural: bool,
+    ) {
         let Some(player) = event.player.as_ref() else {
             return;
         };
@@ -103,7 +97,7 @@ impl OreRevealState {
                 target_size,
                 &config.shape,
                 |position, is_seed| {
-                    is_eligible_target(world, &config, &self.provenance, *position, is_seed)
+                    is_eligible_target(world, &config, provenance, *position, is_seed)
                 },
             );
             Some((positions, ore.stone_block, ore.deepslate_block))
@@ -113,11 +107,7 @@ impl OreRevealState {
 
         for position in positions {
             let host = world.get_block(&position);
-            if !config.is_host(host)
-                || self
-                    .provenance
-                    .contains(&ProvenanceKey::new(world, position))
-            {
+            if !config.is_host(host) || provenance.contains(&ProvenanceKey::new(world, position)) {
                 continue;
             }
             let replacement = if host == &Block::DEEPSLATE {
@@ -132,17 +122,6 @@ impl OreRevealState {
                     BlockFlags::NOTIFY_LISTENERS | BlockFlags::SKIP_DROPS,
                 )
                 .await;
-        }
-    }
-
-    pub fn flush_provenance(&self, db: &MmoDatabase) {
-        let changes = self.provenance.drain_pending();
-        if changes.is_empty() {
-            return;
-        }
-        if let Err(error) = db.apply_provenance_changes(changes.clone()) {
-            self.provenance.requeue(changes);
-            log::warn!("[Cabbage MMO] failed to queue block provenance changes: {error}");
         }
     }
 }

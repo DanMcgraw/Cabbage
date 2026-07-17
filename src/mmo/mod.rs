@@ -17,6 +17,7 @@ use pumpkin::{
                 block_break::BlockBreakEvent, block_broken::BlockBrokenEvent,
                 block_place::BlockPlaceEvent,
             },
+            player::{fish::PlayerFishEvent, player_interact_event::PlayerInteractEvent},
             world::feature_generate::FeatureGenerateEvent,
         },
         server::server_tick_start::ServerTickStartEvent,
@@ -45,6 +46,7 @@ pub use skills::SkillId;
 use commands::MMO_ADMIN_PERMISSION;
 use config::{CURRENT_CONFIG_VERSION, LegacyPluginConfig};
 use db::MmoDatabase;
+use ore_reveal::provenance::{ProvenanceKey, ProvenanceTracker};
 use perks::CooldownTracker;
 use ui::BossbarState;
 
@@ -60,6 +62,7 @@ pub struct MmoState {
     curves: Mutex<HashMap<SkillId, LevelCurve>>,
     bossbar_state: BossbarState,
     ore_reveal_state: ore_reveal::OreRevealState,
+    provenance: ProvenanceTracker,
     perk_cooldowns: CooldownTracker,
     last_tick: AtomicI32,
 }
@@ -128,8 +131,7 @@ impl MmoState {
         }
 
         let non_natural = db.load_non_natural_blocks().await?;
-        let ore_reveal_state =
-            ore_reveal::OreRevealState::new(&mmo_config.ore_reveal, non_natural)?;
+        let ore_reveal_state = ore_reveal::OreRevealState::new(&mmo_config.ore_reveal)?;
         let curves = build_curves(&mmo_config);
 
         Ok(Arc::new(Self {
@@ -140,6 +142,7 @@ impl MmoState {
             curves: Mutex::new(curves),
             bossbar_state: BossbarState::new(),
             ore_reveal_state,
+            provenance: ProvenanceTracker::new(non_natural),
             perk_cooldowns: CooldownTracker::new(),
             last_tick: AtomicI32::new(0),
         }))
@@ -194,6 +197,15 @@ impl MmoState {
     #[allow(dead_code)] // consumed by perk handlers landing in Phases 1-3
     pub(crate) fn perk_cooldowns(&self) -> &CooldownTracker {
         &self.perk_cooldowns
+    }
+
+    /// Shared block provenance tracker (player-placed block denylist).
+    ///
+    /// Ore-reveal hosts and XP-eligible logs are marked on placement; the
+    /// block-broken coordinator takes each key once and passes the result to
+    /// every consumer so placed blocks never feed progression.
+    pub(crate) fn provenance(&self) -> &ProvenanceTracker {
+        &self.provenance
     }
 
     /// Last server tick observed by this module.
@@ -362,6 +374,7 @@ impl EventHandler<BlockBreakEvent> for MmoState {
                 return;
             }
             frontier::mining::handle_block_break(self, event).await;
+            frontier::woodcutting::handle_block_break(self, event).await;
         })
     }
 }
@@ -373,7 +386,21 @@ impl EventHandler<BlockPlaceEvent> for MmoState {
         event: &'a BlockPlaceEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            self.ore_reveal_state.handle_block_place(event);
+            if event.cancelled || !event.can_build {
+                return;
+            }
+            let tracked = self.ore_reveal_state.is_host_block(event.block_placed)
+                || self
+                    .config()
+                    .frontier
+                    .woodcutting
+                    .is_tracked_log(event.block_placed.name);
+            if tracked {
+                self.provenance.mark(ProvenanceKey::new(
+                    &event.player.world(),
+                    event.block_position,
+                ));
+            }
         })
     }
 }
@@ -385,9 +412,51 @@ impl EventHandler<BlockBrokenEvent> for MmoState {
         event: &'a BlockBrokenEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
+            // Take provenance once: every consumer below sees the same answer
+            // for "was this block player-placed?".
+            let key = ProvenanceKey::new(&event.world, event.block_position);
+            let was_non_natural = self.provenance.take(&key);
+
+            let enabled = self.is_enabled();
             self.ore_reveal_state
-                .handle_block_broken(event, self.is_enabled())
+                .handle_block_broken(event, enabled, &self.provenance, was_non_natural)
                 .await;
+            if !enabled {
+                return;
+            }
+            frontier::mining::handle_block_broken(self, event, was_non_natural).await;
+            frontier::woodcutting::handle_block_broken(self, event, was_non_natural).await;
+            frontier::agriculture::handle_block_broken(self, event).await;
+        })
+    }
+}
+
+impl EventHandler<PlayerInteractEvent> for MmoState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a PlayerInteractEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+            frontier::agriculture::handle_player_interact(self, event).await;
+        })
+    }
+}
+
+impl EventHandler<PlayerFishEvent> for MmoState {
+    fn handle_blocking<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a mut PlayerFishEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+            frontier::fishing::handle_player_fish(self, event).await;
         })
     }
 }
@@ -402,7 +471,7 @@ impl EventHandler<ServerTickStartEvent> for MmoState {
             self.last_tick.store(event.tick, Ordering::Relaxed);
             self.bossbar_state.cleanup_expired(server, event.tick).await;
             if event.tick.rem_euclid(20) == 0 {
-                self.ore_reveal_state.flush_provenance(&self.db);
+                ore_reveal::provenance::flush_provenance(&self.provenance, &self.db);
             }
         })
     }

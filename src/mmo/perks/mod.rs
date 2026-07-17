@@ -6,4 +6,6 @@
 
 mod cooldown;
 
+pub(crate) mod batch_break;
+
 pub(crate) use cooldown::CooldownTracker;

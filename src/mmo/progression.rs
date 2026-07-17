@@ -177,6 +177,15 @@ pub fn branch_mastery(branch: BranchId, level_of: impl Fn(SkillId) -> u32) -> f6
     total as f64 / skills.len() as f64
 }
 
+/// Whether this player may earn progression XP. Creative and Spectator mode
+/// players cannot farm XP or trigger perk effects.
+pub(crate) fn earns_xp(player: &Player) -> bool {
+    matches!(
+        player.gamemode.load(),
+        pumpkin_util::GameMode::Survival | pumpkin_util::GameMode::Adventure
+    )
+}
+
 /// A point-in-time view of a player's skill progress.
 ///
 /// Level is derived from total XP on demand, so this struct stores only the

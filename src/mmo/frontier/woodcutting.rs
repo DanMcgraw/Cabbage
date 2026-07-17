@@ -1,14 +1,14 @@
-//! Mining skill: ore XP, Prospector bonus rolls, and the Vein Miner perk.
+//! Woodcutting skill: natural-log XP, the Heartwood roll, and the Timber perk.
 //!
-//! XP rule: one primary skill (Mining) per ore block break, awarded only for
-//! natural blocks with a configured reward — player-placed ores (silk touch)
-//! are excluded through the shared provenance tracker. Ore-reveal eligibility
-//! lives in `ore_reveal/`; this handler owns XP and perks.
+//! XP rule: one primary skill (Woodcutting) per natural log break. Natural
+//! trees are validated in Cabbage through the shared provenance tracker:
+//! player-placed logs earn nothing and cannot feed Timber.
 
 use pumpkin::{
     entity::EntityBase,
     plugin::api::events::block::{block_break::BlockBreakEvent, block_broken::BlockBrokenEvent},
 };
+use pumpkin_data::{Block, item_stack::ItemStack};
 use rand::Rng;
 
 use super::super::{
@@ -19,9 +19,9 @@ use super::super::{
     skills::SkillId,
 };
 
-const VEIN_MINER_COOLDOWN_KEY: &str = "mining.vein_miner";
+const TIMBER_COOLDOWN_KEY: &str = "woodcutting.timber";
 
-/// Award Mining XP for a broken natural ore, then roll Prospector.
+/// Award Woodcutting XP for a broken natural log.
 pub async fn handle_block_broken(
     state: &MmoState,
     event: &BlockBrokenEvent,
@@ -33,42 +33,49 @@ pub async fn handle_block_broken(
     if was_non_natural || !earns_xp(player) {
         return;
     }
-    let Some(base_xp) = state.block_xp_reward(event.block.name) else {
+    let config = state.config();
+    let woodcutting = &config.frontier.woodcutting;
+    let Some(xp) = woodcutting.log_xp.get(event.block.name).copied() else {
         return;
     };
 
-    let Some(outcome) = progression::award_xp(
+    progression::award_xp(
         state,
         player,
-        SkillId::Mining,
-        base_xp,
+        SkillId::Woodcutting,
+        xp,
         XpSource::BlockBreak,
     )
-    .await
-    else {
-        return;
-    };
+    .await;
 
-    // Prospector: chance-based bonus XP scaled by level.
-    let config = state.config();
-    let perk = &config.frontier.mining;
-    if !perk.prospector_enabled || !config.perks.enabled {
+    // Heartwood roll: chance for one bonus log plus bonus XP.
+    if !config.perks.enabled {
         return;
     }
-    let chance = (perk.prospector_base_chance
-        + perk.prospector_chance_per_level * outcome.new_level as f64)
-        .min(perk.prospector_max_chance)
+    let chance = woodcutting
+        .heartwood_chance
         .min(config.perks.max_proc_chance);
-    if chance > 0.0 && rand::rng().random::<f64>() < chance {
-        let bonus = (base_xp as f64 * perk.prospector_xp_multiplier)
-            .round()
-            .max(1.0) as u64;
-        progression::award_xp(state, player, SkillId::Mining, bonus, XpSource::BlockBreak).await;
+    if chance <= 0.0 || rand::rng().random::<f64>() >= chance {
+        return;
+    }
+    if let Some(item) = pumpkin_data::item::Item::from_registry_key(event.block.name) {
+        event
+            .world
+            .drop_stack(&event.block_position, ItemStack::new(1, item))
+            .await;
+        progression::award_xp(
+            state,
+            player,
+            SkillId::Woodcutting,
+            woodcutting.heartwood_xp_bonus,
+            XpSource::BlockBreak,
+        )
+        .await;
     }
 }
 
-/// Vein Miner: sneaking while breaking a configured ore breaks the connected
-/// vein in one bounded, cooldown-gated transaction.
+/// Timber: sneaking while breaking a natural log fells connected logs of the
+/// same type in one bounded, cooldown-gated transaction.
 pub async fn handle_block_break(state: &MmoState, event: &BlockBreakEvent) {
     let Some(player) = event.player.as_ref() else {
         return;
@@ -77,11 +84,11 @@ pub async fn handle_block_break(state: &MmoState, event: &BlockBreakEvent) {
         return;
     }
     let config = state.config();
-    let perk = &config.frontier.mining;
-    if !perk.vein_miner_enabled || !config.perks.enabled {
+    let woodcutting = &config.frontier.woodcutting;
+    if !woodcutting.timber_enabled || !config.perks.enabled {
         return;
     }
-    if state.block_xp_reward(event.block.name).is_none() {
+    if !woodcutting.is_tracked_log(event.block.name) {
         return;
     }
 
@@ -93,7 +100,7 @@ pub async fn handle_block_break(state: &MmoState, event: &BlockBreakEvent) {
         return;
     }
 
-    let target = event.block;
+    let target: &'static Block = event.block;
     let provenance = state.provenance();
     let closure_world = world.clone();
     batch_break::try_batch_break(
@@ -101,8 +108,8 @@ pub async fn handle_block_break(state: &MmoState, event: &BlockBreakEvent) {
         &world,
         player,
         event.block_position,
-        perk.vein_miner_max_blocks,
-        VEIN_MINER_COOLDOWN_KEY,
+        woodcutting.timber_max_blocks,
+        TIMBER_COOLDOWN_KEY,
         move |position| {
             let Some(state_id) = closure_world.get_block_state_id_if_loaded(&position) else {
                 return false;

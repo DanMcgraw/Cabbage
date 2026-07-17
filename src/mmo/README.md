@@ -19,7 +19,8 @@ src/mmo/
 |-- progression.rs     # central award_xp path, XpSource, branch mastery, snapshots
 |-- perks/             # perk scaffolding: tick-based cooldown tracker
 |-- persistence/       # typed versioned codecs for Pumpkin player/item/entity/block data
-|-- frontier/          # Frontier skill handlers (Mining live; rest land in Phase 1)
+|-- frontier/          # Frontier skill handlers + branch config (Mining, Woodcutting,
+    |   |                # Agriculture, Fishing live; rest land later in Phase 1)
 |-- warfare/           # Warfare skill handlers (Phase 2)
 |-- enterprise/        # Enterprise skill handlers (Phase 3)
 |-- ui/                # bossbars now; menus only when the platform supports them
@@ -42,6 +43,29 @@ average of its member skill levels. The legacy `Combat` skill is retired: its
 stored XP is preserved in a `legacy_combat_xp` record (SQLite schema v1) until
 an administrator migrates it via `combat_migration.target` in config.ron or
 `/mmo migrate combat <skill>`. `Mining` XP remains Mining XP.
+
+## Perks
+
+Perk effects are gated by the global `perks` config (`enabled` kill switch,
+batch caps, proc-chance caps) and per-skill knobs in the `frontier` config
+section. Cooldowns are tick-based and in-memory. Multi-break perks always go
+through `Context::break_blocks` (max 128 blocks, deduplicated, protection-
+and durability-aware); the cooldown is charged before the transaction so the
+events fired per broken block cannot re-trigger the perk recursively.
+
+| Perk | Skill | Activation | Effect |
+|---|---|---|---|
+| Prospector | Mining | passive | Chance (level-scaled, capped) of bonus XP on ore breaks. |
+| Vein Miner | Mining | sneak + break ore | Breaks the connected ore vein in one bounded transaction. |
+| Heartwood | Woodcutting | passive | Chance (capped) of one bonus log + bonus XP on natural log breaks. |
+| Timber | Woodcutting | sneak + break natural log | Fells connected logs of the same type, bounded. |
+| Harvest bonus | Agriculture | passive | Chance (capped) of one bonus crop item on mature harvests; fertilized crops (bone meal) get a deterministic roll and bonus XP. |
+| Reel | Fishing | passive | Extra vanilla experience on a successful catch. |
+| Treasure replacement | Fishing | passive | Configured caught items are swapped for their mapped replacement (off by default). |
+
+Player-placed ores and logs never earn XP or feed perks: placements of
+tracked block types are recorded in the shared provenance tracker (the same
+`non_natural_blocks` denylist ore reveal uses) and excluded at break time.
 
 ## Data Flow
 
@@ -180,6 +204,36 @@ PluginConfig(
             max_effect_area_radius: 4,
         ),
         combat_migration: (target: None),    // or Some(Blades) etc.
+        frontier: (
+            mining: (
+                prospector_enabled: true,
+                prospector_base_chance: 0.05,
+                prospector_chance_per_level: 0.002,
+                prospector_max_chance: 0.35,
+                prospector_xp_multiplier: 0.5,
+                vein_miner_enabled: true,
+                vein_miner_max_blocks: 16,
+            ),
+            woodcutting: (
+                log_xp: { "oak_log": 6, /* ... */ },
+                heartwood_chance: 0.02,
+                heartwood_xp_bonus: 25,
+                timber_enabled: true,
+                timber_max_blocks: 32,
+            ),
+            agriculture: (
+                crops: { "wheat": (xp: 10, max_age: 7, bonus_item: "wheat"), /* ... */ },
+                harvest_bonus_chance: 0.10,
+                fertilizer_bonus_xp: 10,
+                fertilizer_guarantees_bonus: true,
+            ),
+            fishing: (
+                catch_xp: { "cod": 20, /* ... */ },
+                default_catch_xp: 10,
+                reel_exp_bonus: 2,
+                treasure_replacements: {},
+            ),
+        ),
         reward_config_version: 1,
         xp_rewards: (
             mobs: { "zombie": 12, /* ... */ },

@@ -463,6 +463,20 @@ impl Plugin for CabbagePlugin {
                     )
                     .await;
                 context
+                    .register_event::<pumpkin::plugin::api::events::player::player_interact_event::PlayerInteractEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        false,
+                    )
+                    .await;
+                context
+                    .register_event::<pumpkin::plugin::api::events::player::fish::PlayerFishEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        true,
+                    )
+                    .await;
+                context
                     .register_command(
                         mmo::mmo_command_tree(mmo_state.clone()),
                         mmo::MMO_PERMISSION,

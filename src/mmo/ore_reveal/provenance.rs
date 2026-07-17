@@ -4,6 +4,8 @@ use std::sync::Mutex;
 use pumpkin::world::World;
 use pumpkin_util::math::position::BlockPos;
 
+use crate::mmo::db::MmoDatabase;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ProvenanceKey {
     pub world: String,
@@ -31,7 +33,7 @@ pub(crate) struct ProvenanceChange {
     pub non_natural: bool,
 }
 
-pub(super) struct ProvenanceTracker {
+pub(crate) struct ProvenanceTracker {
     non_natural: Mutex<HashSet<ProvenanceKey>>,
     pending: Mutex<HashMap<ProvenanceKey, bool>>,
 }
@@ -90,6 +92,19 @@ impl ProvenanceTracker {
                 pending.entry(change.key).or_insert(change.non_natural);
             }
         }
+    }
+}
+
+/// Persist queued provenance changes, re-queueing them on failure so a
+/// transient database error cannot silently lose placement data.
+pub(crate) fn flush_provenance(tracker: &ProvenanceTracker, db: &MmoDatabase) {
+    let changes = tracker.drain_pending();
+    if changes.is_empty() {
+        return;
+    }
+    if let Err(error) = db.apply_provenance_changes(changes.clone()) {
+        tracker.requeue(changes);
+        log::warn!("[Cabbage MMO] failed to queue block provenance changes: {error}");
     }
 }
 

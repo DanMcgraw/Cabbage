@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::frontier::config::FrontierConfig;
 use super::ore_reveal::config::OreRevealConfig;
 use super::skills::SkillId;
 
@@ -191,6 +192,9 @@ pub struct MmoConfig {
     /// Global perk bounds and kill switch.
     #[serde(default)]
     pub perks: PerkConfig,
+    /// Frontier branch skill and perk configuration.
+    #[serde(default)]
+    pub frontier: FrontierConfig,
     /// Legacy Combat XP migration settings.
     #[serde(default)]
     pub combat_migration: CombatMigrationConfig,
@@ -200,6 +204,7 @@ impl MmoConfig {
     /// Clamp out-of-range values into safe bounds. Called after every load.
     pub fn sanitized(mut self) -> Self {
         self.perks = self.perks.sanitized();
+        self.frontier = self.frontier.sanitized();
         for skill_config in self.skills.values_mut() {
             skill_config.base_xp = skill_config.base_xp.max(1);
             skill_config.max_level = skill_config.max_level.clamp(1, 1000);
@@ -411,6 +416,7 @@ impl Default for MmoConfig {
             xp_rewards: XpRewardsConfig::default(),
             progression: ProgressionConfig::default(),
             perks: PerkConfig::default(),
+            frontier: FrontierConfig::default(),
             combat_migration: CombatMigrationConfig::default(),
         }
     }
@@ -543,6 +549,7 @@ mod tests {
         assert_eq!(config.config_version, 0);
         assert_eq!(config.progression, ProgressionConfig::default());
         assert_eq!(config.perks, PerkConfig::default());
+        assert_eq!(config.frontier, FrontierConfig::default());
         assert_eq!(config.combat_migration, CombatMigrationConfig::default());
     }
 
