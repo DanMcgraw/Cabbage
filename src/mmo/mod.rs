@@ -17,9 +17,14 @@ use pumpkin::{
                 block_break::BlockBreakEvent, block_broken::BlockBrokenEvent,
                 block_place::BlockPlaceEvent,
             },
-            entity::{entity_breed::EntityBreedEvent, entity_tame::EntityTameEvent},
+            entity::{
+                entity_breed::EntityBreedEvent, entity_damage::EntityDamageEvent,
+                entity_death::EntityDeathEvent, entity_shoot_bow::EntityShootBowEvent,
+                entity_tame::EntityTameEvent, projectile_hit::ProjectileHitEvent,
+            },
             player::{
-                fish::PlayerFishEvent, player_interact_entity_event::PlayerInteractEntityEvent,
+                fish::PlayerFishEvent, player_attack::PlayerAttackDamageEvent,
+                player_interact_entity_event::PlayerInteractEntityEvent,
                 player_interact_event::PlayerInteractEvent,
                 player_item_use_finish::PlayerItemUseFinishEvent,
             },
@@ -69,6 +74,7 @@ pub struct MmoState {
     ore_reveal_state: ore_reveal::OreRevealState,
     provenance: ProvenanceTracker,
     perk_cooldowns: CooldownTracker,
+    warfare_state: warfare::WarfareState,
     last_tick: AtomicI32,
 }
 
@@ -149,6 +155,7 @@ impl MmoState {
             ore_reveal_state,
             provenance: ProvenanceTracker::new(non_natural),
             perk_cooldowns: CooldownTracker::new(),
+            warfare_state: warfare::WarfareState::new(),
             last_tick: AtomicI32::new(0),
         }))
     }
@@ -183,7 +190,6 @@ impl MmoState {
         self.db.clone()
     }
 
-    #[allow(dead_code)] // consumed by Warfare kill XP (Phase 2)
     pub fn mob_xp_reward(&self, mob_name: &str) -> Option<u64> {
         self.config
             .lock()
@@ -211,6 +217,11 @@ impl MmoState {
     /// every consumer so placed blocks never feed progression.
     pub(crate) fn provenance(&self) -> &ProvenanceTracker {
         &self.provenance
+    }
+
+    /// Warfare in-memory state (attack records, projectile provenance, mana).
+    pub(crate) fn warfare(&self) -> &warfare::WarfareState {
+        &self.warfare_state
     }
 
     /// Last server tick observed by this module.
@@ -458,6 +469,7 @@ impl EventHandler<PlayerInteractEvent> for MmoState {
                 return;
             }
             frontier::agriculture::handle_player_interact(self, event).await;
+            warfare::sorcery::handle_player_interact(self, event).await;
         })
     }
 }
@@ -538,6 +550,81 @@ impl EventHandler<PlayerItemUseFinishEvent> for MmoState {
     }
 }
 
+impl EventHandler<PlayerAttackDamageEvent> for MmoState {
+    fn handle_blocking<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a mut PlayerAttackDamageEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+            warfare::melee::handle_attack_damage(self, event).await;
+        })
+    }
+}
+
+impl EventHandler<EntityShootBowEvent> for MmoState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a EntityShootBowEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+            warfare::archery::handle_shoot_bow(self, event).await;
+        })
+    }
+}
+
+impl EventHandler<ProjectileHitEvent> for MmoState {
+    fn handle<'a>(
+        &'a self,
+        server: &'a Arc<Server>,
+        event: &'a ProjectileHitEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+            warfare::archery::handle_projectile_hit(self, server, event).await;
+        })
+    }
+}
+
+impl EventHandler<EntityDeathEvent> for MmoState {
+    fn handle<'a>(
+        &'a self,
+        server: &'a Arc<Server>,
+        event: &'a EntityDeathEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+            warfare::kills::handle_entity_death(self, server, event).await;
+        })
+    }
+}
+
+impl EventHandler<EntityDamageEvent> for MmoState {
+    fn handle_blocking<'a>(
+        &'a self,
+        server: &'a Arc<Server>,
+        event: &'a mut EntityDamageEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+            warfare::defense::handle_entity_damage(self, server, event).await;
+        })
+    }
+}
+
 impl EventHandler<ServerTickStartEvent> for MmoState {
     fn handle<'a>(
         &'a self,
@@ -549,6 +636,9 @@ impl EventHandler<ServerTickStartEvent> for MmoState {
             self.bossbar_state.cleanup_expired(server, event.tick).await;
             if event.tick.rem_euclid(20) == 0 {
                 ore_reveal::provenance::flush_provenance(&self.provenance, &self.db);
+            }
+            if event.tick.rem_euclid(600) == 0 {
+                self.warfare_state.sweep(event.tick);
             }
         })
     }

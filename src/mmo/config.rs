@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::frontier::config::FrontierConfig;
 use super::ore_reveal::config::OreRevealConfig;
 use super::skills::SkillId;
+use super::warfare::config::WarfareConfig;
 
 fn default_true() -> bool {
     true
@@ -195,6 +196,9 @@ pub struct MmoConfig {
     /// Frontier branch skill and perk configuration.
     #[serde(default)]
     pub frontier: FrontierConfig,
+    /// Warfare branch skill and perk configuration.
+    #[serde(default)]
+    pub warfare: WarfareConfig,
     /// Legacy Combat XP migration settings.
     #[serde(default)]
     pub combat_migration: CombatMigrationConfig,
@@ -205,6 +209,7 @@ impl MmoConfig {
     pub fn sanitized(mut self) -> Self {
         self.perks = self.perks.sanitized();
         self.frontier = self.frontier.sanitized();
+        self.warfare = self.warfare.sanitized();
         for skill_config in self.skills.values_mut() {
             skill_config.base_xp = skill_config.base_xp.max(1);
             skill_config.max_level = skill_config.max_level.clamp(1, 1000);
@@ -417,6 +422,7 @@ impl Default for MmoConfig {
             progression: ProgressionConfig::default(),
             perks: PerkConfig::default(),
             frontier: FrontierConfig::default(),
+            warfare: WarfareConfig::default(),
             combat_migration: CombatMigrationConfig::default(),
         }
     }

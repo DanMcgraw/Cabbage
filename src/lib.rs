@@ -505,6 +505,41 @@ impl Plugin for CabbagePlugin {
                     )
                     .await;
                 context
+                    .register_event::<pumpkin::plugin::api::events::player::player_attack::PlayerAttackDamageEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        true,
+                    )
+                    .await;
+                context
+                    .register_event::<EntityShootBowEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        false,
+                    )
+                    .await;
+                context
+                    .register_event::<ProjectileHitEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        false,
+                    )
+                    .await;
+                context
+                    .register_event::<EntityDeathEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        false,
+                    )
+                    .await;
+                context
+                    .register_event::<EntityDamageEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        true,
+                    )
+                    .await;
+                context
                     .register_command(
                         mmo::mmo_command_tree(mmo_state.clone()),
                         mmo::MMO_PERMISSION,

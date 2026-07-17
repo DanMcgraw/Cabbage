@@ -66,6 +66,21 @@ events fired per broken block cannot re-trigger the perk recursively.
 | Consumable healing | Herbalism | passive | Configured plant foods restore bonus health (bounded). |
 | Earthmover | Excavation | sneak + break diggable block | Excavates connected blocks of the same type, bounded. |
 | Archaeology loot | Excavation | passive | Chance (capped) of a configured bonus item on diggable breaks. |
+| Skill damage | Blades / Axes / Unarmed | passive | Level-scaled attack damage bonus, capped per skill and by the global damage cap. |
+| Riposte | Blades | passive (cooldown) | Bonus damage when striking shortly after taking damage. |
+| Knockback | Unarmed | passive | Level-scaled knockback bonus, capped. |
+| Resilience | Defense | passive | Level-scaled incoming-damage reduction, capped. |
+| Roll | Acrobatics | passive | Level-scaled fall-damage reduction, capped. |
+| Healing bolt | Sorcery | right-click staff (mana + cooldown) | Restores bounded health; costs mana. |
+
+Warfare XP attribution: melee weapons are classified from the attack event's
+weapon snapshot (`_sword` → Blades, `_axe` → Axes, empty hand → Unarmed, bow
+and crossbow → the projectile path). Kill XP is awarded exactly once from
+`EntityDeathEvent`, attributed by recent-attack records and projectile
+provenance — never by inspecting a possibly changed inventory after death.
+Archery additionally earns small per-hit XP through recorded projectile
+owners. Defense XP comes from damage taken; Acrobatics XP from fall damage;
+Sorcery XP from casting.
 
 XP-only Frontier sources: Husbandry (breeding, animal products) and Taming
 (tames, owner-validated pet feeding). Husbandry trait rolls are **blocked**:
