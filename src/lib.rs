@@ -540,6 +540,62 @@ impl Plugin for CabbagePlugin {
                     )
                     .await;
                 context
+                    .register_event::<pumpkin::plugin::api::events::player::anvil_prepare::AnvilPrepareEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        true,
+                    )
+                    .await;
+                context
+                    .register_event::<pumpkin::plugin::api::events::player::anvil_repair::AnvilRepairEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        false,
+                    )
+                    .await;
+                context
+                    .register_event::<pumpkin::plugin::api::events::player::grindstone::GrindstoneEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        true,
+                    )
+                    .await;
+                context
+                    .register_event::<pumpkin::plugin::api::events::player::grindstone::GrindstoneTakeEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        false,
+                    )
+                    .await;
+                context
+                    .register_event::<pumpkin::plugin::api::events::player::enchant_item_generate::EnchantItemGenerateEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        true,
+                    )
+                    .await;
+                context
+                    .register_event::<pumpkin::plugin::api::events::player::enchant_item::EnchantItemEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        false,
+                    )
+                    .await;
+                context
+                    .register_event::<CraftItemEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        false,
+                    )
+                    .await;
+                context
+                    .register_event::<FurnaceExtractEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        false,
+                    )
+                    .await;
+                context
                     .register_command(
                         mmo::mmo_command_tree(mmo_state.clone()),
                         mmo::MMO_PERMISSION,

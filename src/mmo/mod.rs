@@ -23,7 +23,15 @@ use pumpkin::{
                 entity_tame::EntityTameEvent, projectile_hit::ProjectileHitEvent,
             },
             player::{
-                fish::PlayerFishEvent, player_attack::PlayerAttackDamageEvent,
+                anvil_prepare::AnvilPrepareEvent,
+                anvil_repair::AnvilRepairEvent,
+                craft_item::CraftItemEvent,
+                enchant_item::EnchantItemEvent,
+                enchant_item_generate::EnchantItemGenerateEvent,
+                fish::PlayerFishEvent,
+                furnace_extract::FurnaceExtractEvent,
+                grindstone::{GrindstoneEvent, GrindstoneTakeEvent},
+                player_attack::PlayerAttackDamageEvent,
                 player_interact_entity_event::PlayerInteractEntityEvent,
                 player_interact_event::PlayerInteractEvent,
                 player_item_use_finish::PlayerItemUseFinishEvent,
@@ -621,6 +629,128 @@ impl EventHandler<EntityDamageEvent> for MmoState {
                 return;
             }
             warfare::defense::handle_entity_damage(self, server, event).await;
+        })
+    }
+}
+
+impl EventHandler<AnvilPrepareEvent> for MmoState {
+    fn handle_blocking<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a mut AnvilPrepareEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+            enterprise::repair::handle_anvil_prepare(self, event).await;
+            enterprise::smithing::handle_anvil_prepare(self, event).await;
+        })
+    }
+}
+
+impl EventHandler<AnvilRepairEvent> for MmoState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a AnvilRepairEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+            enterprise::repair::handle_anvil_repair(self, event).await;
+        })
+    }
+}
+
+impl EventHandler<GrindstoneEvent> for MmoState {
+    fn handle_blocking<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a mut GrindstoneEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+            enterprise::salvage::handle_grindstone(self, event).await;
+        })
+    }
+}
+
+impl EventHandler<GrindstoneTakeEvent> for MmoState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a GrindstoneTakeEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+            enterprise::salvage::handle_grindstone_take(self, event).await;
+        })
+    }
+}
+
+impl EventHandler<EnchantItemGenerateEvent> for MmoState {
+    fn handle_blocking<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a mut EnchantItemGenerateEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+            enterprise::enchanting::handle_enchant_generate(self, event).await;
+        })
+    }
+}
+
+impl EventHandler<EnchantItemEvent> for MmoState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a EnchantItemEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+            enterprise::enchanting::handle_enchant_item(self, event).await;
+        })
+    }
+}
+
+impl EventHandler<CraftItemEvent> for MmoState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a CraftItemEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+            enterprise::smithing::handle_craft_item(self, event).await;
+            enterprise::tinkering::handle_craft_item(self, event).await;
+        })
+    }
+}
+
+impl EventHandler<FurnaceExtractEvent> for MmoState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a FurnaceExtractEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+            enterprise::smithing::handle_furnace_extract(self, event).await;
         })
     }
 }

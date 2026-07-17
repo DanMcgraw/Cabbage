@@ -15,6 +15,9 @@ use uuid::Uuid;
 /// Key for the versioned Cabbage player profile payload.
 pub const PROFILE_DATA_KEY: &str = "profile_v1";
 
+/// Key for the versioned Cabbage reputation ledger payload.
+pub const REPUTATION_DATA_KEY: &str = "rep_v1";
+
 /// Cabbage player capability state, version 1.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayerProfileV1 {
@@ -94,6 +97,79 @@ impl PlayerProfileV1 {
             .set_player_data(player_uuid, PROFILE_DATA_KEY, self.encode())
             .await
             .map_err(|error| format!("failed to write player profile: {error}"))
+    }
+}
+
+/// Cabbage reputation ledger, version 1: faction standings for future
+/// Trading and Charisma effects. Unused while those skills are blocked; the
+/// codec exists so reputation can be recorded without a schema change later.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReputationLedgerV1 {
+    /// Faction name → standing.
+    pub factions: std::collections::HashMap<String, i32>,
+}
+
+impl ReputationLedgerV1 {
+    pub const VERSION: i32 = 1;
+
+    pub fn encode(&self) -> NbtTag {
+        let mut compound = NbtCompound::new();
+        compound.put_int("version", Self::VERSION);
+        let mut factions = NbtCompound::new();
+        for (faction, standing) in &self.factions {
+            factions.put_int(faction, *standing);
+        }
+        compound.put_compound("factions", factions);
+        NbtTag::Compound(compound)
+    }
+
+    /// Decode a payload, rejecting malformed or version-incompatible data.
+    pub fn decode(tag: &NbtTag) -> Option<Self> {
+        let compound = tag.extract_compound()?;
+        if compound.get_int("version")? != Self::VERSION {
+            return None;
+        }
+        let factions = compound
+            .get_compound("factions")?
+            .child_tags
+            .iter()
+            .map(|(name, tag)| match tag {
+                NbtTag::Int(value) => Some((name.to_string(), *value)),
+                _ => None,
+            })
+            .collect::<Option<std::collections::HashMap<_, _>>>()?;
+        Some(Self { factions })
+    }
+
+    /// Read the ledger for a player, if present and valid.
+    pub async fn read(context: &Context, player_uuid: Uuid) -> Option<Self> {
+        context
+            .get_player_data(player_uuid, REPUTATION_DATA_KEY)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|tag| Self::decode(&tag))
+    }
+
+    /// Persist the ledger for a player.
+    pub async fn write(&self, context: &Context, player_uuid: Uuid) -> Result<(), String> {
+        context
+            .set_player_data(player_uuid, REPUTATION_DATA_KEY, self.encode())
+            .await
+            .map_err(|error| format!("failed to write reputation ledger: {error}"))
+    }
+
+    /// Add standing to a faction and persist the ledger.
+    #[allow(dead_code)] // used when Trading/Charisma effects un-block
+    pub async fn add_reputation(
+        context: &Context,
+        player_uuid: Uuid,
+        faction: &str,
+        delta: i32,
+    ) -> Result<(), String> {
+        let mut ledger = Self::read(context, player_uuid).await.unwrap_or_default();
+        *ledger.factions.entry(faction.to_string()).or_insert(0) += delta;
+        ledger.write(context, player_uuid).await
     }
 }
 

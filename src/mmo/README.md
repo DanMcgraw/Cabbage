@@ -72,6 +72,11 @@ events fired per broken block cannot re-trigger the perk recursively.
 | Resilience | Defense | passive | Level-scaled incoming-damage reduction, capped. |
 | Roll | Acrobatics | passive | Level-scaled fall-damage reduction, capped. |
 | Healing bolt | Sorcery | right-click staff (mana + cooldown) | Restores bounded health; costs mana. |
+| Repair discount | Repair | anvil (prepare preview) | Level-cost reduction while off cooldown; cooldown charged on take. |
+| Salvage bonus | Salvage | grindstone (prepare preview) | Bonus disenchant experience; cooldown charged on take. |
+| Material recovery | Salvage | grindstone take | Chance (capped) of one tool-tier material item. |
+| Offer discount | Enchanting | enchanting table (offer preview) | Level-requirement reduction, capped per level. |
+| Anvil marking | Smithing | anvil output | Adds creator/provenance item data; vanilla result preserved. |
 
 Warfare XP attribution: melee weapons are classified from the attack event's
 weapon snapshot (`_sword` → Blades, `_axe` → Axes, empty hand → Unarmed, bow
@@ -81,6 +86,16 @@ provenance — never by inspecting a possibly changed inventory after death.
 Archery additionally earns small per-hit XP through recorded projectile
 owners. Defense XP comes from damage taken; Acrobatics XP from fall damage;
 Sorcery XP from casting.
+
+Enterprise notes: Smithing earns craft and furnace-extraction XP; Alchemy
+earns potion-consumption XP (brewing itself is not attributable — `BrewEvent`
+carries no player — and potency mutation has no safe hook, both documented as
+blocked). `CraftItemEvent` is observational in this Pumpkin build, so
+creator/provenance markers are written onto honored anvil outputs instead.
+Trading and Charisma stay **disabled**: there is no villager-trade commit
+transaction or general economy hook yet. Their config sections and the
+`rep_v1` reputation ledger exist so server owners can migrate in later
+without a schema change.
 
 XP-only Frontier sources: Husbandry (breeding, animal products) and Taming
 (tames, owner-validated pet feeding). Husbandry trait rolls are **blocked**:
