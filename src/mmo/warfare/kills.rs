@@ -9,9 +9,7 @@
 
 use std::sync::Arc;
 
-use pumpkin::{
-    entity::EntityBase, plugin::api::events::entity::entity_death::EntityDeathEvent, server::Server,
-};
+use pumpkin::{plugin::api::events::entity::entity_death::EntityDeathEvent, server::Server};
 
 use super::super::{
     MmoState,
