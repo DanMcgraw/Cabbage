@@ -554,6 +554,7 @@ impl EventHandler<PlayerItemUseFinishEvent> for MmoState {
                 return;
             }
             frontier::herbalism::handle_item_use_finish(self, event).await;
+            enterprise::alchemy::handle_item_use_finish(self, event).await;
         })
     }
 }
