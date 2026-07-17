@@ -26,15 +26,17 @@ Cabbage/
     |-- lib.rs                 # plugin metadata, lifecycle, command/event registration
     |-- mmo/                   # MMO skilling module (see src/mmo/README.md)
     |   |-- README.md
+    |   |-- BALANCE.md         # default balance profile and migration guide
     |   |-- plan.md            # phased MMO implementation plan
     |   |-- mod.rs             # MmoState and event handler wiring
     |   |-- skills.rs          # SkillId (23 skills), BranchId, metadata
     |   |-- progression.rs     # central award_xp path and branch mastery
-    |   |-- perks/             # perk scaffolding (cooldowns)
+    |   |-- audit.rs           # append-only audit log
+    |   |-- perks/             # perk scaffolding (cooldowns, batch breaks, level gates)
     |   |-- persistence/       # typed Pumpkin player/item/entity/block codecs
-    |   |-- frontier/          # Frontier skill handlers
-    |   |-- warfare/           # Warfare skill handlers
-    |   |-- enterprise/        # Enterprise skill handlers
+    |   |-- frontier/          # Frontier skill handlers and configuration
+    |   |-- warfare/           # Warfare skill handlers and configuration
+    |   |-- enterprise/        # Enterprise skill handlers and configuration
     |   |-- ui/                # bossbars
     |   |-- commands.rs        # /mmo command tree and admin subcommands
     |   |-- config.rs          # RON config and per-skill level curves
