@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::audit::AuditConfig;
 use super::enterprise::config::EnterpriseConfig;
 use super::frontier::config::FrontierConfig;
 use super::ore_reveal::config::OreRevealConfig;
@@ -203,6 +204,9 @@ pub struct MmoConfig {
     /// Enterprise branch skill and perk configuration.
     #[serde(default)]
     pub enterprise: EnterpriseConfig,
+    /// Audit logging for progression-sensitive actions.
+    #[serde(default)]
+    pub audit: AuditConfig,
     /// Legacy Combat XP migration settings.
     #[serde(default)]
     pub combat_migration: CombatMigrationConfig,
@@ -429,6 +433,7 @@ impl Default for MmoConfig {
             frontier: FrontierConfig::default(),
             warfare: WarfareConfig::default(),
             enterprise: EnterpriseConfig::default(),
+            audit: AuditConfig::default(),
             combat_migration: CombatMigrationConfig::default(),
         }
     }

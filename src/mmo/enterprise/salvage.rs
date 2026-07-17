@@ -77,6 +77,10 @@ pub async fn handle_grindstone_take(state: &MmoState, event: &GrindstoneTakeEven
         XpSource::Salvage,
     )
     .await;
+    state.audit(&format!(
+        "grindstone commit: {} took output for {} experience",
+        player.gameprofile.id, event.experience
+    ));
 
     // Material-recovery roll: one material item of the input's tool tier,
     // dropped at the player. The grindstone transaction itself is untouched.
@@ -95,6 +99,10 @@ pub async fn handle_grindstone_take(state: &MmoState, event: &GrindstoneTakeEven
     };
     let world = player.get_entity().world.load_full();
     let pos = player.get_entity().block_pos.load();
+    state.audit(&format!(
+        "quality roll: salvage recovered {} for {}",
+        material, player_uuid
+    ));
     world.drop_stack(&pos, ItemStack::new(1, item)).await;
 }
 

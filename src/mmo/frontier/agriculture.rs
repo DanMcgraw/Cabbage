@@ -63,6 +63,10 @@ pub async fn handle_block_broken(state: &MmoState, event: &BlockBrokenEvent) {
 
     let fertilized = fertilizer.is_some();
     if fertilized && agriculture.fertilizer_bonus_xp > 0 {
+        state.audit(&format!(
+            "quality roll: fertilized {} harvested by {}",
+            event.block.name, player.gameprofile.id
+        ));
         progression::award_xp(
             state,
             player,

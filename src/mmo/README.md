@@ -13,16 +13,17 @@ height-dependent ore vein behind the mined face.
 ```text
 src/mmo/
 |-- README.md          # this file
+|-- BALANCE.md         # default balance profile and migration guide
 |-- plan.md            # phased implementation plan
 |-- mod.rs             # MmoState, lifecycle, event registration, feature blacklist
 |-- skills.rs          # SkillId (23 skills), BranchId, branch/skill metadata
 |-- progression.rs     # central award_xp path, XpSource, branch mastery, snapshots
-|-- perks/             # perk scaffolding: tick-based cooldown tracker
+|-- audit.rs           # append-only audit log (mmo-audit.log)
+|-- perks/             # perk scaffolding: cooldowns, batch breaks, level gates
 |-- persistence/       # typed versioned codecs for Pumpkin player/item/entity/block data
-|-- frontier/          # Frontier skill handlers + branch config (Mining, Woodcutting,
-    |   |                # Agriculture, Fishing live; rest land later in Phase 1)
-|-- warfare/           # Warfare skill handlers (Phase 2)
-|-- enterprise/        # Enterprise skill handlers (Phase 3)
+|-- frontier/          # Frontier skill handlers + branch config
+|-- warfare/           # Warfare skill handlers + branch config
+|-- enterprise/        # Enterprise skill handlers + branch config
 |-- ui/                # bossbars now; menus only when the platform supports them
 |-- commands.rs        # /mmo command tree and admin subcommands
 |-- config.rs          # RON config, per-skill level curves, global perk caps

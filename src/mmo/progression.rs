@@ -143,6 +143,9 @@ pub async fn award_xp(
 
     if matches!(source, XpSource::Admin | XpSource::Migration) {
         log::info!("[Cabbage MMO] awarded {amount} {skill} XP to {uuid} via {source}");
+        state.audit(&format!(
+            "xp grant: {amount} {skill} XP to {uuid} via {source}"
+        ));
     } else {
         log::debug!("[Cabbage MMO] awarded {amount} {skill} XP to {uuid} via {source}");
     }

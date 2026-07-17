@@ -237,18 +237,21 @@ Enterprise rules:
 
 ## Phase 4 — presentation, capstones, and live operations
 
-- Evaluate Pumpkin's native `PluginGui`/`PluginScreenHandler` lifecycle with a
-  throwaway protected-menu test. Build the skill tree, repair preview, salvage
-  preview, and pet menu only if clicks, close/replacement, disconnect, and
-  shift/drag/hotbar behavior are safely attributable to Cabbage. Otherwise
-  retain commands and action-bar prompts.
+- **GUI evaluation outcome (this checkout):** `PluginGui`/
+  `PluginScreenHandler` exist only as WASM-facing API. There is no native
+  open path and no click/close attribution to a native plugin, so protected
+  menus are **not** built. Presentation stays on commands, bossbars, and
+  action-bar prompts until the native GUI lifecycle is sufficient.
 - Add major perks at 25/50/75 only after the skill's basic XP flow has been
-  live-tested. Add level-100 capstones last, one at a time, with telemetry and
-  a configuration kill switch.
-- Add audit logging for XP grants, batch actions, item-quality rolls, and
-  committed crafting/anvil/grindstone operations; keep player-facing logging
+  live-tested. Add level-100 capstones last, one at a time, with telemetry
+  and a configuration kill switch. Level gates live in
+  `perks::eligibility`; no major perks or capstones are enabled yet.
+- Audit logging for XP grants, batch actions, item-quality rolls, and
+  committed anvil/grindstone/enchant operations lives in `audit.rs`
+  (`mmo-audit.log`, `audit` config section); player-facing logging stays
   configurable.
-- Publish a default balance profile and a migration guide for server owners.
+- The default balance profile and migration guide for server owners is
+  published in `src/mmo/BALANCE.md`.
 
 ## Platform gaps — do not work around in Cabbage
 

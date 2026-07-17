@@ -54,6 +54,10 @@ pub async fn handle_enchant_item(state: &MmoState, event: &EnchantItemEvent) {
         XpSource::Enchant,
     )
     .await;
+    state.audit(&format!(
+        "enchant commit: {} enchanted for {} level(s)",
+        event.player.gameprofile.id, event.level_cost
+    ));
 }
 
 async fn player_level(state: &MmoState, player: &pumpkin::entity::player::Player) -> u32 {

@@ -71,6 +71,10 @@ pub async fn handle_anvil_repair(state: &MmoState, event: &AnvilRepairEvent) {
         XpSource::Repair,
     )
     .await;
+    state.audit(&format!(
+        "anvil commit: {} took output for {} level(s)",
+        event.player.gameprofile.id, event.level_cost
+    ));
 }
 
 async fn player_level(state: &MmoState, player: &pumpkin::entity::player::Player) -> u32 {

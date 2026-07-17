@@ -7,5 +7,6 @@
 mod cooldown;
 
 pub(crate) mod batch_break;
+pub(crate) mod eligibility;
 
 pub(crate) use cooldown::CooldownTracker;

@@ -124,6 +124,10 @@ pub(crate) async fn try_batch_break(
     if broken.is_empty() {
         return None;
     }
+    state.audit(&format!(
+        "batch break: {cooldown_key} broke {} block(s) for {player_uuid}",
+        broken.len()
+    ));
     Some(broken.len())
 }
 

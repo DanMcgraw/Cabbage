@@ -44,6 +44,7 @@ use pumpkin::{
 };
 use pumpkin_util::permission::{Permission, PermissionDefault, PermissionLvl};
 
+pub(crate) mod audit;
 pub(crate) mod commands;
 pub(crate) mod config;
 pub(crate) mod db;
@@ -83,6 +84,7 @@ pub struct MmoState {
     provenance: ProvenanceTracker,
     perk_cooldowns: CooldownTracker,
     warfare_state: warfare::WarfareState,
+    audit_log: audit::AuditLog,
     last_tick: AtomicI32,
 }
 
@@ -164,6 +166,7 @@ impl MmoState {
             provenance: ProvenanceTracker::new(non_natural),
             perk_cooldowns: CooldownTracker::new(),
             warfare_state: warfare::WarfareState::new(),
+            audit_log: audit::AuditLog::new(),
             last_tick: AtomicI32::new(0),
         }))
     }
@@ -230,6 +233,13 @@ impl MmoState {
     /// Warfare in-memory state (attack records, projectile provenance, mana).
     pub(crate) fn warfare(&self) -> &warfare::WarfareState {
         &self.warfare_state
+    }
+
+    /// Write one line to the MMO audit log (honors the audit config).
+    pub(crate) fn audit(&self, message: &str) {
+        let config = self.config();
+        self.audit_log
+            .log(&self.data_folder, &config.audit, message);
     }
 
     /// Last server tick observed by this module.

@@ -59,6 +59,10 @@ pub async fn handle_block_broken(
         return;
     }
     if let Some(item) = pumpkin_data::item::Item::from_registry_key(event.block.name) {
+        state.audit(&format!(
+            "quality roll: heartwood proc on {} for {}",
+            event.block.name, player.gameprofile.id
+        ));
         event
             .world
             .drop_stack(&event.block_position, ItemStack::new(1, item))
