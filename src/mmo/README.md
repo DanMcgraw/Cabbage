@@ -56,7 +56,7 @@ events fired per broken block cannot re-trigger the perk recursively.
 
 | Perk | Skill | Activation | Effect |
 |---|---|---|---|
-| Prospector | Mining | passive | Chance (level-scaled, capped) of bonus XP on ore breaks. |
+| Prospector | Mining | passive | Chance (level-scaled, capped) to add one item copied from an eligible ore's normal drop list. Never grants bonus Mining XP. |
 | Vein Miner | Mining | sneak + break ore | Breaks the connected ore vein in one bounded transaction. |
 | Heartwood | Woodcutting | passive | Chance (capped) of one bonus log + bonus XP on natural log breaks. |
 | Timber | Woodcutting | sneak + break natural log | Fells connected logs of the same type, bounded. |
@@ -258,7 +258,6 @@ PluginConfig(
                 prospector_base_chance: 0.05,
                 prospector_chance_per_level: 0.002,
                 prospector_max_chance: 0.35,
-                prospector_xp_multiplier: 0.5,
                 vein_miner_enabled: true,
                 vein_miner_max_blocks: 16,
             ),

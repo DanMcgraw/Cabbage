@@ -52,7 +52,7 @@ impl Default for FrontierConfig {
 /// Mining perk knobs. Base ore XP lives in `config::XpRewardsConfig::blocks`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MiningPerkConfig {
-    /// Chance-based bonus XP on ore breaks (Prospector).
+    /// Chance to add one item from an ore's approved drop list (Prospector).
     #[serde(default = "default_true")]
     pub prospector_enabled: bool,
     /// Base proc chance at level 1.
@@ -61,8 +61,6 @@ pub struct MiningPerkConfig {
     pub prospector_chance_per_level: f64,
     /// Hard cap for the Prospector proc chance.
     pub prospector_max_chance: f64,
-    /// Bonus XP = ore reward × this multiplier when Prospector procs.
-    pub prospector_xp_multiplier: f64,
     /// Sneak + break an ore to break its connected vein (Vein Miner).
     #[serde(default = "default_true")]
     pub vein_miner_enabled: bool,
@@ -77,7 +75,6 @@ impl Default for MiningPerkConfig {
             prospector_base_chance: 0.05,
             prospector_chance_per_level: 0.002,
             prospector_max_chance: 0.35,
-            prospector_xp_multiplier: 0.5,
             vein_miner_enabled: true,
             vein_miner_max_blocks: 16,
         }
@@ -605,11 +602,6 @@ impl FrontierConfig {
         clamp_chance(&mut self.mining.prospector_base_chance);
         clamp_chance(&mut self.mining.prospector_chance_per_level);
         clamp_chance(&mut self.mining.prospector_max_chance);
-        if !self.mining.prospector_xp_multiplier.is_finite()
-            || self.mining.prospector_xp_multiplier < 0.0
-        {
-            self.mining.prospector_xp_multiplier = 0.0;
-        }
         clamp_chance(&mut self.woodcutting.heartwood_chance);
         clamp_chance(&mut self.agriculture.harvest_bonus_chance);
         clamp_chance(&mut self.herbalism.quality_yield_chance);
@@ -655,5 +647,15 @@ mod tests {
         assert_eq!(config.mining.prospector_max_chance, 1.0);
         assert_eq!(config.woodcutting.heartwood_chance, 0.0);
         assert_eq!(config.fishing.reel_exp_bonus, 100);
+    }
+
+    #[test]
+    fn old_prospector_xp_field_is_ignored() {
+        let config: MiningPerkConfig = ron::from_str(
+            "(prospector_enabled:true,prospector_base_chance:0.05,prospector_chance_per_level:0.002,prospector_max_chance:0.35,prospector_xp_multiplier:0.5,vein_miner_enabled:true,vein_miner_max_blocks:16)",
+        )
+        .unwrap();
+
+        assert_eq!(config, MiningPerkConfig::default());
     }
 }

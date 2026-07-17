@@ -17,7 +17,7 @@ value lives in `config.ron` and can be tuned per server.
 
 | Skill | XP sources (defaults) | Perks (defaults) |
 |---|---|---|
-| Mining | ore breaks from the `xp_rewards.blocks` table (coal 8 → ancient debris 150) | Prospector (5% + 0.2%/level, cap 35%, +50% XP on proc), Vein Miner (sneak+break, ≤16 blocks) |
+| Mining | ore breaks from the `xp_rewards.blocks` table (coal 8 → ancient debris 150) | Prospector (5% + 0.2%/level, cap 35%, +1 approved ore drop; no bonus skill XP), Vein Miner (sneak+break, ≤16 blocks) |
 | Woodcutting | natural logs 6–8 | Heartwood (2%: bonus log + 25 XP), Timber (sneak+break, ≤32 blocks) |
 | Agriculture | mature harvests 10–14 | Harvest bonus (10% +1 item), fertilizer (bone meal): deterministic roll, guaranteed bonus + 10 XP |
 | Herbalism | plants 2–6, consumables 3–25 | Quality yield (8% +1 item), consumable healing (+1.0 health) |

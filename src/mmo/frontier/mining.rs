@@ -1,4 +1,4 @@
-//! Mining skill: ore XP, Prospector bonus rolls, and the Vein Miner perk.
+//! Mining skill: ore XP, Prospector bonus yields, and the Vein Miner perk.
 //!
 //! XP rule: one primary skill (Mining) per ore block break, awarded only for
 //! natural blocks with a configured reward — player-placed ores (silk touch)
@@ -7,7 +7,10 @@
 
 use pumpkin::{
     entity::EntityBase,
-    plugin::api::events::block::{block_break::BlockBreakEvent, block_broken::BlockBrokenEvent},
+    plugin::api::events::block::{
+        block_break::BlockBreakEvent, block_broken::BlockBrokenEvent,
+        block_drop_item::BlockDropItemEvent,
+    },
 };
 use rand::Rng;
 
@@ -21,7 +24,13 @@ use super::super::{
 
 const VEIN_MINER_COOLDOWN_KEY: &str = "mining.vein_miner";
 
-/// Award Mining XP for a broken natural ore, then roll Prospector.
+fn prospector_chance(perk: &super::config::MiningPerkConfig, level: u32, global_cap: f64) -> f64 {
+    (perk.prospector_base_chance + perk.prospector_chance_per_level * f64::from(level))
+        .min(perk.prospector_max_chance)
+        .min(global_cap)
+}
+
+/// Award the configured Mining XP once for a broken natural ore.
 pub async fn handle_block_broken(
     state: &MmoState,
     event: &BlockBrokenEvent,
@@ -37,34 +46,72 @@ pub async fn handle_block_broken(
         return;
     };
 
-    let Some(outcome) = progression::award_xp(
+    progression::award_xp(
         state,
         player,
         SkillId::Mining,
         base_xp,
         XpSource::BlockBreak,
     )
-    .await
+    .await;
+}
+
+/// Prospector: add exactly one item copied from the ore's normal committed
+/// drops. This improves resource yield without minting additional Mining XP.
+pub async fn handle_block_drop_item(state: &MmoState, event: &mut BlockDropItemEvent) {
+    if event.cancelled || !earns_xp(&event.player) || event.items.is_empty() {
+        return;
+    }
+
+    let config = state.config();
+    let perk = &config.frontier.mining;
+    if !perk.prospector_enabled
+        || !config.perks.enabled
+        || state.block_xp_reward(event.block.name).is_none()
+    {
+        return;
+    }
+
+    let world = event.player.world();
+    if state
+        .provenance()
+        .contains(&ProvenanceKey::new(&world, event.block_position))
+    {
+        return;
+    }
+
+    let progress = match state
+        .db()
+        .get_skill(event.player.gameprofile.id, SkillId::Mining)
+        .await
+    {
+        Ok(progress) => progress,
+        Err(error) => {
+            log::warn!("[Cabbage MMO] failed to read Mining level for Prospector: {error}");
+            return;
+        }
+    };
+    let level = state.curve(SkillId::Mining).level_for_xp(progress.xp).0;
+    let chance = prospector_chance(perk, level, config.perks.max_proc_chance);
+    if chance <= 0.0 || rand::rng().random::<f64>() >= chance {
+        return;
+    }
+
+    let Some(mut bonus) = event
+        .items
+        .iter()
+        .find(|stack| stack.item_count > 0)
+        .cloned()
     else {
         return;
     };
-
-    // Prospector: chance-based bonus XP scaled by level.
-    let config = state.config();
-    let perk = &config.frontier.mining;
-    if !perk.prospector_enabled || !config.perks.enabled {
-        return;
-    }
-    let chance = (perk.prospector_base_chance
-        + perk.prospector_chance_per_level * outcome.new_level as f64)
-        .min(perk.prospector_max_chance)
-        .min(config.perks.max_proc_chance);
-    if chance > 0.0 && rand::rng().random::<f64>() < chance {
-        let bonus = (base_xp as f64 * perk.prospector_xp_multiplier)
-            .round()
-            .max(1.0) as u64;
-        progression::award_xp(state, player, SkillId::Mining, bonus, XpSource::BlockBreak).await;
-    }
+    bonus.item_count = 1;
+    let item_name = bonus.item.registry_key;
+    event.items.push(bonus);
+    state.audit(&format!(
+        "prospector yield: one {item_name} for {} from {}",
+        event.player.gameprofile.id, event.block.name
+    ));
 }
 
 /// Vein Miner: sneaking while breaking a configured ore breaks the connected
@@ -114,4 +161,18 @@ pub async fn handle_block_break(state: &MmoState, event: &BlockBreakEvent) {
         },
     )
     .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prospector_chance_scales_and_respects_caps() {
+        let perk = super::super::config::MiningPerkConfig::default();
+
+        assert!((prospector_chance(&perk, 1, 1.0) - 0.052).abs() < f64::EPSILON);
+        assert!((prospector_chance(&perk, 100, 1.0) - 0.25).abs() < f64::EPSILON);
+        assert!((prospector_chance(&perk, 1000, 0.30) - 0.30).abs() < f64::EPSILON);
+    }
 }

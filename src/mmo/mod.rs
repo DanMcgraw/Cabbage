@@ -16,7 +16,8 @@ use pumpkin::{
         api::events::{
             block::{
                 block_break::BlockBreakEvent, block_broken::BlockBrokenEvent,
-                block_place::BlockPlaceEvent, bone_meal::BoneMealApplyCompleteEvent,
+                block_drop_item::BlockDropItemEvent, block_place::BlockPlaceEvent,
+                bone_meal::BoneMealApplyCompleteEvent,
             },
             entity::{
                 entity_breed::EntityBreedCompleteEvent, entity_damage::EntityDamageEvent,
@@ -458,6 +459,7 @@ impl EventHandler<BlockPlaceEvent> for MmoState {
             }
             let config = self.config();
             let tracked = self.ore_reveal_state.is_host_block(event.block_placed)
+                || self.block_xp_reward(event.block_placed.name).is_some()
                 || config
                     .frontier
                     .woodcutting
@@ -476,6 +478,21 @@ impl EventHandler<BlockPlaceEvent> for MmoState {
                     event.block_position,
                 ));
             }
+        })
+    }
+}
+
+impl EventHandler<BlockDropItemEvent> for MmoState {
+    fn handle_blocking<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a mut BlockDropItemEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+            frontier::mining::handle_block_drop_item(self, event).await;
         })
     }
 }
