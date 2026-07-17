@@ -62,10 +62,20 @@ events fired per broken block cannot re-trigger the perk recursively.
 | Harvest bonus | Agriculture | passive | Chance (capped) of one bonus crop item on mature harvests; fertilized crops (bone meal) get a deterministic roll and bonus XP. |
 | Reel | Fishing | passive | Extra vanilla experience on a successful catch. |
 | Treasure replacement | Fishing | passive | Configured caught items are swapped for their mapped replacement (off by default). |
+| Quality yield | Herbalism | passive | Chance (capped) of one bonus item on natural plant breaks. |
+| Consumable healing | Herbalism | passive | Configured plant foods restore bonus health (bounded). |
+| Earthmover | Excavation | sneak + break diggable block | Excavates connected blocks of the same type, bounded. |
+| Archaeology loot | Excavation | passive | Chance (capped) of a configured bonus item on diggable breaks. |
 
-Player-placed ores and logs never earn XP or feed perks: placements of
-tracked block types are recorded in the shared provenance tracker (the same
-`non_natural_blocks` denylist ore reveal uses) and excluded at break time.
+XP-only Frontier sources: Husbandry (breeding, animal products) and Taming
+(tames, owner-validated pet feeding). Husbandry trait rolls are **blocked**:
+`EntityBreedEvent` does not expose the baby entity, so traits cannot be
+attached yet (see the platform-gaps table in `plan.md`).
+
+Player-placed ores, logs, plants, and diggable blocks never earn XP or feed
+perks: placements of tracked block types are recorded in the shared
+provenance tracker (the same `non_natural_blocks` denylist ore reveal uses)
+and excluded at break time.
 
 ## Data Flow
 

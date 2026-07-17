@@ -224,6 +224,7 @@ dependencies = [
  "pumpkin",
  "pumpkin-data",
  "pumpkin-nbt",
+ "pumpkin-protocol",
  "pumpkin-util",
  "pumpkin-world",
  "rand 0.9.4",

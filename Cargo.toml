@@ -17,6 +17,7 @@ ctor = "0.2"
 pumpkin = { path = "../Pumpkin/pumpkin" }
 pumpkin-data = { path = "../Pumpkin/pumpkin-data" }
 pumpkin-nbt = { path = "../Pumpkin/pumpkin-nbt" }
+pumpkin-protocol = { path = "../Pumpkin/pumpkin-protocol" }
 pumpkin-util = { path = "../Pumpkin/pumpkin-util" }
 pumpkin-world = { path = "../Pumpkin/pumpkin-world" }
 rayon = "1.12"

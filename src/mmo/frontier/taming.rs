@@ -1,0 +1,93 @@
+//! Taming skill: Cabbage pet profiles and owner-validated interactions.
+//!
+//! XP rules: one Taming award per successful tame (the event's owner is
+//! authoritative) and a small award per owner-validated feeding. Entity data
+//! is never treated as proof of ownership: feeding checks Pumpkin's actual
+//! tameable owner state (`EntityBase::owner_uuid`).
+
+use pumpkin::plugin::api::events::{
+    entity::entity_tame::EntityTameEvent,
+    player::player_interact_entity_event::PlayerInteractEntityEvent,
+};
+use pumpkin_protocol::java::server::play::ActionType;
+
+use super::super::{
+    MmoState,
+    persistence::PetDataV1,
+    progression::{self, XpSource, earns_xp},
+    skills::SkillId,
+};
+
+/// Record a Cabbage pet profile and award Taming XP when a player tames an
+/// animal.
+pub async fn handle_entity_tame(state: &MmoState, event: &EntityTameEvent) {
+    if event.cancelled || !earns_xp(&event.owner) {
+        return;
+    }
+    let config = state.config();
+    let taming = &config.frontier.taming;
+    let xp = taming
+        .tame_xp
+        .get(event.entity.get_entity().entity_type.resource_name)
+        .copied()
+        .unwrap_or(taming.default_tame_xp);
+
+    // Record the Cabbage pet profile on the entity. This is a profile only —
+    // ownership checks always consult Pumpkin's tameable owner state.
+    let profile = PetDataV1::default();
+    if let Err(error) = profile.write(state.context(), event.entity.as_ref()) {
+        log::warn!("[Cabbage MMO] failed to record pet profile: {error}");
+    }
+
+    progression::award_xp(state, &event.owner, SkillId::Taming, xp, XpSource::Tame).await;
+}
+
+/// Award bond and XP when an owner feeds their own tamed pet.
+pub async fn handle_player_interact_entity(state: &MmoState, event: &PlayerInteractEntityEvent) {
+    if event.cancelled || matches!(event.action, ActionType::Attack) {
+        return;
+    }
+    let player = &event.player;
+    if !earns_xp(player) {
+        return;
+    }
+
+    // Owner validation against Pumpkin's actual tameable owner state.
+    if event.target.owner_uuid() != Some(player.gameprofile.id) {
+        return;
+    }
+
+    let config = state.config();
+    let taming = &config.frontier.taming;
+
+    let held = player.inventory().held_item().lock().await.clone();
+    if held.item_count == 0
+        || !taming
+            .bond_food_items
+            .iter()
+            .any(|item| item == held.item.registry_key)
+    {
+        return;
+    }
+
+    // Bond increments only for entities carrying a Cabbage pet profile.
+    let context = state.context().clone();
+    let Some(mut profile) = PetDataV1::read(&context, event.target.as_ref()) else {
+        return;
+    };
+    if profile.bond < taming.bond_cap {
+        profile.bond += 1;
+        if let Err(error) = profile.write(&context, event.target.as_ref()) {
+            log::warn!("[Cabbage MMO] failed to update pet bond: {error}");
+        }
+    }
+
+    progression::award_xp(
+        state,
+        player,
+        SkillId::Taming,
+        taming.bond_feed_xp,
+        XpSource::Tame,
+    )
+    .await;
+}

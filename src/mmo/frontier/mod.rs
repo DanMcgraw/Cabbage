@@ -6,6 +6,10 @@
 
 pub(crate) mod agriculture;
 pub(crate) mod config;
+pub(crate) mod excavation;
 pub(crate) mod fishing;
+pub(crate) mod herbalism;
+pub(crate) mod husbandry;
 pub(crate) mod mining;
+pub(crate) mod taming;
 pub(crate) mod woodcutting;

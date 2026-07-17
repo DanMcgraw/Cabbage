@@ -477,6 +477,34 @@ impl Plugin for CabbagePlugin {
                     )
                     .await;
                 context
+                    .register_event::<EntityBreedEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        false,
+                    )
+                    .await;
+                context
+                    .register_event::<EntityTameEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        false,
+                    )
+                    .await;
+                context
+                    .register_event::<pumpkin::plugin::api::events::player::player_interact_entity_event::PlayerInteractEntityEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        false,
+                    )
+                    .await;
+                context
+                    .register_event::<pumpkin::plugin::api::events::player::player_item_use_finish::PlayerItemUseFinishEvent, _>(
+                        mmo_state.clone(),
+                        EventPriority::Normal,
+                        false,
+                    )
+                    .await;
+                context
                     .register_command(
                         mmo::mmo_command_tree(mmo_state.clone()),
                         mmo::MMO_PERMISSION,

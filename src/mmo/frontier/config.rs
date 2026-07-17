@@ -24,6 +24,14 @@ pub struct FrontierConfig {
     pub agriculture: AgricultureConfig,
     #[serde(default)]
     pub fishing: FishingConfig,
+    #[serde(default)]
+    pub herbalism: HerbalismConfig,
+    #[serde(default)]
+    pub excavation: ExcavationConfig,
+    #[serde(default)]
+    pub husbandry: HusbandryConfig,
+    #[serde(default)]
+    pub taming: TamingConfig,
 }
 
 impl Default for FrontierConfig {
@@ -33,6 +41,10 @@ impl Default for FrontierConfig {
             woodcutting: WoodcuttingConfig::default(),
             agriculture: AgricultureConfig::default(),
             fishing: FishingConfig::default(),
+            herbalism: HerbalismConfig::default(),
+            excavation: ExcavationConfig::default(),
+            husbandry: HusbandryConfig::default(),
+            taming: TamingConfig::default(),
         }
     }
 }
@@ -248,6 +260,323 @@ fn default_catch_xp() -> HashMap<String, u64> {
     .collect()
 }
 
+/// Herbalism configuration: plant/forage XP, quality yield, and
+/// consumable-healing bonuses.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HerbalismConfig {
+    /// XP per broken plant, keyed by block name. Tracked plants are
+    /// provenance-marked on placement so placed plants earn nothing.
+    #[serde(default = "default_plant_xp")]
+    pub plant_xp: HashMap<String, u64>,
+    /// Chance for a plant break to yield one extra item (quality yield).
+    pub quality_yield_chance: f64,
+    /// XP per eaten plant-based consumable, keyed by item registry key.
+    #[serde(default = "default_consumable_xp")]
+    pub consumable_xp: HashMap<String, u64>,
+    /// Extra health restored by configured consumables (2.0 = one heart).
+    pub consumable_heal_bonus: f32,
+}
+
+impl Default for HerbalismConfig {
+    fn default() -> Self {
+        Self {
+            plant_xp: default_plant_xp(),
+            quality_yield_chance: 0.08,
+            consumable_xp: default_consumable_xp(),
+            consumable_heal_bonus: 1.0,
+        }
+    }
+}
+
+impl HerbalismConfig {
+    /// Whether this block name is XP-eligible and provenance-tracked.
+    pub fn is_tracked_plant(&self, block_name: &str) -> bool {
+        self.plant_xp.contains_key(block_name)
+    }
+}
+
+fn default_plant_xp() -> HashMap<String, u64> {
+    [
+        ("dandelion", 4),
+        ("poppy", 4),
+        ("blue_orchid", 5),
+        ("allium", 5),
+        ("azure_bluet", 5),
+        ("red_tulip", 5),
+        ("orange_tulip", 5),
+        ("white_tulip", 5),
+        ("pink_tulip", 5),
+        ("oxeye_daisy", 5),
+        ("cornflower", 5),
+        ("lily_of_the_valley", 6),
+        ("sunflower", 6),
+        ("lilac", 6),
+        ("rose_bush", 6),
+        ("peony", 6),
+        ("tall_grass", 2),
+        ("large_fern", 3),
+        ("fern", 2),
+        ("brown_mushroom", 6),
+        ("red_mushroom", 6),
+        ("sugar_cane", 5),
+    ]
+    .into_iter()
+    .map(|(name, xp)| (name.to_string(), xp))
+    .collect()
+}
+
+fn default_consumable_xp() -> HashMap<String, u64> {
+    [
+        ("apple", 4),
+        ("sweet_berries", 4),
+        ("glow_berries", 4),
+        ("melon_slice", 3),
+        ("carrot", 3),
+        ("potato", 3),
+        ("beetroot", 4),
+        ("suspicious_stew", 12),
+        ("golden_apple", 25),
+    ]
+    .into_iter()
+    .map(|(name, xp)| (name.to_string(), xp))
+    .collect()
+}
+
+/// Bonus loot attached to a diggable block, archaeology-style.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExcavationLoot {
+    /// Registry key of the bonus item.
+    pub item: String,
+    /// Drop chance per eligible block break.
+    pub chance: f64,
+}
+
+/// Excavation configuration: diggable-block XP, archaeology-style loot, and
+/// the bounded Earthmover perk.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExcavationConfig {
+    /// XP per broken diggable block, keyed by block name. Tracked blocks are
+    /// provenance-marked on placement so placed blocks earn nothing.
+    #[serde(default = "default_diggable_xp")]
+    pub diggable_xp: HashMap<String, u64>,
+    /// Bonus loot rolls per diggable block, keyed by block name.
+    #[serde(default = "default_excavation_loot")]
+    pub bonus_loot: HashMap<String, ExcavationLoot>,
+    /// Sneak + break a diggable block to excavate connected blocks of the
+    /// same type (Earthmover).
+    #[serde(default = "default_true")]
+    pub earthmover_enabled: bool,
+    /// Maximum extra blocks Earthmover may break in one action.
+    pub earthmover_max_blocks: u32,
+}
+
+impl Default for ExcavationConfig {
+    fn default() -> Self {
+        Self {
+            diggable_xp: default_diggable_xp(),
+            bonus_loot: default_excavation_loot(),
+            earthmover_enabled: true,
+            earthmover_max_blocks: 16,
+        }
+    }
+}
+
+impl ExcavationConfig {
+    /// Whether this block name is XP-eligible and provenance-tracked.
+    pub fn is_tracked_diggable(&self, block_name: &str) -> bool {
+        self.diggable_xp.contains_key(block_name)
+    }
+}
+
+fn default_diggable_xp() -> HashMap<String, u64> {
+    [
+        ("dirt", 4),
+        ("grass_block", 4),
+        ("coarse_dirt", 4),
+        ("rooted_dirt", 4),
+        ("podzol", 5),
+        ("mycelium", 5),
+        ("sand", 4),
+        ("red_sand", 5),
+        ("gravel", 6),
+        ("clay", 8),
+        ("mud", 5),
+        ("soul_sand", 8),
+        ("soul_soil", 8),
+    ]
+    .into_iter()
+    .map(|(name, xp)| (name.to_string(), xp))
+    .collect()
+}
+
+fn default_excavation_loot() -> HashMap<String, ExcavationLoot> {
+    [
+        ("gravel", ("flint", 0.08)),
+        ("dirt", ("wheat_seeds", 0.04)),
+        ("grass_block", ("wheat_seeds", 0.04)),
+        ("sand", ("dead_bush", 0.03)),
+        ("clay", ("clay_ball", 0.06)),
+        ("soul_soil", ("bone", 0.04)),
+    ]
+    .into_iter()
+    .map(|(block, (item, chance))| {
+        (
+            block.to_string(),
+            ExcavationLoot {
+                item: item.to_string(),
+                chance,
+            },
+        )
+    })
+    .collect()
+}
+
+/// Animal-product reward for right-clicking an animal with the right tool
+/// (bucket on a cow, shears on a sheep, bowl on a mooshroom).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProductReward {
+    /// Registry key of the required held item.
+    pub held_item: String,
+    /// XP for collecting the product.
+    pub xp: u64,
+}
+
+/// Husbandry configuration: breeding XP and animal-product XP.
+///
+/// Trait rolls are **blocked**: `EntityBreedEvent` does not expose the baby
+/// entity, so traits cannot be attached to it. They stay documented as
+/// blocked in `src/mmo/plan.md` until Pumpkin exposes the baby.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HusbandryConfig {
+    /// XP per bred animal, keyed by entity resource name.
+    #[serde(default = "default_breed_xp")]
+    pub breed_xp: HashMap<String, u64>,
+    /// XP for animals without a configured value.
+    pub default_breed_xp: u64,
+    /// XP for collecting animal products, keyed by entity resource name.
+    #[serde(default = "default_product_xp")]
+    pub product_xp: HashMap<String, ProductReward>,
+}
+
+impl Default for HusbandryConfig {
+    fn default() -> Self {
+        Self {
+            breed_xp: default_breed_xp(),
+            default_breed_xp: 15,
+            product_xp: default_product_xp(),
+        }
+    }
+}
+
+fn default_breed_xp() -> HashMap<String, u64> {
+    [
+        ("cow", 20),
+        ("pig", 20),
+        ("sheep", 20),
+        ("chicken", 15),
+        ("horse", 40),
+        ("donkey", 40),
+        ("mule", 40),
+        ("llama", 35),
+        ("goat", 30),
+        ("rabbit", 20),
+        ("wolf", 35),
+        ("cat", 35),
+        ("bee", 25),
+        ("mooshroom", 30),
+        ("strider", 30),
+        ("hoglin", 40),
+        ("axolotl", 35),
+        ("frog", 25),
+        ("turtle", 30),
+    ]
+    .into_iter()
+    .map(|(name, xp)| (name.to_string(), xp))
+    .collect()
+}
+
+fn default_product_xp() -> HashMap<String, ProductReward> {
+    [
+        ("cow", ("bucket", 8)),
+        ("mooshroom", ("bowl", 10)),
+        ("sheep", ("shears", 10)),
+        ("goat", ("bucket", 8)),
+    ]
+    .into_iter()
+    .map(|(entity, (item, xp))| {
+        (
+            entity.to_string(),
+            ProductReward {
+                held_item: item.to_string(),
+                xp,
+            },
+        )
+    })
+    .collect()
+}
+
+/// Taming configuration: tame XP and owner-validated pet interactions.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TamingConfig {
+    /// XP per tamed animal, keyed by entity resource name.
+    #[serde(default = "default_tame_xp")]
+    pub tame_xp: HashMap<String, u64>,
+    /// XP for tames without a configured value.
+    pub default_tame_xp: u64,
+    /// XP per owner-validated feeding of a tamed pet.
+    pub bond_feed_xp: u64,
+    /// Maximum bond level a pet can reach through feeding.
+    pub bond_cap: u32,
+    /// Item registry keys that count as pet food for bonding.
+    #[serde(default = "default_bond_food_items")]
+    pub bond_food_items: Vec<String>,
+}
+
+impl Default for TamingConfig {
+    fn default() -> Self {
+        Self {
+            tame_xp: default_tame_xp(),
+            default_tame_xp: 30,
+            bond_feed_xp: 4,
+            bond_cap: 100,
+            bond_food_items: default_bond_food_items(),
+        }
+    }
+}
+
+fn default_bond_food_items() -> Vec<String> {
+    [
+        "bone",
+        "beef",
+        "chicken",
+        "porkchop",
+        "mutton",
+        "rabbit",
+        "rotten_flesh",
+        "cod",
+        "salmon",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+fn default_tame_xp() -> HashMap<String, u64> {
+    [
+        ("wolf", 50),
+        ("cat", 50),
+        ("parrot", 40),
+        ("horse", 40),
+        ("donkey", 40),
+        ("mule", 40),
+        ("llama", 40),
+        ("trader_llama", 40),
+    ]
+    .into_iter()
+    .map(|(name, xp)| (name.to_string(), xp))
+    .collect()
+}
+
 impl FrontierConfig {
     /// Clamp out-of-range values into safe bounds.
     pub fn sanitized(mut self) -> Self {
@@ -268,6 +597,15 @@ impl FrontierConfig {
         }
         clamp_chance(&mut self.woodcutting.heartwood_chance);
         clamp_chance(&mut self.agriculture.harvest_bonus_chance);
+        clamp_chance(&mut self.herbalism.quality_yield_chance);
+        if !self.herbalism.consumable_heal_bonus.is_finite()
+            || self.herbalism.consumable_heal_bonus < 0.0
+        {
+            self.herbalism.consumable_heal_bonus = 0.0;
+        }
+        for loot in self.excavation.bonus_loot.values_mut() {
+            clamp_chance(&mut loot.chance);
+        }
         self.fishing.reel_exp_bonus = self.fishing.reel_exp_bonus.clamp(0, 100);
         self
     }

@@ -17,7 +17,12 @@ use pumpkin::{
                 block_break::BlockBreakEvent, block_broken::BlockBrokenEvent,
                 block_place::BlockPlaceEvent,
             },
-            player::{fish::PlayerFishEvent, player_interact_event::PlayerInteractEvent},
+            entity::{entity_breed::EntityBreedEvent, entity_tame::EntityTameEvent},
+            player::{
+                fish::PlayerFishEvent, player_interact_entity_event::PlayerInteractEntityEvent,
+                player_interact_event::PlayerInteractEvent,
+                player_item_use_finish::PlayerItemUseFinishEvent,
+            },
             world::feature_generate::FeatureGenerateEvent,
         },
         server::server_tick_start::ServerTickStartEvent,
@@ -375,6 +380,7 @@ impl EventHandler<BlockBreakEvent> for MmoState {
             }
             frontier::mining::handle_block_break(self, event).await;
             frontier::woodcutting::handle_block_break(self, event).await;
+            frontier::excavation::handle_block_break(self, event).await;
         })
     }
 }
@@ -389,12 +395,20 @@ impl EventHandler<BlockPlaceEvent> for MmoState {
             if event.cancelled || !event.can_build {
                 return;
             }
+            let config = self.config();
             let tracked = self.ore_reveal_state.is_host_block(event.block_placed)
-                || self
-                    .config()
+                || config
                     .frontier
                     .woodcutting
-                    .is_tracked_log(event.block_placed.name);
+                    .is_tracked_log(event.block_placed.name)
+                || config
+                    .frontier
+                    .herbalism
+                    .is_tracked_plant(event.block_placed.name)
+                || config
+                    .frontier
+                    .excavation
+                    .is_tracked_diggable(event.block_placed.name);
             if tracked {
                 self.provenance.mark(ProvenanceKey::new(
                     &event.player.world(),
@@ -427,6 +441,8 @@ impl EventHandler<BlockBrokenEvent> for MmoState {
             frontier::mining::handle_block_broken(self, event, was_non_natural).await;
             frontier::woodcutting::handle_block_broken(self, event, was_non_natural).await;
             frontier::agriculture::handle_block_broken(self, event).await;
+            frontier::herbalism::handle_block_broken(self, event, was_non_natural).await;
+            frontier::excavation::handle_block_broken(self, event, was_non_natural).await;
         })
     }
 }
@@ -457,6 +473,67 @@ impl EventHandler<PlayerFishEvent> for MmoState {
                 return;
             }
             frontier::fishing::handle_player_fish(self, event).await;
+        })
+    }
+}
+
+impl EventHandler<EntityBreedEvent> for MmoState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a EntityBreedEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+            frontier::husbandry::handle_entity_breed(self, event).await;
+        })
+    }
+}
+
+impl EventHandler<EntityTameEvent> for MmoState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a EntityTameEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+            frontier::taming::handle_entity_tame(self, event).await;
+        })
+    }
+}
+
+impl EventHandler<PlayerInteractEntityEvent> for MmoState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a PlayerInteractEntityEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+            frontier::husbandry::handle_player_interact_entity(self, event).await;
+            frontier::taming::handle_player_interact_entity(self, event).await;
+        })
+    }
+}
+
+impl EventHandler<PlayerItemUseFinishEvent> for MmoState {
+    fn handle<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a PlayerItemUseFinishEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_enabled() {
+                return;
+            }
+            frontier::herbalism::handle_item_use_finish(self, event).await;
         })
     }
 }
