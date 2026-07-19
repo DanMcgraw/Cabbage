@@ -303,7 +303,7 @@ impl CommandExecutor for MmoChatStatsExecutor {
                 |skill: SkillId| (self.state.curve(skill), skill_enabled(&config, skill));
 
             let lines = match SimpleArgConsumer::find_arg(args, "branch") {
-                Err(_) => chat::summary_lines(&snapshot, &skill_info),
+                Err(_) => chat::summary_lines(&snapshot, &skill_info, None),
                 Ok(name) => match BranchId::from_name(name) {
                     Some(branch) => chat::branch_lines(&snapshot, &skill_info, branch),
                     None => {
