@@ -174,6 +174,24 @@ pub async fn award_xp(
     })
 }
 
+/// Fetch one immutable snapshot of a player's 23 skill rows.
+///
+/// This is the single snapshot loader shared by the skill menu, the stats
+/// commands, and the chat fallback, so every presentation consumes the same
+/// data. SQLite work stays on the database worker; only the returned
+/// snapshot crosses onto the caller.
+pub(crate) async fn fetch_snapshot(
+    state: &MmoState,
+    player_uuid: uuid::Uuid,
+) -> Result<PlayerSnapshot, String> {
+    let mut snapshot = PlayerSnapshot::default();
+    for skill in SkillId::ALL {
+        let progress = state.db().get_skill(player_uuid, *skill).await?;
+        snapshot.set(*skill, PlayerSkillSnapshot::new(progress.xp));
+    }
+    Ok(snapshot)
+}
+
 /// Branch mastery: the average level of the branch's member skills.
 ///
 /// Computed on demand; add caching only if profiling justifies it.

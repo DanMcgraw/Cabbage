@@ -31,6 +31,15 @@ impl BranchId {
             BranchId::Enterprise => SkillId::ENTERPRISE,
         }
     }
+
+    /// Parse a branch from a user-supplied name (case-insensitive).
+    pub fn from_name(name: &str) -> Option<BranchId> {
+        let needle = name.trim().to_ascii_lowercase();
+        BranchId::ALL
+            .iter()
+            .copied()
+            .find(|branch| branch.display_name().to_ascii_lowercase() == needle)
+    }
 }
 
 impl Display for BranchId {
@@ -244,6 +253,18 @@ mod tests {
         keys.sort_unstable();
         keys.dedup();
         assert_eq!(keys.len(), SkillId::ALL.len());
+    }
+
+    #[test]
+    fn branch_from_name_is_case_insensitive() {
+        assert_eq!(BranchId::from_name("frontier"), Some(BranchId::Frontier));
+        assert_eq!(BranchId::from_name("WARFARE"), Some(BranchId::Warfare));
+        assert_eq!(
+            BranchId::from_name(" Enterprise "),
+            Some(BranchId::Enterprise)
+        );
+        assert_eq!(BranchId::from_name("mining"), None);
+        assert_eq!(BranchId::from_name(""), None);
     }
 
     #[test]

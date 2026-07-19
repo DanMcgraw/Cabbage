@@ -24,7 +24,7 @@ src/mmo/
 |-- frontier/          # Frontier skill handlers + branch config
 |-- warfare/           # Warfare skill handlers + branch config
 |-- enterprise/        # Enterprise skill handlers + branch config
-|-- ui/                # bossbars and protected native skill menu
+|-- ui/                # bossbars, protected native skill menu, bounded chat fallback
 |-- commands.rs        # /mmo command tree and admin subcommands
 |-- config.rs          # RON config, per-skill level curves, global perk caps
 |-- db.rs              # SQLite worker thread, schema migrations, async DB API
@@ -297,14 +297,28 @@ proc chances, curve parameters) are clamped on load via `MmoConfig::sanitized`.
 
 ## Commands
 
-- `/mmo` — command help plus your own skill summary.
-- `/mmo menu` — protected native 9×3 summary menu for all 23 skills.
-- `/mmo stats [player]` — all skills by branch, with branch mastery.
+- `/mmo` — open your skill grid (players); command help (console/RCON).
+- `/mmo menu` — alias for the protected skill grid.
+- `/mmo stats [player]` — open the grid for you or another online player
+  (players); full text table (console/RCON).
+- `/mmo stats chat [branch]` — bounded text fallback: a 10-line level-only
+  summary, or one branch per page with full XP values.
+- `/mmo help [page]` — compact, paginated command list.
 - `/mmo top <skill>` — top players for any skill.
 - `/mmo reload` — reload config.ron (admin).
 - `/mmo setxp <player> <skill> <xp>` — set a player's skill XP (admin).
 - `/mmo migrate status` — legacy Combat XP preservation status (admin).
 - `/mmo migrate combat <skill>` — move preserved Combat XP to a skill (admin).
+
+The skill grid is a protected `Generic9x3` menu: one branch per row, a
+branch summary in each row's first slot, all 23 skills visible at once, and
+a Help slot that closes the menu and prints the command list. It is
+read-only — items cannot be taken out or placed into it. Pumpkin's item
+codec currently sends plain-text custom names only (no lore component), so
+skill progress rides on each icon's custom name. The `/mmo stats chat`
+fallback never assumes a client's chat dimensions: padding is applied only
+inside `minecraft:uniform` cells and each page stays within 10 explicit
+lines.
 
 ## Threading Model
 
