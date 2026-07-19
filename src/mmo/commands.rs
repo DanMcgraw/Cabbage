@@ -797,3 +797,51 @@ pub fn mmo_command_tree(state: Arc<MmoState>) -> CommandTree {
                 ),
         )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn help_text_routes_root_to_chat_and_menu_to_the_gui() {
+        let text = help_lines(false).join("\n");
+        assert!(
+            text.contains("/mmo - Show your skill summary in chat."),
+            "{text}"
+        );
+        assert!(
+            text.contains("/mmo menu [player] - Open the protected skill grid GUI."),
+            "{text}"
+        );
+        assert!(
+            text.contains("/mmo stats [player] - Chat skill summary (text table for console)."),
+            "{text}"
+        );
+        assert!(
+            text.contains("/mmo stats chat [branch] - Chat summary, or one branch in detail."),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn help_pages_stay_within_the_chat_line_budget() {
+        for admin in [false, true] {
+            let page_count = help_lines(admin).len().div_ceil(HELP_PAGE_SIZE).max(1);
+            for page in 1..=page_count {
+                let line_count = help_message(admin, page).get_text().lines().count();
+                assert!(
+                    line_count <= chat::MAX_CHAT_LINES,
+                    "help page {page} (admin={admin}) has {line_count} lines"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn help_page_numbers_clamp_into_range() {
+        let first = help_message(false, 1).get_text();
+        assert_eq!(help_message(false, 0).get_text(), first);
+        assert_eq!(help_message(false, 999).get_text(), first);
+        assert!(!first.contains("Next page"));
+    }
+}
