@@ -24,7 +24,7 @@ src/mmo/
 |-- frontier/          # Frontier skill handlers + branch config
 |-- warfare/           # Warfare skill handlers + branch config
 |-- enterprise/        # Enterprise skill handlers + branch config
-|-- ui/                # bossbars, protected native skill menu, bounded chat fallback
+|-- ui/                # bossbars, protected native skill menu, default chat summary grid
 |-- commands.rs        # /mmo command tree and admin subcommands
 |-- config.rs          # RON config, per-skill level curves, global perk caps
 |-- db.rs              # SQLite worker thread, schema migrations, async DB API
@@ -297,12 +297,14 @@ proc chances, curve parameters) are clamped on load via `MmoConfig::sanitized`.
 
 ## Commands
 
-- `/mmo` — open your skill grid (players); command help (console/RCON).
-- `/mmo menu` — alias for the protected skill grid.
-- `/mmo stats [player]` — open the grid for you or another online player
-  (players); full text table (console/RCON).
-- `/mmo stats chat [branch]` — bounded text fallback: a 10-line level-only
-  summary, or one branch per page with full XP values.
+- `/mmo` — show your skill summary as a 10-line chat grid (players);
+  command help (console/RCON).
+- `/mmo menu [player]` — open the protected 9x3 skill grid GUI for you or
+  another online player.
+- `/mmo stats [player]` — the same chat grid for you or another online
+  player (players); full text table (console/RCON).
+- `/mmo stats chat [branch]` — alias for the chat summary grid, or one
+  branch per page with full XP values.
 - `/mmo help [page]` — compact, paginated command list.
 - `/mmo top <skill>` — top players for any skill.
 - `/mmo reload` — reload config.ron (admin).
@@ -310,14 +312,23 @@ proc chances, curve parameters) are clamped on load via `MmoConfig::sanitized`.
 - `/mmo migrate status` — legacy Combat XP preservation status (admin).
 - `/mmo migrate combat <skill>` — move preserved Combat XP to a skill (admin).
 
-The skill grid is a protected `Generic9x3` menu: one branch per row, a
-branch summary in each row's first slot, all 23 skills visible at once, and
+The default chat summary is a three-column table — one column per branch,
+one row per skill index — of fixed 10-character `minecraft:uniform` cells: a
+four-letter skill code plus a right-aligned level. Levels above 999 show a
+compact `1k+` marker; the exact level stays in hover text. Hover text on
+headers and cells carries full branch/skill names, mastery, enabled counts,
+progress toward the next level, and total XP. Disabled skills keep their
+level in dark gray strikethrough (winning over the max-level bold style,
+with hover reporting both states). The summary never assumes a client's
+chat dimensions: padding is applied only inside uniform-font cells and each
+page stays within 10 explicit lines.
+
+`/mmo menu` opens the protected `Generic9x3` skill grid: one branch per row,
+a branch summary in each row's first slot, all 23 skills visible at once, and
 a Help slot that closes the menu and prints the command list. It is
 read-only — items cannot be taken out or placed into it. Icon names stay
 concise while structured lore shows progress toward the next level, total XP,
-and explicit Disabled or Max level states. The `/mmo stats chat` fallback
-never assumes a client's chat dimensions: padding is applied only inside
-`minecraft:uniform` cells and each page stays within 10 explicit lines.
+and explicit Disabled or Max level states.
 
 ## Threading Model
 

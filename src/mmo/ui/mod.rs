@@ -1,5 +1,5 @@
-//! Player-facing presentation: bossbars, the protected native skill menu,
-//! and the bounded chat fallback for clients that cannot use the menu.
+//! Player-facing presentation: bossbars, the protected native skill menu
+//! (`/mmo menu`), and the default chat summary grid (`/mmo`).
 
 pub(crate) mod bossbar;
 pub(crate) mod chat;

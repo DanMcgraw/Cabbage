@@ -98,7 +98,10 @@ proc chances by `perks.max_proc_chance` (35%).
 
 Per the phased plan, major perks (25/50/75) and capstones (100) are enabled
 one at a time only after a skill's basic XP flow has been live-tested; none
-are on by default. `/mmo menu` uses Pumpkin's native protected GUI lifecycle
-to show all 23 skill levels and progress in a read-only 9×3 inventory. More
-interactive perk/capstone menus remain follow-on work after their gameplay is
-live-tested.
+are on by default. `/mmo` is the default chat-area summary: a 10-line,
+three-column level grid for players. `/mmo menu` uses Pumpkin's native
+protected GUI lifecycle to show all 23 skill levels and progress in a
+read-only 9×3 inventory. `/mmo stats [player]` prints the same tabular chat
+summary for players (full text for console), and `/mmo stats chat <branch>`
+keeps the detailed per-branch text view. More interactive perk/capstone
+menus remain follow-on work after their gameplay is live-tested.
