@@ -6,6 +6,7 @@ use pumpkin::{
         args::{ConsumedArgs, FindArg, simple::SimpleArgConsumer},
         tree::{CommandTree, builder::literal},
     },
+    entity::player::Player,
     server::Server,
 };
 use pumpkin_util::{
@@ -38,10 +39,10 @@ fn skill_names_hint() -> String {
 
 fn help_lines(admin: bool) -> Vec<String> {
     let mut lines = vec![
-        "/mmo - Open your skill grid.".to_string(),
-        "/mmo menu - Open the skill grid (alias).".to_string(),
-        "/mmo stats [player] - Open the skill grid (text for console).".to_string(),
-        "/mmo stats chat [branch] - Text summary, or one branch in detail.".to_string(),
+        "/mmo - Show your skill summary in chat.".to_string(),
+        "/mmo menu [player] - Open the protected skill grid GUI.".to_string(),
+        "/mmo stats [player] - Chat skill summary (text table for console).".to_string(),
+        "/mmo stats chat [branch] - Chat summary, or one branch in detail.".to_string(),
         "/mmo top <skill> - Show top players for a skill.".to_string(),
         "/mmo help [page] - Show this command list.".to_string(),
     ];
@@ -86,6 +87,40 @@ fn format_snapshot(snapshot: &PlayerSnapshot, state: &MmoState) -> String {
     lines.join("\n")
 }
 
+/// Shared snapshot fetch + chat summary send behind `/mmo`, player
+/// `/mmo stats [player]`, and `/mmo stats chat` so the three entry points
+/// cannot drift. Each visual row is sent as its own system message to
+/// preserve per-cell styling and hover text. Returns the command result.
+async fn send_summary_grid(
+    state: &MmoState,
+    sender: &CommandSender,
+    viewer: &Arc<Player>,
+    target: &Player,
+) -> i32 {
+    let snapshot = match fetch_snapshot(state, target.gameprofile.id).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            sender
+                .send_message(
+                    TextComponent::text(format!("Failed to fetch skills: {error}"))
+                        .color_named(NamedColor::Red),
+                )
+                .await;
+            return 0;
+        }
+    };
+
+    let config = state.config();
+    let skill_info = |skill: SkillId| (state.curve(skill), skill_enabled(&config, skill));
+    let target_name = (viewer.gameprofile.id != target.gameprofile.id)
+        .then_some(target.gameprofile.name.as_str());
+
+    for line in chat::summary_lines(&snapshot, &skill_info, target_name) {
+        viewer.send_system_message(&line).await;
+    }
+    1
+}
+
 struct MmoRootExecutor {
     state: Arc<MmoState>,
 }
@@ -99,26 +134,14 @@ impl CommandExecutor for MmoRootExecutor {
     ) -> CommandResult<'a> {
         Box::pin(async move {
             if let Some(player) = sender.as_player() {
-                // Players get the protected 9x3 grid; help lives at /mmo help
-                // and no skill rows are fetched just to print usage.
-                if let Err(error) =
-                    menu::open_skill_menu(&self.state, player.clone(), &player).await
-                {
-                    sender
-                        .send_message(
-                            TextComponent::text(format!(
-                                "{error}. Try /mmo stats chat for a text summary."
-                            ))
-                            .color_named(NamedColor::Red),
-                        )
-                        .await;
-                    return Ok(0);
-                }
-            } else {
-                // Console/RCON cannot open inventory screens; text help only.
-                let admin = sender.has_permission_lvl(PermissionLvl::Three);
-                sender.send_message(help_message(admin, 1)).await;
+                // Players get the 10-line chat summary grid; the protected
+                // inventory GUI lives at /mmo menu.
+                let result = send_summary_grid(&self.state, sender, &player, &player).await;
+                return Ok(result);
             }
+            // Console/RCON cannot receive a chat HUD grid; text help only.
+            let admin = sender.has_permission_lvl(PermissionLvl::Three);
+            sender.send_message(help_message(admin, 1)).await;
             Ok(1)
         })
     }
@@ -168,11 +191,11 @@ impl CommandExecutor for MmoMenuExecutor {
     fn execute<'a>(
         &'a self,
         sender: &'a CommandSender,
-        _server: &'a Server,
-        _args: &'a ConsumedArgs<'a>,
+        server: &'a Server,
+        args: &'a ConsumedArgs<'a>,
     ) -> CommandResult<'a> {
         Box::pin(async move {
-            let Some(player) = sender.as_player() else {
+            let Some(viewer) = sender.as_player() else {
                 sender
                     .send_message(
                         TextComponent::text("Only players can open the MMO menu.")
@@ -181,13 +204,28 @@ impl CommandExecutor for MmoMenuExecutor {
                     .await;
                 return Ok(0);
             };
-            if let Err(error) = menu::open_skill_menu(&self.state, player.clone(), &player).await {
+            // GUI behavior stays under this explicit subcommand; an optional
+            // online target reuses the same viewer/target menu split.
+            let target = match SimpleArgConsumer::find_arg(args, "target") {
+                Ok(name) => match server.get_player_by_name(name) {
+                    Some(player) => player,
+                    None => {
+                        sender
+                            .send_message(
+                                TextComponent::text("Player not found.")
+                                    .color_named(NamedColor::Red),
+                            )
+                            .await;
+                        return Ok(0);
+                    }
+                },
+                Err(_) => viewer.clone(),
+            };
+            if let Err(error) = menu::open_skill_menu(&self.state, viewer, &target).await {
                 sender
                     .send_message(
-                        TextComponent::text(format!(
-                            "{error}. Try /mmo stats chat for a text summary."
-                        ))
-                        .color_named(NamedColor::Red),
+                        TextComponent::text(format!("{error}. Try /mmo for a chat summary."))
+                            .color_named(NamedColor::Red),
                     )
                     .await;
                 return Ok(0);
@@ -221,19 +259,9 @@ impl CommandExecutor for MmoStatsExecutor {
             };
 
             if let Some(viewer) = sender.as_player() {
-                // Player senders get the read-only grid of the target.
-                if let Err(error) = menu::open_skill_menu(&self.state, viewer, &target).await {
-                    sender
-                        .send_message(
-                            TextComponent::text(format!(
-                                "{error}. Try /mmo stats chat for a text summary."
-                            ))
-                            .color_named(NamedColor::Red),
-                        )
-                        .await;
-                    return Ok(0);
-                }
-                return Ok(1);
+                // Player senders get the target's chat summary grid.
+                let result = send_summary_grid(&self.state, sender, &viewer, &target).await;
+                return Ok(result);
             }
 
             // Console/RCON keeps complete text output; it is not bounded by
@@ -285,6 +313,28 @@ impl CommandExecutor for MmoChatStatsExecutor {
                 return Ok(0);
             };
 
+            let branch = match SimpleArgConsumer::find_arg(args, "branch") {
+                // Backward-compatible alias for the summary grid.
+                Err(_) => {
+                    let result = send_summary_grid(&self.state, sender, &player, &player).await;
+                    return Ok(result);
+                }
+                Ok(name) => match BranchId::from_name(name) {
+                    Some(branch) => branch,
+                    None => {
+                        sender
+                            .send_message(
+                                TextComponent::text(
+                                    "Unknown branch. Try: frontier, warfare, enterprise",
+                                )
+                                .color_named(NamedColor::Red),
+                            )
+                            .await;
+                        return Ok(0);
+                    }
+                },
+            };
+
             let snapshot = match fetch_snapshot(&self.state, player.gameprofile.id).await {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
@@ -302,25 +352,7 @@ impl CommandExecutor for MmoChatStatsExecutor {
             let skill_info =
                 |skill: SkillId| (self.state.curve(skill), skill_enabled(&config, skill));
 
-            let lines = match SimpleArgConsumer::find_arg(args, "branch") {
-                Err(_) => chat::summary_lines(&snapshot, &skill_info, None),
-                Ok(name) => match BranchId::from_name(name) {
-                    Some(branch) => chat::branch_lines(&snapshot, &skill_info, branch),
-                    None => {
-                        sender
-                            .send_message(
-                                TextComponent::text(
-                                    "Unknown branch. Try: frontier, warfare, enterprise",
-                                )
-                                .color_named(NamedColor::Red),
-                            )
-                            .await;
-                        return Ok(0);
-                    }
-                },
-            };
-
-            for line in lines {
+            for line in chat::branch_lines(&snapshot, &skill_info, branch) {
                 player.send_system_message(&line).await;
             }
             Ok(1)
@@ -718,9 +750,19 @@ pub fn mmo_command_tree(state: Arc<MmoState>) -> CommandTree {
                     ),
                 ),
         )
-        .then(literal("menu").execute(MmoMenuExecutor {
-            state: state.clone(),
-        }))
+        .then(
+            literal("menu")
+                .execute(MmoMenuExecutor {
+                    state: state.clone(),
+                })
+                .then(
+                    pumpkin::command::tree::builder::argument("target", SimpleArgConsumer).execute(
+                        MmoMenuExecutor {
+                            state: state.clone(),
+                        },
+                    ),
+                ),
+        )
         .then(literal("top").then(
             pumpkin::command::tree::builder::argument("skill", SimpleArgConsumer).execute(
                 MmoTopExecutor {
