@@ -5,9 +5,6 @@
 //! slot. The menu is read-only (`allow_grab_items` and `allow_put_items`
 //! stay false); the only interaction is the Help slot's click callback.
 //!
-//! Pumpkin's item codec currently transmits plain-text custom names only
-//! (no lore component), so all progress rides on the icon's custom name.
-
 use std::sync::Arc;
 
 use pumpkin::{
@@ -21,7 +18,10 @@ use pumpkin::{
     },
 };
 use pumpkin_data::{item::Item, item_stack::ItemStack, screen::WindowType};
-use pumpkin_util::{permission::PermissionLvl, text::TextComponent};
+use pumpkin_util::{
+    permission::PermissionLvl,
+    text::{TextComponent, color::NamedColor},
+};
 
 use super::{
     super::{
@@ -105,39 +105,50 @@ fn help_icon() -> &'static Item {
     Item::from_registry_key("book").unwrap_or(&Item::STONE)
 }
 
-/// Custom name for a skill icon: name, level, progress toward the next
-/// level, and an explicit `Disabled` or `Max level` state where applicable.
-fn skill_display_name(
-    skill: SkillId,
+/// Concise custom name for a skill icon. Detailed progress belongs in lore so
+/// the inventory grid stays readable without flattening everything into one line.
+fn skill_display_name(skill: SkillId, progress: PlayerSkillSnapshot, curve: &LevelCurve) -> String {
+    let (level, _, _) = curve.level_for_xp(progress.xp);
+    format!("{} - Level {}", skill.display_name(), level)
+}
+
+/// Structured lore for a skill icon: state, progress toward the next level,
+/// and total accumulated XP.
+fn skill_lore(
     progress: PlayerSkillSnapshot,
     curve: &LevelCurve,
     enabled: bool,
-) -> String {
-    if !enabled {
-        return format!("{} - Disabled", skill.display_name());
-    }
+) -> Vec<TextComponent> {
     let (level, into, needed) = curve.level_for_xp(progress.xp);
-    if level >= curve.max_level() {
-        format!("{} - Level {} (Max level)", skill.display_name(), level)
-    } else {
-        format!(
-            "{} - Level {} ({}/{} XP, {}%)",
-            skill.display_name(),
-            level,
-            into,
-            needed,
-            progress_percent(into, needed)
-        )
+    let mut lore = Vec::with_capacity(3);
+    if !enabled {
+        lore.push(TextComponent::text("Disabled").color_named(NamedColor::Red));
     }
+    if level >= curve.max_level() {
+        if enabled {
+            lore.push(TextComponent::text("Max level").color_named(NamedColor::Gold));
+        }
+    } else {
+        lore.push(
+            TextComponent::text(format!(
+                "Progress: {into}/{needed} XP ({}%)",
+                progress_percent(into, needed)
+            ))
+            .color_named(NamedColor::Yellow),
+        );
+    }
+    lore.push(
+        TextComponent::text(format!("Total XP: {}", progress.xp)).color_named(NamedColor::Gray),
+    );
+    lore
 }
 
-/// Custom name for a branch header icon: branch mastery and the number of
-/// enabled member skills.
-fn branch_display_name(
+/// Structured branch summary shown beneath the branch name.
+fn branch_lore(
     branch: BranchId,
     snapshot: &PlayerSnapshot,
     skill_info: &dyn Fn(SkillId) -> (LevelCurve, bool),
-) -> String {
+) -> Vec<TextComponent> {
     let mastery = branch_mastery(branch, |skill| {
         let (curve, _) = skill_info(skill);
         snapshot.level_of(skill, &curve)
@@ -147,12 +158,14 @@ fn branch_display_name(
         .iter()
         .filter(|skill| skill_info(**skill).1)
         .count();
-    format!(
-        "{} - Mastery {:.1} ({} enabled skills)",
-        branch.display_name(),
-        mastery,
-        enabled
-    )
+    vec![
+        TextComponent::text(format!("Mastery: {mastery:.1}")).color_named(NamedColor::Gold),
+        TextComponent::text(format!(
+            "Enabled skills: {enabled}/{}",
+            branch.skills().len()
+        ))
+        .color_named(NamedColor::Gray),
+    ]
 }
 
 /// Owned click handler for the skill menu. Every click is cancelled so the
@@ -197,25 +210,33 @@ pub(crate) async fn open_skill_menu(
     let layout = menu_layout();
     let mut slots = vec![ItemStack::EMPTY.clone(); MENU_SLOTS];
     for (index, menu_slot) in layout.iter().enumerate() {
-        let (icon, name) = match menu_slot {
+        let (icon, name, lore) = match menu_slot {
             MenuSlot::BranchHeader(branch) => (
                 branch_icon(*branch),
-                branch_display_name(*branch, &snapshot, &skill_info),
+                branch.display_name().to_string(),
+                branch_lore(*branch, &snapshot, &skill_info),
             ),
             MenuSlot::Skill(skill) => {
                 let (curve, enabled) = skill_info(*skill);
+                let progress = snapshot.get(*skill);
                 (
                     skill_icon(*skill),
-                    skill_display_name(*skill, snapshot.get(*skill), &curve, enabled),
+                    skill_display_name(*skill, progress, &curve),
+                    skill_lore(progress, &curve, enabled),
                 )
             }
             MenuSlot::Help => (
                 help_icon(),
-                "Help - Click for the /mmo command list".to_string(),
+                "Help".to_string(),
+                vec![
+                    TextComponent::text("Click for the /mmo command list")
+                        .color_named(NamedColor::Yellow),
+                ],
             ),
         };
         let mut stack = ItemStack::new(1, icon);
         stack.set_custom_name(name);
+        stack.set_lore(lore);
         slots[index] = stack;
     }
 
@@ -316,48 +337,59 @@ mod tests {
         }
     }
 
-    #[test]
-    fn skill_name_shows_disabled_state() {
-        let name = skill_display_name(
-            SkillId::Trading,
-            PlayerSkillSnapshot::new(0),
-            &test_curve(),
-            false,
-        );
-        assert_eq!(name, "Trading - Disabled");
+    fn lore_text(lines: &[TextComponent]) -> Vec<String> {
+        lines.iter().cloned().map(TextComponent::get_text).collect()
     }
 
     #[test]
-    fn skill_name_shows_max_level_state_for_huge_xp() {
-        let name = skill_display_name(
-            SkillId::Mining,
-            PlayerSkillSnapshot::new(u64::MAX),
-            &test_curve(),
-            true,
+    fn disabled_skill_has_concise_name_and_explicit_lore() {
+        let progress = PlayerSkillSnapshot::new(0);
+        let name = skill_display_name(SkillId::Trading, progress, &test_curve());
+        let lore = skill_lore(progress, &test_curve(), false);
+        assert_eq!(name, "Trading - Level 1");
+        assert_eq!(
+            lore_text(&lore),
+            ["Disabled", "Progress: 0/100 XP (0%)", "Total XP: 0"]
         );
-        assert_eq!(name, "Mining - Level 5 (Max level)");
+        assert_eq!(
+            lore[0].0.style.color,
+            Some(pumpkin_util::text::color::Color::Named(NamedColor::Red))
+        );
     }
 
     #[test]
-    fn skill_name_shows_progress_and_percent() {
+    fn max_level_state_moves_from_name_into_lore() {
+        let progress = PlayerSkillSnapshot::new(u64::MAX);
+        let name = skill_display_name(SkillId::Mining, progress, &test_curve());
+        let lore = skill_lore(progress, &test_curve(), true);
+        assert_eq!(name, "Mining - Level 5");
+        assert_eq!(
+            lore_text(&lore),
+            ["Max level", "Total XP: 18446744073709551615"]
+        );
+    }
+
+    #[test]
+    fn skill_lore_shows_progress_percent_and_total_xp() {
         // Test curve thresholds: 0, 100, 300, 700, 1500 (max level 5).
-        let name = skill_display_name(
-            SkillId::Mining,
-            PlayerSkillSnapshot::new(150),
-            &test_curve(),
-            true,
+        let progress = PlayerSkillSnapshot::new(150);
+        let name = skill_display_name(SkillId::Mining, progress, &test_curve());
+        let lore = skill_lore(progress, &test_curve(), true);
+        assert_eq!(name, "Mining - Level 2");
+        assert_eq!(
+            lore_text(&lore),
+            ["Progress: 50/200 XP (25%)", "Total XP: 150"]
         );
-        assert_eq!(name, "Mining - Level 2 (50/200 XP, 25%)");
     }
 
     #[test]
-    fn branch_name_shows_mastery_and_enabled_count() {
+    fn branch_lore_shows_mastery_and_enabled_count() {
         let curve = test_curve();
         let mut snapshot = PlayerSnapshot::default();
         snapshot.set(SkillId::Blades, PlayerSkillSnapshot::new(150)); // level 2
         let skill_info = |_: SkillId| (curve.clone(), true);
         // Warfare: levels 2,1,1,1,1,1,1 -> mastery 8/7 ~= 1.1.
-        let name = branch_display_name(BranchId::Warfare, &snapshot, &skill_info);
-        assert_eq!(name, "Warfare - Mastery 1.1 (7 enabled skills)");
+        let lore = branch_lore(BranchId::Warfare, &snapshot, &skill_info);
+        assert_eq!(lore_text(&lore), ["Mastery: 1.1", "Enabled skills: 7/7"]);
     }
 }

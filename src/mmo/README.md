@@ -313,12 +313,11 @@ proc chances, curve parameters) are clamped on load via `MmoConfig::sanitized`.
 The skill grid is a protected `Generic9x3` menu: one branch per row, a
 branch summary in each row's first slot, all 23 skills visible at once, and
 a Help slot that closes the menu and prints the command list. It is
-read-only — items cannot be taken out or placed into it. Pumpkin's item
-codec currently sends plain-text custom names only (no lore component), so
-skill progress rides on each icon's custom name. The `/mmo stats chat`
-fallback never assumes a client's chat dimensions: padding is applied only
-inside `minecraft:uniform` cells and each page stays within 10 explicit
-lines.
+read-only — items cannot be taken out or placed into it. Icon names stay
+concise while structured lore shows progress toward the next level, total XP,
+and explicit Disabled or Max level states. The `/mmo stats chat` fallback
+never assumes a client's chat dimensions: padding is applied only inside
+`minecraft:uniform` cells and each page stays within 10 explicit lines.
 
 ## Threading Model
 
