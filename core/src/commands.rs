@@ -20,13 +20,13 @@ use crate::{
     metrics::{MetricsReporterState, metrics_command_allowed, metrics_log_message},
 };
 
-const CABBAGE_PERMISSION: &str = "Cabbage:command.cabbage";
+const CABBAGE_PERMISSION: &str = "Cabbage.Core:command.cabbage";
 pub(crate) const CABBAGE_NAMES: [&str; 1] = ["cabbage"];
-const CLEAR_DROPS_PERMISSION: &str = "Cabbage:command.clear_drops";
+const CLEAR_DROPS_PERMISSION: &str = "Cabbage.Core:command.clear_drops";
 pub(crate) const CLEAR_DROPS_NAMES: [&str; 1] = ["cleardrops"];
-const METRICS_PERMISSION: &str = "Cabbage:command.metrics";
+const METRICS_PERMISSION: &str = "Cabbage.Core:command.metrics";
 pub(crate) const METRICS_NAMES: [&str; 1] = ["metrics"];
-const EVENTS_PERMISSION: &str = "Cabbage:command.events";
+const EVENTS_PERMISSION: &str = "Cabbage.Core:command.events";
 pub(crate) const EVENTS_NAMES: [&str; 1] = ["events"];
 
 struct CabbageInfoExecutor;

@@ -28,15 +28,48 @@ use uuid::Uuid;
 
 const DROPPED_ITEM_ENTITY_ID: &str = "minecraft:item";
 
-#[derive(Default)]
 pub(crate) struct DroppedItemCleanupState {
     last_out_of_range_items: Mutex<HashSet<Uuid>>,
+    /// False once the plugin is unloaded; handlers must early-return then.
+    active: AtomicBool,
 }
 
-#[derive(Default)]
+impl Default for DroppedItemCleanupState {
+    fn default() -> Self {
+        Self {
+            last_out_of_range_items: Mutex::new(HashSet::new()),
+            active: AtomicBool::new(true),
+        }
+    }
+}
+
+impl DroppedItemCleanupState {
+    pub(crate) fn set_active(&self, active: bool) {
+        self.active.store(active, Ordering::SeqCst);
+    }
+}
+
 pub(crate) struct ClearDropsState {
     pub(crate) pending: AtomicBool,
     pub(crate) sender: Mutex<Option<CommandSender>>,
+    /// False once the plugin is unloaded; handlers must early-return then.
+    active: AtomicBool,
+}
+
+impl Default for ClearDropsState {
+    fn default() -> Self {
+        Self {
+            pending: AtomicBool::new(false),
+            sender: Mutex::new(None),
+            active: AtomicBool::new(true),
+        }
+    }
+}
+
+impl ClearDropsState {
+    pub(crate) fn set_active(&self, active: bool) {
+        self.active.store(active, Ordering::SeqCst);
+    }
 }
 
 #[derive(Default)]
@@ -97,6 +130,10 @@ impl EventHandler<ServerTickStartEvent> for DroppedItemCleanupState {
         event: &'a ServerTickStartEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
+            if !self.active.load(Ordering::SeqCst) {
+                return;
+            }
+
             if event.tick % 100 != 0 {
                 return;
             }
@@ -182,6 +219,10 @@ impl ClearDropsState {
         handler: &'static str,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
+            if !self.active.load(Ordering::SeqCst) {
+                return;
+            }
+
             if !self.pending.swap(false, Ordering::SeqCst) {
                 return;
             }

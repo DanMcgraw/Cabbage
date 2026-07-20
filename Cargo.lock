@@ -214,35 +214,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ae3f5d315924270530207e2a68396c3cc547f6dca3fbdca317cfb1a51edb593"
 
 [[package]]
-name = "cabbage"
-version = "0.1.0"
-dependencies = [
- "cabbage-api",
- "cabbage-mmo",
- "cabbage-mobai",
- "ctor",
- "flashmap",
- "futures",
- "log",
- "pumpkin",
- "pumpkin-data",
- "pumpkin-nbt",
- "pumpkin-protocol",
- "pumpkin-util",
- "pumpkin-world",
- "rand 0.9.4",
- "rayon",
- "ron",
- "rusqlite",
- "ruzstd",
- "serde",
- "serde_json",
- "sysinfo 0.30.13",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "cabbage-api"
 version = "0.1.0"
 dependencies = [
@@ -250,9 +221,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "cabbage-core"
+version = "0.1.0"
+dependencies = [
+ "cabbage-api",
+ "ctor",
+ "pumpkin",
+ "pumpkin-nbt",
+ "pumpkin-util",
+ "pumpkin-world",
+ "ron",
+ "ruzstd",
+ "serde",
+ "sysinfo 0.30.13",
+ "uuid",
+]
+
+[[package]]
 name = "cabbage-mmo"
 version = "0.1.0"
 dependencies = [
+ "ctor",
  "futures",
  "log",
  "pumpkin",
@@ -274,6 +263,7 @@ name = "cabbage-mobai"
 version = "0.1.0"
 dependencies = [
  "cabbage-api",
+ "ctor",
  "flashmap",
  "log",
  "pumpkin",

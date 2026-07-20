@@ -24,6 +24,7 @@ pub use cabbage_api::MobAiMetricsSnapshot as MobAiMetrics;
 pub(crate) mod clustering;
 pub(crate) mod movement;
 pub(crate) mod pathfinding;
+mod plugin;
 pub(crate) mod types;
 pub(crate) mod workers;
 
@@ -67,6 +68,9 @@ pub struct MobAiState {
     pub(crate) chunk_registry_read: types::ChunkRegistryRead,
     pub(crate) chunk_registry_write: Arc<Mutex<types::ChunkRegistryWrite>>,
     pub mob_ai_enabled: std::sync::atomic::AtomicBool,
+    /// False once the plugin is unloaded; event handlers must early-return
+    /// then (handlers are never auto-removed and the DLL stays mapped).
+    pub(crate) active: std::sync::atomic::AtomicBool,
 }
 
 impl Default for MobAiState {
@@ -98,6 +102,7 @@ impl Default for MobAiState {
             chunk_registry_read,
             chunk_registry_write: Arc::new(Mutex::new(chunk_registry_write)),
             mob_ai_enabled: std::sync::atomic::AtomicBool::new(true),
+            active: std::sync::atomic::AtomicBool::new(true),
         }
     }
 }
@@ -120,6 +125,9 @@ impl EventHandler<ServerTickStartEvent> for MobAiState {
         server: &'a Arc<Server>,
         event: &'a mut ServerTickStartEvent,
     ) -> BoxFuture<'a, ()> {
+        if !self.is_active() {
+            return Box::pin(async {});
+        }
         self.run_tick(server, event.tick)
     }
 }
@@ -130,6 +138,9 @@ impl EventHandler<EntitySpawnEvent> for MobAiState {
         _server: &'a Arc<Server>,
         event: &'a EntitySpawnEvent,
     ) -> BoxFuture<'a, ()> {
+        if !self.is_active() {
+            return Box::pin(async {});
+        }
         self.register_managed_mob(event.world.uuid, event.entity.as_ref());
         Box::pin(async {})
     }
@@ -149,6 +160,9 @@ impl EventHandler<EntityRemoveEvent> for MobAiState {
         _server: &'a Arc<Server>,
         event: &'a EntityRemoveEvent,
     ) -> BoxFuture<'a, ()> {
+        if !self.is_active() {
+            return Box::pin(async {});
+        }
         self.unregister_managed_mob(event.entity.get_entity().entity_uuid);
         Box::pin(async {})
     }
@@ -168,6 +182,9 @@ impl EventHandler<ChunkEntityLoadEvent> for MobAiState {
         _server: &'a Arc<Server>,
         event: &'a ChunkEntityLoadEvent,
     ) -> BoxFuture<'a, ()> {
+        if !self.is_active() {
+            return Box::pin(async {});
+        }
         self.register_managed_mob(event.world.uuid, event.entity.as_ref());
         Box::pin(async {})
     }
@@ -187,6 +204,9 @@ impl EventHandler<ChunkEntityUnloadEvent> for MobAiState {
         _server: &'a Arc<Server>,
         event: &'a ChunkEntityUnloadEvent,
     ) -> BoxFuture<'a, ()> {
+        if !self.is_active() {
+            return Box::pin(async {});
+        }
         self.unregister_managed_mob(event.entity.get_entity().entity_uuid);
         Box::pin(async {})
     }
@@ -718,6 +738,17 @@ impl MobAiState {
         self.grace_period_mobs.lock().unwrap().remove(&uuid);
     }
 
+    /// True while the plugin is loaded. Event handlers early-return once this
+    /// flips to false on unload.
+    pub(crate) fn is_active(&self) -> bool {
+        self.active.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_active(&self, active: bool) {
+        self.active
+            .store(active, std::sync::atomic::Ordering::Relaxed);
+    }
+
     pub fn get_metrics(&self) -> MobAiMetrics {
         MobAiMetrics {
             active_path_jobs: self.active_path_jobs.lock().unwrap().len(),
@@ -838,6 +869,9 @@ impl EventHandler<pumpkin::plugin::api::events::world::chunk_send::ChunkSend> fo
         _server: &'a Arc<Server>,
         event: &'a pumpkin::plugin::api::events::world::chunk_send::ChunkSend,
     ) -> BoxFuture<'a, ()> {
+        if !self.is_active() {
+            return Box::pin(async {});
+        }
         let chunk_pos = Vector2::new(event.chunk.x, event.chunk.z);
         let chunk_data = Arc::clone(&event.chunk);
         self.register_chunk(chunk_pos, chunk_data);
@@ -862,6 +896,9 @@ impl EventHandler<pumpkin::plugin::api::events::block::block_place::BlockPlaceEv
         event: &'a pumpkin::plugin::api::events::block::block_place::BlockPlaceEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
+            if !self.is_active() {
+                return;
+            }
             self.update_block(event.block_position, event.block_placed);
         })
     }
@@ -876,6 +913,9 @@ impl EventHandler<pumpkin::plugin::api::events::block::block_break::BlockBreakEv
         event: &'a pumpkin::plugin::api::events::block::block_break::BlockBreakEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
+            if !self.is_active() {
+                return;
+            }
             self.update_block(event.block_position, &pumpkin_data::Block::AIR);
         })
     }

@@ -38,10 +38,21 @@ use pumpkin::{
 };
 use pumpkin_util::text::TextComponent;
 
-#[derive(Default)]
 pub(crate) struct EventLogState {
     enabled: AtomicBool,
     log_path: Mutex<Option<PathBuf>>,
+    /// False once the plugin is unloaded; handlers must early-return then.
+    active: AtomicBool,
+}
+
+impl Default for EventLogState {
+    fn default() -> Self {
+        Self {
+            enabled: AtomicBool::new(false),
+            log_path: Mutex::new(None),
+            active: AtomicBool::new(true),
+        }
+    }
 }
 
 impl EventLogState {
@@ -55,8 +66,12 @@ impl EventLogState {
         !self.enabled.fetch_xor(true, Ordering::SeqCst)
     }
 
+    pub(crate) fn set_active(&self, active: bool) {
+        self.active.store(active, Ordering::SeqCst);
+    }
+
     fn is_enabled(&self) -> bool {
-        self.enabled.load(Ordering::SeqCst)
+        self.enabled.load(Ordering::SeqCst) && self.active.load(Ordering::SeqCst)
     }
 
     pub(crate) fn log(&self, message: &str) {

@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -8,7 +8,6 @@ use std::{
 };
 
 use cabbage_api::{MobAiApi, MobAiMetricsSnapshot};
-use cabbage_mmo::config::PluginConfig;
 use pumpkin::{
     command::CommandSender,
     plugin::{
@@ -21,9 +20,37 @@ use pumpkin_util::{
     permission::PermissionLvl,
     text::{TextComponent, color::NamedColor},
 };
+use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, System, get_current_pid};
 
-use crate::drops::SavedPumpData;
+use crate::{LEGACY_DATA_FOLDER, drops::SavedPumpData};
+
+fn default_true() -> bool {
+    true
+}
+
+/// Core plugin configuration (`config.ron` in the `Cabbage.Core` data
+/// folder).
+///
+/// The pre-split `Cabbage` plugin stored a superset of this shape (an extra
+/// `mmo` section); unknown fields are ignored while parsing, so legacy files
+/// migrate cleanly.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct CoreConfig {
+    #[serde(default)]
+    pub metrics_log: bool,
+    #[serde(default = "default_true")]
+    pub mob_ai: bool,
+}
+
+impl Default for CoreConfig {
+    fn default() -> Self {
+        Self {
+            metrics_log: false,
+            mob_ai: true,
+        }
+    }
+}
 
 pub(crate) struct MetricsReporterState {
     sys: Arc<Mutex<System>>,
@@ -32,6 +59,13 @@ pub(crate) struct MetricsReporterState {
     metrics_log: AtomicBool,
     config_path: Mutex<Option<PathBuf>>,
     mob_ai: Mutex<Option<Arc<dyn MobAiApi>>>,
+    /// Last configured Mob AI flag; applied whenever the MobAi service is
+    /// (re)discovered so late-loading plugins still honor the config.
+    configured_mob_ai: AtomicBool,
+    /// Plugin context used to retry the MobAi service lookup after load.
+    context: Mutex<Option<Arc<Context>>>,
+    /// False once the plugin is unloaded; handlers must early-return then.
+    active: AtomicBool,
     last_paths_completed: std::sync::atomic::AtomicUsize,
     last_velocities_completed: std::sync::atomic::AtomicUsize,
     last_metrics_time: Mutex<std::time::Instant>,
@@ -52,6 +86,9 @@ impl MetricsReporterState {
             metrics_log: AtomicBool::new(false),
             config_path: Mutex::new(None),
             mob_ai: Mutex::new(None),
+            configured_mob_ai: AtomicBool::new(true),
+            context: Mutex::new(None),
+            active: AtomicBool::new(true),
             last_paths_completed: std::sync::atomic::AtomicUsize::new(0),
             last_velocities_completed: std::sync::atomic::AtomicUsize::new(0),
             last_metrics_time: Mutex::new(std::time::Instant::now()),
@@ -62,16 +99,49 @@ impl MetricsReporterState {
         }
     }
 
-    /// Connects the Mob AI engine. Called during plugin load; until this is
-    /// set, metrics report zeros for the Mob AI fields.
+    /// Connects the Mob AI engine. Until this is set, metrics report zeros
+    /// for the Mob AI fields.
     pub(crate) fn set_mob_ai(&self, api: Arc<dyn MobAiApi>) {
         if let Ok(mut mob_ai) = self.mob_ai.lock() {
             *mob_ai = Some(api);
         }
     }
 
+    /// Stores the plugin context so the MobAi service lookup can be retried
+    /// when the MobAi plugin loads after Core.
+    pub(crate) fn set_context(&self, context: Arc<Context>) {
+        if let Ok(mut guard) = self.context.lock() {
+            *guard = Some(context);
+        }
+    }
+
+    pub(crate) fn set_active(&self, active: bool) {
+        self.active.store(active, Ordering::SeqCst);
+    }
+
     fn mob_ai_api(&self) -> Option<Arc<dyn MobAiApi>> {
         self.mob_ai.lock().ok().and_then(|mob_ai| mob_ai.clone())
+    }
+
+    /// Retries the MobAi service lookup while the service is absent. Runtime
+    /// `/plugin load` skips dependency resolution, so MobAi can appear after
+    /// Core has already loaded.
+    async fn ensure_mob_ai_service(&self) {
+        if self.mob_ai_api().is_some() {
+            return;
+        }
+        let Some(context) = self.context.lock().ok().and_then(|c| c.clone()) else {
+            return;
+        };
+        if let Some(service) = context
+            .get_service::<cabbage_api::MobAiService>(cabbage_api::MOB_AI_SERVICE)
+            .await
+        {
+            service
+                .0
+                .set_enabled(self.configured_mob_ai.load(Ordering::SeqCst));
+            self.set_mob_ai(service.0.clone());
+        }
     }
 }
 
@@ -205,15 +275,36 @@ impl MetricsSnapshot {
     }
 }
 
+/// Reads the legacy monolithic plugin's config (`plugins/Cabbage/config.ron`)
+/// when the new `Cabbage.Core` config does not exist yet. The legacy file is
+/// a superset of [`CoreConfig`]; its `mmo` section is ignored here and the
+/// legacy file itself is left in place.
+fn migrate_legacy_config(data_folder: &Path) -> Option<CoreConfig> {
+    let legacy_path = data_folder
+        .parent()?
+        .join(LEGACY_DATA_FOLDER)
+        .join("config.ron");
+    let contents = fs::read_to_string(&legacy_path).ok()?;
+    let config = ron::from_str::<CoreConfig>(&contents).ok()?;
+    println!(
+        "[Cabbage.Core] Migrated legacy config {} to {}",
+        legacy_path.display(),
+        data_folder.join("config.ron").display()
+    );
+    Some(config)
+}
+
 impl MetricsReporterState {
     pub(crate) fn load_config(&self, data_folder: PathBuf) {
         let path = data_folder.join("config.ron");
-        let config = fs::read_to_string(&path)
-            .ok()
-            .and_then(|contents| ron::from_str::<PluginConfig>(&contents).ok())
-            .unwrap_or_default();
+        let config = match fs::read_to_string(&path) {
+            Ok(contents) => ron::from_str::<CoreConfig>(&contents).unwrap_or_default(),
+            Err(_) => migrate_legacy_config(&data_folder).unwrap_or_default(),
+        };
 
         self.metrics_log.store(config.metrics_log, Ordering::SeqCst);
+        self.configured_mob_ai
+            .store(config.mob_ai, Ordering::SeqCst);
         if let Some(mob_ai) = self.mob_ai_api() {
             mob_ai.set_enabled(config.mob_ai);
         }
@@ -250,7 +341,7 @@ impl MetricsReporterState {
 
         let mut config = fs::read_to_string(&path)
             .ok()
-            .and_then(|contents| ron::from_str::<PluginConfig>(&contents).ok())
+            .and_then(|contents| ron::from_str::<CoreConfig>(&contents).ok())
             .unwrap_or_default();
         config.metrics_log = metrics_log;
         if let Some(mob_ai) = mob_ai {
@@ -342,6 +433,12 @@ impl EventHandler<ServerTickStartEvent> for MetricsReporterState {
         event: &'a ServerTickStartEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
+            if !self.active.load(Ordering::SeqCst) {
+                return;
+            }
+
+            self.ensure_mob_ai_service().await;
+
             if !self.metrics_log.load(Ordering::SeqCst) || event.tick % 40 != 0 {
                 return;
             }
@@ -385,5 +482,26 @@ impl EventHandler<ServerTickStartEvent> for MetricsReporterState {
 
             println!("{}", self.collect_metrics(server).format());
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_plugin_config_deserializes_into_core_config() {
+        // The pre-split `Cabbage` plugin wrote this superset shape; the
+        // unknown `mmo` field must be ignored for migration to work.
+        let legacy = "(metrics_log: true, mob_ai: false, mmo: Some((enabled: false)))";
+        let config: CoreConfig = ron::from_str(legacy).unwrap();
+        assert!(config.metrics_log);
+        assert!(!config.mob_ai);
+    }
+
+    #[test]
+    fn missing_fields_fall_back_to_defaults() {
+        let config: CoreConfig = ron::from_str("()").unwrap();
+        assert_eq!(config, CoreConfig::default());
     }
 }

@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicI32, Ordering},
+        atomic::{AtomicBool, AtomicI32, Ordering},
     },
 };
 
@@ -56,6 +56,7 @@ pub(crate) mod frontier;
 pub(crate) mod ore_reveal;
 pub(crate) mod perks;
 pub(crate) mod persistence;
+mod plugin;
 pub(crate) mod progression;
 pub(crate) mod skills;
 pub(crate) mod ui;
@@ -90,6 +91,9 @@ pub struct MmoState {
     warfare_state: warfare::WarfareState,
     audit_log: audit::AuditLog,
     last_tick: AtomicI32,
+    /// False once the plugin is unloaded; event handlers must early-return
+    /// then (handlers are never auto-removed and the DLL stays mapped).
+    active: AtomicBool,
 }
 
 impl MmoState {
@@ -97,6 +101,7 @@ impl MmoState {
     /// run pending migrations, and compute curves.
     pub async fn new(context: Arc<Context>) -> Result<Arc<Self>, String> {
         let data_folder = context.get_data_folder();
+        migrate_legacy_data_folder(&data_folder);
         let mut plugin_config = load_plugin_config(&data_folder)?;
         let mut mmo_config = plugin_config.mmo.clone().unwrap_or_default().sanitized();
         let mut config_dirty = false;
@@ -174,6 +179,7 @@ impl MmoState {
             warfare_state: warfare::WarfareState::new(),
             audit_log,
             last_tick: AtomicI32::new(0),
+            active: AtomicBool::new(true),
         }))
     }
 
@@ -186,6 +192,16 @@ impl MmoState {
 
     pub fn is_enabled(&self) -> bool {
         self.config.lock().map(|c| c.enabled).unwrap_or(false)
+    }
+
+    /// True while the plugin is loaded. Event handlers early-return once this
+    /// flips to false on unload.
+    pub fn is_active(&self) -> bool {
+        self.active.load(Ordering::Relaxed)
+    }
+
+    pub fn set_active(&self, active: bool) {
+        self.active.store(active, Ordering::Relaxed);
     }
 
     pub fn config(&self) -> MmoConfig {
@@ -345,6 +361,43 @@ fn build_curves(config: &MmoConfig) -> HashMap<SkillId, LevelCurve> {
     curves
 }
 
+/// Data folder name of the pre-split monolithic `Cabbage` plugin.
+const LEGACY_DATA_FOLDER: &str = "Cabbage";
+
+/// Copies data files from the legacy monolithic plugin's data folder into
+/// this plugin's folder when they do not exist there yet. The legacy
+/// `config.ron` is a full `PluginConfig`, which is exactly the format this
+/// crate reads, so copying it as-is is correct. Legacy files are never
+/// deleted.
+fn migrate_legacy_data_folder(data_folder: &PathBuf) {
+    const MIGRATED_FILES: [&str; 4] = [CONFIG_FILE, LEGACY_CONFIG_FILE, "mmo.db", "mmo-audit.log"];
+
+    let Some(legacy_folder) = data_folder.parent().map(|p| p.join(LEGACY_DATA_FOLDER)) else {
+        return;
+    };
+    for file in MIGRATED_FILES {
+        let new_path = data_folder.join(file);
+        if new_path.exists() {
+            continue;
+        }
+        let legacy_path = legacy_folder.join(file);
+        if !legacy_path.exists() {
+            continue;
+        }
+        match fs::copy(&legacy_path, &new_path) {
+            Ok(_) => log::info!(
+                "[Cabbage MMO] migrated legacy {} to {}",
+                legacy_path.display(),
+                new_path.display()
+            ),
+            Err(error) => log::warn!(
+                "[Cabbage MMO] failed to migrate legacy {}: {error}",
+                legacy_path.display()
+            ),
+        }
+    }
+}
+
 fn load_plugin_config(data_folder: &PathBuf) -> Result<PluginConfig, String> {
     let ron_path = data_folder.join(CONFIG_FILE);
     let json_path = data_folder.join(LEGACY_CONFIG_FILE);
@@ -437,7 +490,7 @@ impl EventHandler<BlockBreakEvent> for MmoState {
         event: &'a mut BlockBreakEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            if !self.is_enabled() {
+            if !self.is_active() || !self.is_enabled() {
                 return;
             }
             frontier::mining::handle_block_break(self, event).await;
@@ -454,6 +507,9 @@ impl EventHandler<BlockPlaceEvent> for MmoState {
         event: &'a mut BlockPlaceEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
+            if !self.is_active() {
+                return;
+            }
             if event.cancelled || !event.can_build {
                 return;
             }
@@ -489,7 +545,7 @@ impl EventHandler<BlockDropItemEvent> for MmoState {
         event: &'a mut BlockDropItemEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            if !self.is_enabled() {
+            if !self.is_active() || !self.is_enabled() {
                 return;
             }
             frontier::mining::handle_block_drop_item(self, event).await;
@@ -504,6 +560,9 @@ impl EventHandler<BlockBrokenEvent> for MmoState {
         event: &'a mut BlockBrokenEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
+            if !self.is_active() {
+                return;
+            }
             // Take provenance once: every consumer below sees the same answer
             // for "was this block player-placed?".
             let key = ProvenanceKey::new(&event.world, event.block_position);
@@ -532,7 +591,7 @@ impl EventHandler<PlayerInteractEvent> for MmoState {
         event: &'a mut PlayerInteractEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            if !self.is_enabled() {
+            if !self.is_active() || !self.is_enabled() {
                 return;
             }
             warfare::sorcery::handle_player_interact(self, event).await;
@@ -547,7 +606,7 @@ impl EventHandler<PlayerFishEvent> for MmoState {
         event: &'a mut PlayerFishEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            if !self.is_enabled() {
+            if !self.is_active() || !self.is_enabled() {
                 return;
             }
             frontier::fishing::handle_player_fish(self, event).await;
@@ -562,7 +621,7 @@ impl EventHandler<EntityBreedCompleteEvent> for MmoState {
         event: &'a mut EntityBreedCompleteEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            if !self.is_enabled() {
+            if !self.is_active() || !self.is_enabled() {
                 return;
             }
             frontier::husbandry::handle_entity_breed_complete(self, event).await;
@@ -577,7 +636,7 @@ impl EventHandler<EntityTameEvent> for MmoState {
         event: &'a mut EntityTameEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            if !self.is_enabled() {
+            if !self.is_active() || !self.is_enabled() {
                 return;
             }
             frontier::taming::handle_entity_tame(self, event).await;
@@ -592,7 +651,7 @@ impl EventHandler<EntityFeedCompleteEvent> for MmoState {
         event: &'a mut EntityFeedCompleteEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            if !self.is_enabled() {
+            if !self.is_active() || !self.is_enabled() {
                 return;
             }
             frontier::taming::handle_feed_complete(self, event).await;
@@ -607,7 +666,7 @@ impl EventHandler<AnimalProductCollectCompleteEvent> for MmoState {
         event: &'a mut AnimalProductCollectCompleteEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            if !self.is_enabled() {
+            if !self.is_active() || !self.is_enabled() {
                 return;
             }
             frontier::husbandry::handle_product_complete(self, event).await;
@@ -622,7 +681,7 @@ impl EventHandler<BoneMealApplyCompleteEvent> for MmoState {
         event: &'a mut BoneMealApplyCompleteEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            if !self.is_enabled() {
+            if !self.is_active() || !self.is_enabled() {
                 return;
             }
             frontier::agriculture::handle_bone_meal_complete(self, event).await;
@@ -637,7 +696,7 @@ impl EventHandler<PlayerItemUseCompleteEvent> for MmoState {
         event: &'a mut PlayerItemUseCompleteEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            if !self.is_enabled() {
+            if !self.is_active() || !self.is_enabled() {
                 return;
             }
             frontier::herbalism::handle_item_use_complete(self, event).await;
@@ -653,7 +712,7 @@ impl EventHandler<PlayerAttackDamageEvent> for MmoState {
         event: &'a mut PlayerAttackDamageEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            if !self.is_enabled() {
+            if !self.is_active() || !self.is_enabled() {
                 return;
             }
             warfare::melee::handle_attack_damage(self, event).await;
@@ -668,7 +727,7 @@ impl EventHandler<EntityShootBowEvent> for MmoState {
         event: &'a mut EntityShootBowEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            if !self.is_enabled() {
+            if !self.is_active() || !self.is_enabled() {
                 return;
             }
             warfare::archery::handle_shoot_bow(self, event).await;
@@ -683,7 +742,7 @@ impl EventHandler<ProjectileHitEvent> for MmoState {
         event: &'a mut ProjectileHitEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            if !self.is_enabled() {
+            if !self.is_active() || !self.is_enabled() {
                 return;
             }
             warfare::archery::handle_projectile_hit(self, server, event).await;
@@ -698,7 +757,7 @@ impl EventHandler<PlayerKillEntityEvent> for MmoState {
         event: &'a mut PlayerKillEntityEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            if !self.is_enabled() {
+            if !self.is_active() || !self.is_enabled() {
                 return;
             }
             warfare::kills::handle_player_kill(self, event).await;
@@ -713,7 +772,7 @@ impl EventHandler<EntityDamageEvent> for MmoState {
         event: &'a mut EntityDamageEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            if !self.is_enabled() {
+            if !self.is_active() || !self.is_enabled() {
                 return;
             }
             warfare::defense::handle_entity_damage(self, server, event).await;
@@ -728,7 +787,7 @@ impl EventHandler<AnvilPrepareEvent> for MmoState {
         event: &'a mut AnvilPrepareEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            if !self.is_enabled() {
+            if !self.is_active() || !self.is_enabled() {
                 return;
             }
             enterprise::repair::handle_anvil_prepare(self, event).await;
@@ -744,7 +803,7 @@ impl EventHandler<AnvilCompleteEvent> for MmoState {
         event: &'a mut AnvilCompleteEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            if !self.is_enabled() {
+            if !self.is_active() || !self.is_enabled() {
                 return;
             }
             enterprise::repair::handle_anvil_complete(self, event).await;
@@ -759,7 +818,7 @@ impl EventHandler<GrindstoneEvent> for MmoState {
         event: &'a mut GrindstoneEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            if !self.is_enabled() {
+            if !self.is_active() || !self.is_enabled() {
                 return;
             }
             enterprise::salvage::handle_grindstone(self, event).await;
@@ -774,7 +833,7 @@ impl EventHandler<GrindstoneCompleteEvent> for MmoState {
         event: &'a mut GrindstoneCompleteEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            if !self.is_enabled() {
+            if !self.is_active() || !self.is_enabled() {
                 return;
             }
             enterprise::salvage::handle_grindstone_complete(self, event).await;
@@ -789,7 +848,7 @@ impl EventHandler<EnchantItemGenerateEvent> for MmoState {
         event: &'a mut EnchantItemGenerateEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            if !self.is_enabled() {
+            if !self.is_active() || !self.is_enabled() {
                 return;
             }
             enterprise::enchanting::handle_enchant_generate(self, event).await;
@@ -804,7 +863,7 @@ impl EventHandler<EnchantItemCompleteEvent> for MmoState {
         event: &'a mut EnchantItemCompleteEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            if !self.is_enabled() {
+            if !self.is_active() || !self.is_enabled() {
                 return;
             }
             enterprise::enchanting::handle_enchant_complete(self, event).await;
@@ -819,7 +878,7 @@ impl EventHandler<CraftItemEvent> for MmoState {
         event: &'a mut CraftItemEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            if !self.is_enabled() {
+            if !self.is_active() || !self.is_enabled() {
                 return;
             }
             enterprise::smithing::handle_craft_item(self, event).await;
@@ -835,7 +894,7 @@ impl EventHandler<FurnaceExtractEvent> for MmoState {
         event: &'a mut FurnaceExtractEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            if !self.is_enabled() {
+            if !self.is_active() || !self.is_enabled() {
                 return;
             }
             enterprise::smithing::handle_furnace_extract(self, event).await;
@@ -850,6 +909,9 @@ impl EventHandler<ServerTickStartEvent> for MmoState {
         event: &'a mut ServerTickStartEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
+            if !self.is_active() {
+                return;
+            }
             self.last_tick.store(event.tick, Ordering::Relaxed);
             self.bossbar_state.cleanup_expired(server, event.tick).await;
             if event.tick.rem_euclid(20) == 0 {
@@ -872,7 +934,7 @@ impl EventHandler<FeatureGenerateEvent> for MmoState {
         event: &'a mut FeatureGenerateEvent,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            if !self.is_enabled() {
+            if !self.is_active() || !self.is_enabled() {
                 return;
             }
             handle_feature_generate(self, event);
