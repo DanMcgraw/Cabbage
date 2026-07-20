@@ -59,7 +59,7 @@ impl EventLogState {
         self.enabled.load(Ordering::SeqCst)
     }
 
-    fn log(&self, message: &str) {
+    pub(crate) fn log(&self, message: &str) {
         let Some(path) = self.log_path.lock().ok().and_then(|path| path.clone()) else {
             return;
         };

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+cabbage-api = { path = "../api" }
 pumpkin = { path = "../../Pumpkin/pumpkin" }
 pumpkin-data = { path = "../../Pumpkin/pumpkin-data" }
 pumpkin-util = { path = "../../Pumpkin/pumpkin-util" }

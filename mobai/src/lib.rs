@@ -19,6 +19,8 @@ use pumpkin_util::math::{position::BlockPos, vector2::Vector2, vector3::Vector3,
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use uuid::Uuid;
 
+pub use cabbage_api::MobAiMetricsSnapshot as MobAiMetrics;
+
 pub(crate) mod clustering;
 pub(crate) mod movement;
 pub(crate) mod pathfinding;
@@ -65,15 +67,6 @@ pub struct MobAiState {
     pub(crate) chunk_registry_read: types::ChunkRegistryRead,
     pub(crate) chunk_registry_write: Arc<Mutex<types::ChunkRegistryWrite>>,
     pub mob_ai_enabled: std::sync::atomic::AtomicBool,
-}
-
-pub struct MobAiMetrics {
-    pub active_path_jobs: usize,
-    pub active_velocity_jobs: usize,
-    pub total_worker_threads: usize,
-    pub managed_mobs_count: usize,
-    pub total_paths_completed: usize,
-    pub total_velocities_completed: usize,
 }
 
 impl Default for MobAiState {
@@ -738,6 +731,29 @@ impl MobAiState {
                 .load(std::sync::atomic::Ordering::Relaxed),
             total_velocities_completed: 0,
         }
+    }
+}
+
+/// Adapter exposing a [`MobAiState`] through the shared
+/// [`cabbage_api::MobAiApi`] trait so consumers (metrics, other plugins) do
+/// not depend on the concrete state type.
+pub struct MobAiApiAdapter(pub Arc<MobAiState>);
+
+impl cabbage_api::MobAiApi for MobAiApiAdapter {
+    fn metrics(&self) -> cabbage_api::MobAiMetricsSnapshot {
+        self.0.get_metrics()
+    }
+
+    fn set_enabled(&self, enabled: bool) {
+        self.0
+            .mob_ai_enabled
+            .store(enabled, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.0
+            .mob_ai_enabled
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 

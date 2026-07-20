@@ -217,6 +217,7 @@ checksum = "8ae3f5d315924270530207e2a68396c3cc547f6dca3fbdca317cfb1a51edb593"
 name = "cabbage"
 version = "0.1.0"
 dependencies = [
+ "cabbage-api",
  "cabbage-mmo",
  "cabbage-mobai",
  "ctor",
@@ -239,6 +240,13 @@ dependencies = [
  "sysinfo 0.30.13",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "cabbage-api"
+version = "0.1.0"
+dependencies = [
+ "pumpkin",
 ]
 
 [[package]]
@@ -265,6 +273,7 @@ dependencies = [
 name = "cabbage-mobai"
 version = "0.1.0"
 dependencies = [
+ "cabbage-api",
  "flashmap",
  "log",
  "pumpkin",

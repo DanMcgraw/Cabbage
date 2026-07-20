@@ -12,7 +12,7 @@ use pumpkin::plugin::{
 };
 
 use cabbage_mmo as mmo;
-use cabbage_mobai::MobAiState;
+use cabbage_mobai::{MobAiApiAdapter, MobAiState};
 
 mod commands;
 mod drops;
@@ -62,12 +62,11 @@ struct CabbagePlugin {
 
 impl CabbagePlugin {
     fn new() -> Self {
-        let mob_ai_state = Arc::new(MobAiState::default());
         Self {
             clear_drops_state: Arc::new(ClearDropsState::default()),
-            mob_ai_state: mob_ai_state.clone(),
+            mob_ai_state: Arc::new(MobAiState::default()),
             dropped_item_cleanup_state: Arc::new(DroppedItemCleanupState::default()),
-            metrics_reporter_state: Arc::new(MetricsReporterState::new(mob_ai_state)),
+            metrics_reporter_state: Arc::new(MetricsReporterState::new()),
             event_log_state: Arc::new(EventLogState::default()),
             mmo_state: None,
         }
@@ -77,6 +76,29 @@ impl CabbagePlugin {
 impl Plugin for CabbagePlugin {
     fn on_load(&mut self, context: Arc<Context>) -> PluginFuture<'_, Result<(), String>> {
         Box::pin(async move {
+            let mob_ai_api: Arc<dyn cabbage_api::MobAiApi> =
+                Arc::new(MobAiApiAdapter(self.mob_ai_state.clone()));
+            self.metrics_reporter_state.set_mob_ai(mob_ai_api.clone());
+            context
+                .register_service(
+                    cabbage_api::MOB_AI_SERVICE,
+                    Arc::new(cabbage_api::MobAiService(mob_ai_api)),
+                )
+                .await;
+
+            let event_log_state = self.event_log_state.clone();
+            context
+                .register_service(
+                    cabbage_api::CORE_SERVICE,
+                    Arc::new(cabbage_api::CoreServices {
+                        data_folder: context.get_data_folder(),
+                        log_event: Arc::new(move |message: &str| {
+                            event_log_state.log(message);
+                        }),
+                    }),
+                )
+                .await;
+
             commands::register_commands(
                 &context,
                 &self.clear_drops_state,

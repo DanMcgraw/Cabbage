@@ -7,8 +7,8 @@ use std::{
     },
 };
 
+use cabbage_api::{MobAiApi, MobAiMetricsSnapshot};
 use cabbage_mmo::config::PluginConfig;
-use cabbage_mobai::MobAiState;
 use pumpkin::{
     command::CommandSender,
     plugin::{
@@ -31,7 +31,7 @@ pub(crate) struct MetricsReporterState {
     pub(crate) cached_map_chunks: Arc<AtomicUsize>,
     metrics_log: AtomicBool,
     config_path: Mutex<Option<PathBuf>>,
-    mob_ai_state: Arc<MobAiState>,
+    mob_ai: Mutex<Option<Arc<dyn MobAiApi>>>,
     last_paths_completed: std::sync::atomic::AtomicUsize,
     last_velocities_completed: std::sync::atomic::AtomicUsize,
     last_metrics_time: Mutex<std::time::Instant>,
@@ -42,7 +42,7 @@ pub(crate) struct MetricsReporterState {
 }
 
 impl MetricsReporterState {
-    pub(crate) fn new(mob_ai_state: Arc<MobAiState>) -> Self {
+    pub(crate) fn new() -> Self {
         let sys = System::new();
         let pid = get_current_pid().expect("Failed to get current process ID");
         Self {
@@ -51,7 +51,7 @@ impl MetricsReporterState {
             cached_map_chunks: Arc::new(AtomicUsize::new(0)),
             metrics_log: AtomicBool::new(false),
             config_path: Mutex::new(None),
-            mob_ai_state,
+            mob_ai: Mutex::new(None),
             last_paths_completed: std::sync::atomic::AtomicUsize::new(0),
             last_velocities_completed: std::sync::atomic::AtomicUsize::new(0),
             last_metrics_time: Mutex::new(std::time::Instant::now()),
@@ -60,6 +60,18 @@ impl MetricsReporterState {
             last_chunk_ram_bytes: Arc::new(AtomicU64::new(0)),
             ram_scanning: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Connects the Mob AI engine. Called during plugin load; until this is
+    /// set, metrics report zeros for the Mob AI fields.
+    pub(crate) fn set_mob_ai(&self, api: Arc<dyn MobAiApi>) {
+        if let Ok(mut mob_ai) = self.mob_ai.lock() {
+            *mob_ai = Some(api);
+        }
+    }
+
+    fn mob_ai_api(&self) -> Option<Arc<dyn MobAiApi>> {
+        self.mob_ai.lock().ok().and_then(|mob_ai| mob_ai.clone())
     }
 }
 
@@ -143,6 +155,17 @@ fn estimate_chunk_ram(chunk: &pumpkin_world::chunk::ChunkData) -> usize {
     size
 }
 
+fn zero_mob_ai_metrics() -> MobAiMetricsSnapshot {
+    MobAiMetricsSnapshot {
+        active_path_jobs: 0,
+        active_velocity_jobs: 0,
+        total_worker_threads: 0,
+        managed_mobs_count: 0,
+        total_paths_completed: 0,
+        total_velocities_completed: 0,
+    }
+}
+
 pub(crate) struct MetricsSnapshot {
     loaded_chunks_total: usize,
     loaded_chunks_ram_mib: f64,
@@ -191,25 +214,25 @@ impl MetricsReporterState {
             .unwrap_or_default();
 
         self.metrics_log.store(config.metrics_log, Ordering::SeqCst);
-        self.mob_ai_state
-            .mob_ai_enabled
-            .store(config.mob_ai, Ordering::SeqCst);
+        if let Some(mob_ai) = self.mob_ai_api() {
+            mob_ai.set_enabled(config.mob_ai);
+        }
 
         if let Ok(mut config_path) = self.config_path.lock() {
             *config_path = Some(path);
         }
 
-        self.save_config(config.metrics_log, config.mob_ai);
+        self.save_config(config.metrics_log, Some(config.mob_ai));
     }
 
     pub(crate) fn toggle_metrics_log(&self) -> bool {
         let enabled = !self.metrics_log.fetch_xor(true, Ordering::SeqCst);
-        let mob_ai = self.mob_ai_state.mob_ai_enabled.load(Ordering::SeqCst);
+        let mob_ai = self.mob_ai_api().map(|mob_ai| mob_ai.is_enabled());
         self.save_config(enabled, mob_ai);
         enabled
     }
 
-    fn save_config(&self, metrics_log: bool, mob_ai: bool) {
+    fn save_config(&self, metrics_log: bool, mob_ai: Option<bool>) {
         let path = self.config_path.lock().ok().and_then(|path| path.clone());
         let Some(path) = path else {
             return;
@@ -230,7 +253,9 @@ impl MetricsReporterState {
             .and_then(|contents| ron::from_str::<PluginConfig>(&contents).ok())
             .unwrap_or_default();
         config.metrics_log = metrics_log;
-        config.mob_ai = mob_ai;
+        if let Some(mob_ai) = mob_ai {
+            config.mob_ai = mob_ai;
+        }
 
         let Ok(contents) = ron::ser::to_string_pretty(&config, ron::ser::PrettyConfig::default())
         else {
@@ -260,7 +285,10 @@ impl MetricsReporterState {
             loaded_entity_chunks += world.level.loaded_entity_chunks_count();
         }
 
-        let mob_ai_metrics = self.mob_ai_state.get_metrics();
+        let mob_ai_metrics = self
+            .mob_ai_api()
+            .map(|mob_ai| mob_ai.metrics())
+            .unwrap_or_else(zero_mob_ai_metrics);
 
         let (paths_rate, velocities_rate) = {
             let mut last_time_lock = self.last_metrics_time.lock().unwrap();
