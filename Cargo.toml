@@ -1,5 +1,6 @@
 [workspace]
 resolver = "3"
+members = [".", "mmo", "mobai"]
 
 [package]
 name = "cabbage"
@@ -13,6 +14,8 @@ license = "GPL-3.0"
 crate-type = ["cdylib"]
 
 [dependencies]
+cabbage-mmo = { path = "mmo" }
+cabbage-mobai = { path = "mobai" }
 ctor = "0.2"
 pumpkin = { path = "../Pumpkin/pumpkin" }
 pumpkin-data = { path = "../Pumpkin/pumpkin-data" }

@@ -372,7 +372,7 @@ fn branch_nav_line(current: BranchId) -> TextComponent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mmo::{config::SkillConfig, progression::PlayerSkillSnapshot};
+    use crate::{config::SkillConfig, progression::PlayerSkillSnapshot};
     use pumpkin_util::text::{
         TextComponentBase, TextContent, click::ClickEvent, color::Color, hover::HoverEvent,
     };

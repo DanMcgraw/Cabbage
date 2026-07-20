@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use pumpkin::world::World;
 use pumpkin_util::math::position::BlockPos;
 
-use crate::mmo::db::MmoDatabase;
+use crate::db::MmoDatabase;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ProvenanceKey {

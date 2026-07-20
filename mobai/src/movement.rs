@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use crate::mob_ai::pathfinding::block_center_feet_pos;
+use crate::pathfinding::block_center_feet_pos;
 use pumpkin_util::math::{position::BlockPos, vector3::Vector3};
 use std::collections::VecDeque;
 

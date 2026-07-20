@@ -1,4 +1,4 @@
-use crate::mob_ai::types::{ClusterCell, MobLocationEntry, MobLocationTable};
+use crate::types::{ClusterCell, MobLocationEntry, MobLocationTable};
 use pumpkin_util::math::vector3::Vector3;
 use uuid::Uuid;
 

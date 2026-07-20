@@ -1,0 +1,22 @@
+[package]
+name = "cabbage-mmo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+pumpkin = { path = "../../Pumpkin/pumpkin" }
+pumpkin-data = { path = "../../Pumpkin/pumpkin-data" }
+pumpkin-nbt = { path = "../../Pumpkin/pumpkin-nbt" }
+pumpkin-util = { path = "../../Pumpkin/pumpkin-util" }
+pumpkin-world = { path = "../../Pumpkin/pumpkin-world" }
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+ron = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+futures = "0.3"
+uuid = "1.23"
+rand = { version = "0.9", features = ["small_rng"] }
+log = "0.4.33"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

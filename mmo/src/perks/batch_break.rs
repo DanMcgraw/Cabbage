@@ -11,7 +11,7 @@ use std::{collections::HashSet, sync::Arc};
 use pumpkin::{entity::player::Player, world::World};
 use pumpkin_util::math::{position::BlockPos, vector3::Vector3};
 
-use crate::mmo::MmoState;
+use crate::MmoState;
 
 /// Collect connected candidate positions for a batch break via BFS over the
 /// 26-neighborhood, bounded to `max_blocks` unique positions. `origin` is

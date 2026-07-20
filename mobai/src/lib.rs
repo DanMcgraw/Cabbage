@@ -40,7 +40,7 @@ const MOB_JUMP_TYPES: [&str; 3] = ["zombie", "skeleton", "creeper"];
 /// goals/navigator/look-control fully initialised for the first few ticks.
 const ENTITY_LOAD_GRACE_TICKS: i32 = 40;
 
-pub(crate) struct MobAiState {
+pub struct MobAiState {
     pub(crate) worker_pool: Arc<ThreadPool>,
     pub(crate) last_path_ticks: Mutex<HashMap<Uuid, i32>>,
     pub(crate) active_path_jobs: Arc<Mutex<HashSet<Uuid>>>,
@@ -64,7 +64,7 @@ pub(crate) struct MobAiState {
     pub(crate) active_mobs_count: std::sync::atomic::AtomicUsize,
     pub(crate) chunk_registry_read: types::ChunkRegistryRead,
     pub(crate) chunk_registry_write: Arc<Mutex<types::ChunkRegistryWrite>>,
-    pub(crate) mob_ai_enabled: std::sync::atomic::AtomicBool,
+    pub mob_ai_enabled: std::sync::atomic::AtomicBool,
 }
 
 pub struct MobAiMetrics {

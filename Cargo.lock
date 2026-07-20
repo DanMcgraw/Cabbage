@@ -217,6 +217,8 @@ checksum = "8ae3f5d315924270530207e2a68396c3cc547f6dca3fbdca317cfb1a51edb593"
 name = "cabbage"
 version = "0.1.0"
 dependencies = [
+ "cabbage-mmo",
+ "cabbage-mobai",
  "ctor",
  "flashmap",
  "futures",
@@ -236,6 +238,40 @@ dependencies = [
  "serde_json",
  "sysinfo 0.30.13",
  "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "cabbage-mmo"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "log",
+ "pumpkin",
+ "pumpkin-data",
+ "pumpkin-nbt",
+ "pumpkin-util",
+ "pumpkin-world",
+ "rand 0.9.4",
+ "ron",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "cabbage-mobai"
+version = "0.1.0"
+dependencies = [
+ "flashmap",
+ "log",
+ "pumpkin",
+ "pumpkin-data",
+ "pumpkin-util",
+ "pumpkin-world",
+ "rayon",
  "uuid",
 ]
 

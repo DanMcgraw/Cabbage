@@ -63,8 +63,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize};
 use sysinfo::{Pid, System, get_current_pid};
 use uuid::Uuid;
 
-mod mmo;
-mod mob_ai;
+use cabbage_mmo as mmo;
+use cabbage_mobai as mob_ai;
 
 use mmo::config::PluginConfig;
 use mob_ai::MobAiState;

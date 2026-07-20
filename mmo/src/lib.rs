@@ -49,7 +49,7 @@ use pumpkin_util::permission::{Permission, PermissionDefault, PermissionLvl};
 
 pub(crate) mod audit;
 pub(crate) mod commands;
-pub(crate) mod config;
+pub mod config;
 pub(crate) mod db;
 pub(crate) mod enterprise;
 pub(crate) mod frontier;
@@ -203,7 +203,7 @@ impl MmoState {
             .unwrap_or_else(|_| LevelCurve::new(&SkillConfig::default()))
     }
 
-    pub fn db(&self) -> Arc<MmoDatabase> {
+    pub(crate) fn db(&self) -> Arc<MmoDatabase> {
         self.db.clone()
     }
 

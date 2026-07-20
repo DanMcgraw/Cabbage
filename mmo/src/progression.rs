@@ -304,7 +304,7 @@ pub(crate) fn find_player_by_uuid(server: &Server, uuid: uuid::Uuid) -> Option<A
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mmo::config::SkillConfig;
+    use crate::config::SkillConfig;
 
     #[test]
     fn branch_mastery_averages_member_levels() {

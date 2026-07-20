@@ -267,7 +267,7 @@ pub(crate) async fn open_skill_menu(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mmo::config::SkillConfig;
+    use crate::config::SkillConfig;
 
     fn test_curve() -> LevelCurve {
         LevelCurve::new(&SkillConfig {

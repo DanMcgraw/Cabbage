@@ -101,7 +101,7 @@ impl BlockGrid {
 
     pub fn sample_registry(
         mut bounds: PathBounds,
-        chunk_registry: &crate::mob_ai::types::ChunkRegistryRead,
+        chunk_registry: &crate::types::ChunkRegistryRead,
     ) -> Option<Self> {
         normalize_bounds(&mut bounds);
 

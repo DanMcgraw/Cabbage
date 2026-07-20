@@ -1,5 +1,5 @@
-use crate::mob_ai::MobAiState;
-use crate::mob_ai::pathfinding::{
+use crate::MobAiState;
+use crate::pathfinding::{
     BlockGrid, PathBounds, PlayerSearchTree, bidirectional_a_star, connect_to_player_tree,
     movement_path_steps,
 };
