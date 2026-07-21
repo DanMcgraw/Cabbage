@@ -4,101 +4,110 @@
 
 - Only edit files inside this `Cabbage/` directory.
 - Files outside this directory may be read for API discovery, examples, and compatibility checks, but must not be edited.
-- Prefer accomplishing changes by extending this plugin rather than changing Pumpkin core crates.
+- Prefer accomplishing changes by extending these plugins rather than changing Pumpkin core crates.
 
 ## Project Purpose
 
-Cabbage is a native Pumpkin plugin focused on server utilities, diagnostics, custom mob AI/pathfinding, and an MMO-style skilling module. The README is the high-level product guide; this file is the working guide for future agents.
+Cabbage is a suite of native Pumpkin plugins: `Cabbage.Core` (server utilities, diagnostics, drop cleanup, event logging), `Cabbage.Mmo` (MMO-style skilling), and `Cabbage.MobAi` (custom mob AI/pathfinding), plus the shared `cabbage-api` rlib that holds their cross-plugin contracts. The README is the high-level product guide; this file is the working guide for future agents.
 
-When the task involves Mob AI, pathfinding, movement, velocity planning, worker threads, or managed entity behavior, read `src/mob_ai/MOB_AI_DATA_FLOW.md` before editing files in `src/mob_ai/`.
+When the task involves Mob AI, pathfinding, movement, velocity planning, worker threads, or managed entity behavior, read `mobai/src/MOB_AI_DATA_FLOW.md` before editing files in `mobai/`.
 
-When the task involves the MMO module (skills, XP, bossbars, ore reveal, SQLite), read `src/mmo/README.md` before editing files in `src/mmo/`.
+When the task involves the MMO module (skills, XP, bossbars, ore reveal, SQLite), read `mmo/src/README.md` before editing files in `mmo/`.
 
 ## Current Layout
+
+`Cargo.toml` at the root is a virtual workspace with four members:
 
 ```text
 Cabbage/
 |-- AGENTS.md
 |-- README.md
-|-- Cargo.toml
-|-- compile.bat
-`-- src/
-    |-- lib.rs                 # plugin metadata, lifecycle, command/event registration
-    |-- mmo/                   # MMO skilling module (see src/mmo/README.md)
-    |   |-- README.md
-    |   |-- BALANCE.md         # default balance profile and migration guide
-    |   |-- plan.md            # phased MMO implementation plan
-    |   |-- mod.rs             # MmoState and event handler wiring
-    |   |-- skills.rs          # SkillId (23 skills), BranchId, metadata
-    |   |-- progression.rs     # central award_xp path and branch mastery
-    |   |-- audit.rs           # append-only audit log
-    |   |-- perks/             # perk scaffolding (cooldowns, batch breaks, level gates)
-    |   |-- persistence/       # typed Pumpkin player/item/entity/block codecs
-    |   |-- frontier/          # Frontier skill handlers and configuration
-    |   |-- warfare/           # Warfare skill handlers and configuration
-    |   |-- enterprise/        # Enterprise skill handlers and configuration
-    |   |-- ui/                # bossbars, protected skill menu, default chat summary grid
-    |   |-- commands.rs        # /mmo command tree and admin subcommands
-    |   |-- config.rs          # RON config and per-skill level curves
-    |   |-- db.rs              # SQLite worker thread, migrations, async DB API
-    |   `-- ore_reveal/        # ore config, probability, shape, provenance
-    `-- mob_ai/                # custom multithreaded mob AI engine
-        |-- mod.rs             # event handler and state ownership
-        |-- MOB_AI_DATA_FLOW.md
-        |-- pathfinding.rs     # grid, bounds, bidirectional A*
-        |-- movement.rs        # velocity plans, lookahead, rotation
-        |-- workers.rs         # Rayon worker-pool job submission and ActiveJobGuard
-        |-- clustering.rs      # mob-location table and anti-clump push
-        `-- types.rs           # shared snapshots and small data structs
+|-- Cargo.toml             # virtual workspace: api, core, mmo, mobai
+|-- compile.bat            # gitignored local build/deploy helper (see Build And Verification)
+|-- api/                   # cabbage-api (rlib) — shared cross-plugin contracts ONLY
+|   `-- src/
+|       `-- lib.rs         # MobAiApi trait, MobAiMetricsSnapshot, MobAiService/CoreServices
+|                          # payloads (hand-written Payload impls), MOB_AI_SERVICE/CORE_SERVICE names
+|-- core/                  # cabbage-core (cdylib) -> plugin "Cabbage.Core" (no plugin dependencies)
+|   `-- src/
+|       |-- lib.rs         # DLL exports, metadata, lifecycle, legacy data migration
+|       |-- commands.rs    # /cabbage, /cleardrops, /metrics, /events trees and executors
+|       |-- drops.rs       # loaded dropped-item cleanup + .pump region file item scan
+|       |-- metrics.rs     # MetricsReporterState, CoreConfig, disk scan; consumes MobAiService lazily
+|       `-- event_log.rs   # /events toggle; event logging to chat and output.log
+|-- mmo/                   # cabbage-mmo (rlib + cdylib) -> plugin "Cabbage.Mmo" (depends on Cabbage.Core)
+|   `-- src/
+|       |-- lib.rs         # MmoState, EventHandler impls, config load/save, legacy data migration
+|       |-- plugin.rs      # DLL exports, metadata, event/command registration
+|       |-- README.md      # MMO module guide (read before editing mmo/)
+|       |-- BALANCE.md     # default balance profile and migration guide
+|       |-- plan.md        # phased MMO implementation plan (historical)
+|       |-- skills.rs      # SkillId (23 skills), BranchId, metadata
+|       |-- progression.rs # central award_xp path and branch mastery
+|       |-- audit.rs       # append-only audit log (mmo-audit.log)
+|       |-- perks/         # perk scaffolding (cooldowns, batch breaks, level gates)
+|       |-- persistence/   # typed Pumpkin player/item/entity/block codecs
+|       |-- frontier/      # Frontier skill handlers and configuration
+|       |-- warfare/       # Warfare skill handlers and configuration
+|       |-- enterprise/    # Enterprise skill handlers and configuration
+|       |-- ui/            # bossbars, protected skill menu, default chat summary grid
+|       |-- commands.rs    # /mmo command tree and admin subcommands
+|       |-- config.rs      # RON config and per-skill level curves
+|       |-- db.rs          # SQLite worker thread, migrations, async DB API
+|       `-- ore_reveal/    # ore config, probability, shape, provenance
+`-- mobai/                 # cabbage-mobai (rlib + cdylib) -> plugin "Cabbage.MobAi" (depends on Cabbage.Core)
+    `-- src/
+        |-- lib.rs         # MobAiState, EventHandler impls, game-thread orchestration
+        |-- plugin.rs      # DLL exports, metadata, event registration, MobAiService publication
+        |-- MOB_AI_DATA_FLOW.md  # Mob AI threading model (read before editing mobai/)
+        |-- pathfinding.rs # grid, bounds, bidirectional A*
+        |-- movement.rs    # weighted lookahead helpers
+        |-- workers.rs     # Rayon worker-pool job submission and ActiveJobGuard
+        |-- clustering.rs  # mob-location table and anti-clump push
+        `-- types.rs       # shared snapshots and small data structs
 ```
 
-## Refactor Organization Chart
+The `rlib + cdylib` crates (`mmo`, `mobai`) keep their logic in the rlib half so
+`cargo test` can exercise it; `plugin.rs` is the only plugin-aware module and
+owns the DLL exports, metadata, and registration. `core` is cdylib-only.
 
-Use this target structure as files become larger. (The **mob_ai** refactor has been completed).
-
-```text
-src/
-|-- lib.rs
-|   |-- plugin metadata and load/unload wiring
-|   |-- command/event registration only
-|   `-- module exports
-|
-|-- commands/
-|   |-- mod.rs
-|   |-- cabbage.rs
-|   |-- clear_drops.rs
-|   `-- metrics.rs
-|
-|-- drops/
-|   |-- mod.rs
-|   |-- loaded_cleanup.rs
-|   `-- saved_region_cleanup.rs
-|
-`-- metrics/
-    |-- mod.rs
-    |-- config.rs
-    |-- reporter.rs
-    `-- disk_scan.rs
-```
-
-## Refactor Rules
+## Conventions
 
 - Keep game-thread access to Pumpkin entities/worlds in the event handler or narrowly named game-thread helpers.
 - Worker jobs must receive owned snapshots only: block grids, positions, UUIDs, speed values, and cloned lookup tables.
 - Do not move `Arc<World>`, `Entity`, `EntityBase`, or live Pumpkin entity handles into worker-pool jobs.
-- Preserve focused unit tests when moving functions. Pathfinding, grid indexing, movement math, and clustering should remain testable without a running server.
+- Preserve focused unit tests. Pathfinding, grid indexing, movement math, and clustering should remain testable without a running server.
 - Keep command utilities separate from Mob AI. Avoid mixing admin cleanup, metrics, and entity-control code in the same module.
 - For features that need persistence, follow the MMO pattern: a dedicated worker thread/connection with an async request/response API. Do not run blocking SQLite or file I/O on the event-handler path.
+- Cross-plugin types live ONLY in `cabbage-api`. Plugin crates must not depend on each other's concrete state types (see Services below).
+
+## Plugin Suite Topology
+
+- **Cabbage.Core** is the central plugin. It has no declared dependencies and provides the shared `CoreServices` service (`cabbage_core`). It also consumes the Mob AI service for `/metrics` reporting.
+- **Cabbage.Mmo** and **Cabbage.MobAi** both declare `dependencies: ["Cabbage.Core"]` in their `PluginMetadata`. Pumpkin resolves these at startup; a missing declared dependency fails the entire plugin load. **Ship all three DLLs together.**
+- Each plugin gets its own data folder from `Context::get_data_folder()`, which is `plugins/<plugin name>`: `plugins/Cabbage.Core`, `plugins/Cabbage.Mmo`, `plugins/Cabbage.MobAi`.
+- Each plugin namespaces its permissions with its own plugin name:
+  - `Cabbage.Core:command.cabbage`, `Cabbage.Core:command.clear_drops`, `Cabbage.Core:command.metrics`, `Cabbage.Core:command.events`
+  - `Cabbage.Mmo:command.mmo` (default allow), `Cabbage.Mmo:command.mmo.admin` (op level 3)
+  - `Cabbage.MobAi` registers no commands or permissions; the engine is toggled via the `mob_ai` key in Core's `config.ron` through the `MobAiService`.
+- The old monolithic `Cabbage:*` permission nodes no longer exist — this is a breaking change for admins upgrading from the pre-split plugin.
+
+### Legacy data migration (`plugins/Cabbage/`)
+
+Files from the pre-split monolithic plugin are adopted on first load; legacy files are never modified or deleted:
+
+- **Cabbage.Core** copies `output.log` into `plugins/Cabbage.Core/` when it does not exist there yet, and reads the legacy `config.ron` in place to adopt its `metrics_log`/`mob_ai` values (the legacy file's `mmo` section is ignored by Core).
+- **Cabbage.Mmo** copies `config.ron`, `config.json`, `mmo.db`, and `mmo-audit.log` into `plugins/Cabbage.Mmo/` when they do not exist there yet. The legacy `config.ron` is a full `PluginConfig`, exactly the format Cabbage.Mmo reads.
 
 ## Pumpkin Native Plugin API
 
-Cabbage is a native (`cdylib`) plugin loaded by Pumpkin's `NativePluginLoader`. It compiles against the `pumpkin` crate directly, not the WebAssembly `pumpkin-plugin-api`. The native API lives in `Pumpkin/pumpkin/src/plugin/` and is re-exported through `pumpkin::plugin`.
+Cabbage is a set of native (`cdylib`) plugins loaded by Pumpkin's `NativePluginLoader`. They compile against the `pumpkin` crate directly, not the WebAssembly `pumpkin-plugin-api`. The native API lives in `Pumpkin/pumpkin/src/plugin/` and is re-exported through `pumpkin::plugin`.
 
-Critical compatibility requirement: the compiled DLL must expose the same `PUMPKIN_API_VERSION` as the server. The current value is defined in `Pumpkin/pumpkin/src/plugin/mod.rs`. If it changes, recompile Cabbage against the same Pumpkin source or the loader will reject the DLL with `ApiVersionMismatch`.
+Critical compatibility requirement: each compiled DLL must expose the same `PUMPKIN_API_VERSION` as the server (currently `14`, defined in `Pumpkin/pumpkin/src/plugin/mod.rs`). If it changes, recompile all Cabbage crates against the same Pumpkin source or the loader will reject the DLLs with `ApiVersionMismatch`.
 
 ### Required DLL symbols
 
-The native loader expects three symbols:
+The native loader expects three symbols (each plugin crate exports its own set):
 
 ```rust
 use std::mem::MaybeUninit;
@@ -112,18 +121,18 @@ pub static mut METADATA: MaybeUninit<PluginMetadata> = MaybeUninit::uninit();
 
 #[unsafe(no_mangle)]
 pub fn plugin() -> Box<dyn Plugin> {
-    Box::new(CabbagePlugin::new())
+    Box::new(CabbageCorePlugin::new())
 }
 ```
 
-`METADATA` is written before the loader reads it (Cabbage uses `ctor::ctor` in `src/lib.rs`). `plugin()` returns the actual plugin instance that implements the `Plugin` trait.
+`METADATA` is written before the loader reads it (each plugin uses `ctor::ctor` in `core/src/lib.rs`, `mmo/src/plugin.rs`, and `mobai/src/plugin.rs`). `PluginMetadata.dependencies` lists required plugins by name (`Cabbage.Mmo` and `Cabbage.MobAi` both depend on `Cabbage.Core`). `plugin()` returns the actual plugin instance that implements the `Plugin` trait.
 
 ### Plugin lifecycle
 
 ```rust
 use pumpkin::plugin::{Plugin, Context, PluginFuture};
 
-impl Plugin for CabbagePlugin {
+impl Plugin for CabbageCorePlugin {
     fn on_load(&mut self, context: Arc<Context>) -> PluginFuture<'_, Result<(), String>> {
         Box::pin(async move {
             // register permissions, commands, and event handlers
@@ -139,6 +148,11 @@ impl Plugin for CabbagePlugin {
     }
 }
 ```
+
+Unload rules every Cabbage plugin follows:
+
+- Pumpkin never removes registered event handlers or services, and Windows keeps unloaded DLLs mapped. Every handler therefore gates on an `active: AtomicBool` that `on_unload` clears; handlers early-return once it flips.
+- Each plugin unregisters its own commands in `on_unload` (`context.unregister_command(...)`).
 
 ### Registering event handlers
 
@@ -222,7 +236,7 @@ Events are organized under `pumpkin::plugin::api::events`:
 - `server` — `ServerTickStartEvent`, `ServerTickEndEvent`, `ServerBroadcastEvent`, `ServerCommandEvent`, `SpawnChangeEvent`.
 - `world` — `ChunkLoadEvent`, `ChunkSaveEvent`, `ChunkSendEvent`, `ChunkUnloadEvent`, `FeatureGenerateEvent`, `WorldLoadEvent`, `WorldUnloadEvent`, `SpawnChangeEvent`.
 
-Import existing events exactly as Cabbage already does, e.g.:
+Import existing events exactly as the Cabbage crates already do, e.g.:
 
 ```rust
 use pumpkin::plugin::api::events::block::block_break::BlockBreakEvent;
@@ -263,26 +277,26 @@ fn my_command_tree() -> CommandTree {
         .then(literal("sub").execute(MyCommandExecutor))
 }
 
-// in on_load:
+// in on_load (inside Cabbage.Core):
 context
-    .register_command(my_command_tree(), "Cabbage:command.mycommand")
+    .register_command(my_command_tree(), "Cabbage.Core:command.mycommand")
     .await;
 ```
 
 - `CommandResult` is `Result<i32, CommandError>`. Return `Ok(1)` for success or `Ok(0)` for silent failure.
 - Node builders include `literal`, `argument`, `argument_default_name`, and `require`.
-- The permission node passed to `register_command` should be namespaced with the plugin name (`Cabbage:...`). If you omit the colon, `Context` prefixes the plugin name automatically.
+- The permission node passed to `register_command` should be namespaced with the registering plugin's name (`Cabbage.Core:...`, `Cabbage.Mmo:...`). If you omit the colon, `Context` prefixes the plugin name automatically.
 - Unregister with `context.unregister_command("mycommand").await` in `on_unload`.
 
 ### Registering permissions
 
-Permissions must be registered in the plugin namespace:
+Permissions must be registered in the plugin's own namespace:
 
 ```rust
 use pumpkin_util::permission::{Permission, PermissionDefault, PermissionLvl};
 
 let perm = Permission::new(
-    "Cabbage:command.mycommand",
+    "Cabbage.Core:command.mycommand",
     "Allows running /mycommand",
     PermissionDefault::Op(PermissionLvl::Two),
 );
@@ -294,18 +308,35 @@ context.register_permission(perm).await?;
 ### Plugin data folder
 
 ```rust
-let data_folder = context.get_data_folder(); // ./plugins/Cabbage
+let data_folder = context.get_data_folder(); // ./plugins/<plugin name>, e.g. ./plugins/Cabbage.Core
 ```
 
-Use this for config files, logs, and the MMO database. Cabbage already stores `output.log` and `mmo.db` here.
+Use this for config files, logs, and databases. Core stores `config.ron` (`CoreConfig`: `metrics_log`, `mob_ai`) and `output.log` here; Mmo stores `config.ron` (`PluginConfig`), `mmo.db`, and `mmo-audit.log` here.
 
 ### Services (cross-plugin shared state)
 
-For large features you can register a typed service:
+Cross-plugin contracts live in the `cabbage-api` rlib and nowhere else:
+
+- `cabbage-api` defines plain data snapshots (`MobAiMetricsSnapshot`), capability traits (`MobAiApi`), service wrappers (`MobAiService`, `CoreServices`), and the registry name constants (`MOB_AI_SERVICE = "cabbage_mob_ai"`, `CORE_SERVICE = "cabbage_core"`). Plugin crates share types ONLY through `cabbage-api`; they never depend on each other's concrete state types.
+- `Payload` is implemented by hand (Pumpkin's `#[derive(Event)]` only resolves inside the pumpkin crate) with a `cabbage.`-prefixed name string (e.g. `"cabbage.MobAiService"`) so it can never collide with a Pumpkin event name during the registry's name-based downcast. Both `get_name_static` and `get_name` must return the same string.
+- Publishers register in `on_load`; consumers must tolerate the service being absent. Cabbage.MobAi publishes `MobAiService` in `on_load`; Cabbage.Core looks it up once in `on_load` and then retries lazily on each metrics tick until it appears (runtime `/plugin load` order is not sorted by dependencies). Always use the `cabbage-api` name constants at both ends, never string literals.
 
 ```rust
-context.register_service("cabbage_mob_ai", state.clone()).await;
-let state = context.get_service::<MobAiState>("cabbage_mob_ai").await;
+// publisher (mobai/src/plugin.rs)
+context
+    .register_service(
+        cabbage_api::MOB_AI_SERVICE,
+        Arc::new(cabbage_api::MobAiService(Arc::new(MobAiApiAdapter(state.clone())))),
+    )
+    .await;
+
+// consumer (core/src/lib.rs, retried from the metrics tick when None)
+if let Some(service) = context
+    .get_service::<cabbage_api::MobAiService>(cabbage_api::MOB_AI_SERVICE)
+    .await
+{
+    metrics_reporter_state.set_mob_ai(service.0.clone());
+}
 ```
 
 Services must implement `Payload + 'static`.
@@ -313,10 +344,10 @@ Services must implement `Payload + 'static`.
 ## Build And Verification
 
 - Use `cargo fmt` after Rust edits.
-- Use `cargo check` before handoff. Because `Cargo.toml` uses path dependencies into `../Pumpkin`, this also validates compatibility with the current Pumpkin source.
-- Use `cargo test mob_ai` for Mob AI changes.
-- Use `.\compile.bat` from this directory to build/copy the plugin DLL. It copies the debug artifact to `../PumpkinRunner/plugins/cabbage.dll`.
-- For a release build use `cargo build --release`. Load the resulting DLL from the Pumpkin console with `/plugin load plugins/cabbage.dll`.
+- Use `cargo check --workspace` before handoff. Because the workspace uses path dependencies into `../Pumpkin`, this also validates compatibility with the current Pumpkin source.
+- Use `cargo test --workspace` for the full suite; `cargo test -p cabbage-mobai` for Mob AI changes specifically.
+- Use `.\compile.bat` from this directory to build the workspace and deploy all three DLLs. It copies `cabbage_core.dll`, `cabbage_mmo.dll`, and `cabbage_mobai.dll` from `target/debug/` to `../PumpkinRunner/plugins/` and deletes any stale `cabbage.dll` left over from the monolithic plugin. The file is gitignored (local only).
+- For a release build use `cargo build --release`. Load the resulting DLLs from the Pumpkin console with `/plugin load plugins/cabbage_core.dll` (and the other two).
 
 ## Git Commits
 
@@ -327,4 +358,4 @@ Services must implement `Payload + 'static`.
 
 ## Compatibility Note
 
-This native plugin compiles against the unstable Rust ABI. You must use the **same stable Rust toolchain version** to compile both the Pumpkin server and the Cabbage plugin to avoid memory layout mismatches and potential crashes.
+These native plugins compile against the unstable Rust ABI. You must use the **same stable Rust toolchain version** to compile the Pumpkin server and every Cabbage plugin DLL to avoid memory layout mismatches and potential crashes.

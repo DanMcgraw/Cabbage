@@ -75,8 +75,10 @@ proc chances by `perks.max_proc_chance` (35%).
 
 ## Migration guide (two-skill → three-branch)
 
-1. **Backup** `plugins/Cabbage/mmo.db` and `plugins/Cabbage/config.ron`
-   before upgrading.
+1. **Backup** `plugins/Cabbage.Mmo/mmo.db` and `plugins/Cabbage.Mmo/config.ron`
+   before upgrading. (Installations upgraded from the pre-split monolithic
+   plugin will find the same files under the legacy `plugins/Cabbage/`
+   folder; they are copied into `plugins/Cabbage.Mmo/` on first load.)
 2. On first load, Cabbage upgrades automatically and idempotently:
    - `player_skills` rows for `Combat` move to `legacy_combat_xp`
      (SQLite schema v1, recorded in the `meta` table).

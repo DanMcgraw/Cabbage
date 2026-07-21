@@ -1,7 +1,7 @@
 # Cabbage MMO Module
 
-This module implements a three-branch MMORPG-style levelling system for
-Pumpkin, following the phased plan in `src/mmo/plan.md`. It supports **23
+This crate implements a three-branch MMORPG-style levelling system for
+Pumpkin, following the phased plan in `plan.md`. It supports **23
 skills** across the Frontier, Warfare, and Enterprise branches, persists
 player progress in SQLite, and shows a transient bossbar (similar to mcMMO)
 when a player earns XP. It also replaces disabled world-generated ores with a
@@ -11,11 +11,12 @@ height-dependent ore vein behind the mined face.
 ## Module Layout
 
 ```text
-src/mmo/
+mmo/src/
 |-- README.md          # this file
 |-- BALANCE.md         # default balance profile and migration guide
 |-- plan.md            # phased implementation plan
-|-- mod.rs             # MmoState, lifecycle, event registration, feature blacklist
+|-- lib.rs             # MmoState, EventHandler impls, config load/save, feature blacklist
+|-- plugin.rs          # DLL exports, metadata, event/command registration
 |-- skills.rs          # SkillId (23 skills), BranchId, branch/skill metadata
 |-- progression.rs     # central award_xp path, XpSource, branch mastery, snapshots
 |-- audit.rs           # queued append-only audit worker (mmo-audit.log)
@@ -128,7 +129,7 @@ refresh, and audit logging.
 Pumpkin event (BlockBreak, ...)
         │
         ▼
-MmoState event handler (mod.rs)
+MmoState event handler (lib.rs)
         │
         ▼
 frontier::mining::handle_block_break (skill handler)
@@ -224,7 +225,8 @@ into RON once, then drops those obsolete SQLite tables.
 
 ## Configuration
 
-The plugin config is stored as RON in the Cabbage data folder. `config_version`
+The plugin config is stored as RON in the Cabbage.Mmo data folder
+(`plugins/Cabbage.Mmo/config.ron`). `config_version`
 tracks the MMO config schema; older files gain safe defaults for missing
 sections and are saved back on upgrade. Unknown skill names in the `skills`
 map (e.g. the retired `Combat`) are skipped with a warning.
