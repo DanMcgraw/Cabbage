@@ -1,6 +1,6 @@
 # Mob AI Data Flow
 
-This document describes how the `mobai/` crate (plugin `Cabbage.MobAi`) separates game-thread work from worker-pool work. Keep this model intact when changing Mob AI.
+This document describes how the `mobai/` crate (the Mob AI module inside the `Cabbage.Core` plugin) separates game-thread work from worker-pool work. Keep this model intact when changing Mob AI.
 
 ## Ownership Model
 
@@ -83,7 +83,7 @@ Keep all direct entity mutation here or in helpers called only from this game-th
 The crate split separates code along these boundaries:
 
 - `lib.rs`: `MobAiState`, `EventHandler` impls, game-thread orchestration, and the `MobAiApiAdapter` that exposes the engine through `cabbage-api`.
-- `plugin.rs`: DLL exports, plugin metadata, event registration, and `MobAiService` publication.
+- `plugin.rs`: module lifecycle, event registration, and `MobAiService` publication.
 - `types.rs`: snapshots, `ChunkPassability`, and small data structs shared across submodules.
 - `pathfinding.rs`: `PathBounds`, `BlockGrid`, bidirectional A*, player search trees, movement costs, and heuristics.
 - `movement.rs`: weighted lookahead helper (retained with its tests; not currently wired into the tick loop).

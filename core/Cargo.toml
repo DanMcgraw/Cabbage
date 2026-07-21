@@ -7,10 +7,13 @@ description = "Cabbage core server utility plugin: commands, drop cleanup, metri
 license = "GPL-3.0"
 
 [lib]
+name = "cabbage"
 crate-type = ["cdylib"]
 
 [dependencies]
 cabbage-api = { path = "../api" }
+cabbage-mmo = { path = "../mmo" }
+cabbage-mobai = { path = "../mobai" }
 ctor = "0.2"
 pumpkin = { path = "../../Pumpkin/pumpkin" }
 pumpkin-nbt = { path = "../../Pumpkin/pumpkin-nbt" }

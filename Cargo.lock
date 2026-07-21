@@ -225,6 +225,8 @@ name = "cabbage-core"
 version = "0.1.0"
 dependencies = [
  "cabbage-api",
+ "cabbage-mmo",
+ "cabbage-mobai",
  "ctor",
  "pumpkin",
  "pumpkin-nbt",
@@ -241,7 +243,6 @@ dependencies = [
 name = "cabbage-mmo"
 version = "0.1.0"
 dependencies = [
- "ctor",
  "futures",
  "log",
  "pumpkin",
@@ -263,7 +264,6 @@ name = "cabbage-mobai"
 version = "0.1.0"
 dependencies = [
  "cabbage-api",
- "ctor",
  "flashmap",
  "log",
  "pumpkin",

@@ -1,12 +1,13 @@
-//! Native plugin entry point for the standalone `Cabbage.Mmo` plugin DLL.
+//! MMO module lifecycle and event/command registration.
 //!
-//! The rlib half of this crate stays plugin-agnostic for testability; this
-//! module owns the DLL exports, metadata, and event/command registration.
+//! `cabbage-core` owns the native plugin DLL export and delegates the MMO
+//! portion of that lifecycle to this module. Keeping the registration code
+//! here preserves the MMO crate boundary without producing a second DLL.
 
-use std::{mem::MaybeUninit, sync::Arc};
+use std::sync::Arc;
 
 use pumpkin::plugin::{
-    Context, EventPriority, PLUGIN_API_VERSION, Plugin, PluginFuture, PluginMetadata,
+    Context, EventPriority,
     api::events::{
         block::{
             block_break::BlockBreakEvent, block_broken::BlockBrokenEvent,
@@ -40,72 +41,54 @@ use pumpkin::plugin::{
 
 use crate::{MMO_NAMES, MMO_PERMISSION, MmoState, mmo_command_tree, register_permissions};
 
-const PLUGIN_NAME: &str = "Cabbage.Mmo";
-
-#[unsafe(no_mangle)]
-pub static PUMPKIN_API_VERSION: u32 = PLUGIN_API_VERSION;
-
-#[unsafe(no_mangle)]
-pub static mut METADATA: MaybeUninit<PluginMetadata> = MaybeUninit::uninit();
-
-#[ctor::ctor]
-fn init_metadata() {
-    let metadata = PluginMetadata {
-        name: PLUGIN_NAME.to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        authors: vec!["Pumpkin Server Admin".to_string()],
-        description: "Cabbage MMO skilling plugin.".to_string(),
-        dependencies: vec!["Cabbage.Core".to_string()],
-        permissions: Vec::new(),
-    };
-
-    unsafe {
-        core::ptr::addr_of_mut!(METADATA)
-            .cast::<PluginMetadata>()
-            .write(metadata);
-    }
-}
-
-struct MmoPlugin {
+/// Stateful MMO portion of the combined Cabbage plugin.
+pub struct MmoModule {
     state: Option<Arc<MmoState>>,
 }
 
-impl Plugin for MmoPlugin {
-    fn on_load(&mut self, context: Arc<Context>) -> PluginFuture<'_, Result<(), String>> {
-        Box::pin(async move {
-            let state = match MmoState::new(context.clone()).await {
-                Ok(state) => state,
-                Err(error) => {
-                    println!("[Cabbage.Mmo] Failed to initialize MMO module: {error}");
-                    return Ok(());
-                }
-            };
-            self.state = Some(state.clone());
+impl Default for MmoModule {
+    fn default() -> Self {
+        Self { state: None }
+    }
+}
 
-            if let Err(error) = register_permissions(&context).await {
-                println!("[Cabbage.Mmo] Failed to register MMO permissions: {error}");
+impl MmoModule {
+    /// Registers the MMO module using its existing `Cabbage.Mmo` data folder.
+    /// This preserves data produced by the former standalone MMO DLL.
+    pub async fn load(&mut self, context: Arc<Context>) {
+        let data_folder = context
+            .get_data_folder()
+            .parent()
+            .map(|plugins_dir| plugins_dir.join("Cabbage.Mmo"))
+            .unwrap_or_else(|| context.get_data_folder().join("mmo"));
+        let state = match MmoState::new_in_data_folder(context.clone(), data_folder).await {
+            Ok(state) => state,
+            Err(error) => {
+                println!("[Cabbage.Mmo] Failed to initialize MMO module: {error}");
+                return;
             }
+        };
+        self.state = Some(state.clone());
 
-            register_events(&context, &state).await;
+        if let Err(error) = register_permissions(&context).await {
+            println!("[Cabbage.Mmo] Failed to register MMO permissions: {error}");
+        }
 
-            context
-                .register_command(mmo_command_tree(state), MMO_PERMISSION)
-                .await;
+        register_events(&context, &state).await;
 
-            Ok(())
-        })
+        context
+            .register_command(mmo_command_tree(state), MMO_PERMISSION)
+            .await;
     }
 
-    fn on_unload(&mut self, context: Arc<Context>) -> PluginFuture<'_, Result<(), String>> {
-        Box::pin(async move {
-            context.unregister_command(MMO_NAMES[0]).await;
-            // Event handlers are never auto-removed and the DLL stays mapped,
-            // so gate every handler on the active flag.
-            if let Some(state) = self.state.as_ref() {
-                state.set_active(false);
-            }
-            Ok(())
-        })
+    /// Unregisters MMO commands and gates all retained event handlers.
+    pub async fn unload(&mut self, context: &Arc<Context>) {
+        context.unregister_command(MMO_NAMES[0]).await;
+        // Event handlers are never auto-removed and the DLL stays mapped,
+        // so gate every handler on the active flag.
+        if let Some(state) = self.state.as_ref() {
+            state.set_active(false);
+        }
     }
 }
 
@@ -195,9 +178,4 @@ async fn register_events(context: &Arc<Context>, state: &Arc<MmoState>) {
     context
         .register_event::<FurnaceExtractEvent, _>(state.clone(), EventPriority::Normal, true)
         .await;
-}
-
-#[unsafe(no_mangle)]
-pub fn plugin() -> Box<dyn Plugin> {
-    Box::new(MmoPlugin { state: None })
 }

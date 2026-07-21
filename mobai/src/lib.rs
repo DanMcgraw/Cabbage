@@ -20,6 +20,7 @@ use rayon::{ThreadPool, ThreadPoolBuilder};
 use uuid::Uuid;
 
 pub use cabbage_api::MobAiMetricsSnapshot as MobAiMetrics;
+pub use plugin::MobAiModule;
 
 pub(crate) mod clustering;
 pub(crate) mod movement;

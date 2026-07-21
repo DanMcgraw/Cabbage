@@ -12,6 +12,8 @@ use drops::{ClearDropsState, DroppedItemCleanupState};
 use event_log::EventLogState;
 use metrics::MetricsReporterState;
 
+/// The combined plugin keeps the former Core identity so existing Core config
+/// and event-log files continue to live in `plugins/Cabbage.Core`.
 const PLUGIN_NAME: &str = "Cabbage.Core";
 const EVENT_LOG_FILE: &str = "output.log";
 /// Data folder of the pre-split monolithic `Cabbage` plugin. Existing files
@@ -30,7 +32,7 @@ fn init_metadata() {
         name: PLUGIN_NAME.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         authors: vec!["Pumpkin Server Admin".to_string()],
-        description: "Cabbage core server utility plugin.".to_string(),
+        description: "Cabbage server utilities, MMO skilling, and Mob AI.".to_string(),
         dependencies: Vec::new(),
         permissions: Vec::new(),
     };
@@ -47,6 +49,8 @@ struct CabbageCorePlugin {
     dropped_item_cleanup_state: Arc<DroppedItemCleanupState>,
     metrics_reporter_state: Arc<MetricsReporterState>,
     event_log_state: Arc<EventLogState>,
+    mmo_module: cabbage_mmo::MmoModule,
+    mob_ai_module: cabbage_mobai::MobAiModule,
 }
 
 impl CabbageCorePlugin {
@@ -56,6 +60,8 @@ impl CabbageCorePlugin {
             dropped_item_cleanup_state: Arc::new(DroppedItemCleanupState::default()),
             metrics_reporter_state: Arc::new(MetricsReporterState::new()),
             event_log_state: Arc::new(EventLogState::default()),
+            mmo_module: cabbage_mmo::MmoModule::default(),
+            mob_ai_module: cabbage_mobai::MobAiModule::default(),
         }
     }
 }
@@ -94,15 +100,6 @@ fn migrate_legacy_event_log(log_path: &Path) {
 impl Plugin for CabbageCorePlugin {
     fn on_load(&mut self, context: Arc<Context>) -> PluginFuture<'_, Result<(), String>> {
         Box::pin(async move {
-            // The MobAi plugin may already be loaded (startup order is sorted
-            // by dependencies, but runtime `/plugin load` is not); if not, the
-            // metrics tick handler retries the lookup lazily.
-            if let Some(service) = context
-                .get_service::<cabbage_api::MobAiService>(cabbage_api::MOB_AI_SERVICE)
-                .await
-            {
-                self.metrics_reporter_state.set_mob_ai(service.0.clone());
-            }
             self.metrics_reporter_state.set_context(context.clone());
 
             let event_log_state = self.event_log_state.clone();
@@ -147,12 +144,20 @@ impl Plugin for CabbageCorePlugin {
             metrics::register(&context, &self.metrics_reporter_state).await;
             event_log::register(&context, &self.event_log_state).await;
 
+            // Feature crates retain independent state and registration code,
+            // but are linked into this one native plugin DLL.
+            self.mmo_module.load(context.clone()).await;
+            self.mob_ai_module.load(&context).await;
+
             Ok(())
         })
     }
 
     fn on_unload(&mut self, context: Arc<Context>) -> PluginFuture<'_, Result<(), String>> {
         Box::pin(async move {
+            self.mmo_module.unload(&context).await;
+            self.mob_ai_module.unload();
+
             // Event handlers are never auto-removed and the DLL stays mapped,
             // so gate every handler on the active flag.
             self.clear_drops_state.set_active(false);

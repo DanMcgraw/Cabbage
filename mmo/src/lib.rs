@@ -64,6 +64,7 @@ pub(crate) mod warfare;
 
 pub use commands::{MMO_NAMES, MMO_PERMISSION, mmo_command_tree};
 pub use config::{LevelCurve, MmoConfig, PluginConfig, SkillConfig};
+pub use plugin::MmoModule;
 pub use skills::SkillId;
 
 use commands::MMO_ADMIN_PERMISSION;
@@ -100,7 +101,15 @@ impl MmoState {
     /// Initialize the MMO module: load or create config, open the database,
     /// run pending migrations, and compute curves.
     pub async fn new(context: Arc<Context>) -> Result<Arc<Self>, String> {
-        let data_folder = context.get_data_folder();
+        Self::new_in_data_folder(context.clone(), context.get_data_folder()).await
+    }
+
+    /// Initializes the MMO state with an explicit data folder. The combined
+    /// plugin uses this to retain the former standalone module's data folder.
+    pub async fn new_in_data_folder(
+        context: Arc<Context>,
+        data_folder: PathBuf,
+    ) -> Result<Arc<Self>, String> {
         migrate_legacy_data_folder(&data_folder);
         let mut plugin_config = load_plugin_config(&data_folder)?;
         let mut mmo_config = plugin_config.mmo.clone().unwrap_or_default().sanitized();

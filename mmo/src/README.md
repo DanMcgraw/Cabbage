@@ -16,7 +16,7 @@ mmo/src/
 |-- BALANCE.md         # default balance profile and migration guide
 |-- plan.md            # phased implementation plan
 |-- lib.rs             # MmoState, EventHandler impls, config load/save, feature blacklist
-|-- plugin.rs          # DLL exports, metadata, event/command registration
+|-- plugin.rs          # module lifecycle plus event/command registration
 |-- skills.rs          # SkillId (23 skills), BranchId, branch/skill metadata
 |-- progression.rs     # central award_xp path, XpSource, branch mastery, snapshots
 |-- audit.rs           # queued append-only audit worker (mmo-audit.log)

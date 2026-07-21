@@ -67,9 +67,10 @@ Cabbage/
         `-- types.rs       # shared snapshots and small data structs
 ```
 
-The `rlib + cdylib` crates (`mmo`, `mobai`) keep their logic in the rlib half so
-`cargo test` can exercise it; `plugin.rs` is the only plugin-aware module and
-owns the DLL exports, metadata, and registration. `core` is cdylib-only.
+The `mmo` and `mobai` crates are `rlib`s so `cargo test` can exercise their
+logic independently. Their `plugin.rs` modules retain feature-specific
+lifecycle and registration code; `core` is the sole `cdylib` and native
+plugin entry point.
 
 ## Conventions
 
@@ -79,17 +80,17 @@ owns the DLL exports, metadata, and registration. `core` is cdylib-only.
 - Preserve focused unit tests. Pathfinding, grid indexing, movement math, and clustering should remain testable without a running server.
 - Keep command utilities separate from Mob AI. Avoid mixing admin cleanup, metrics, and entity-control code in the same module.
 - For features that need persistence, follow the MMO pattern: a dedicated worker thread/connection with an async request/response API. Do not run blocking SQLite or file I/O on the event-handler path.
-- Cross-plugin types live ONLY in `cabbage-api`. Plugin crates must not depend on each other's concrete state types (see Services below).
+- Shared service types live ONLY in `cabbage-api`. Feature crates must not depend on each other's concrete state types (see Services below).
 
 ## Plugin Suite Topology
 
-- **Cabbage.Core** is the central plugin. It has no declared dependencies and provides the shared `CoreServices` service (`cabbage_core`). It also consumes the Mob AI service for `/metrics` reporting.
-- **Cabbage.Mmo** and **Cabbage.MobAi** both declare `dependencies: ["Cabbage.Core"]` in their `PluginMetadata`. Pumpkin resolves these at startup; a missing declared dependency fails the entire plugin load. **Ship all three DLLs together.**
-- Each plugin gets its own data folder from `Context::get_data_folder()`, which is `plugins/<plugin name>`: `plugins/Cabbage.Core`, `plugins/Cabbage.Mmo`, `plugins/Cabbage.MobAi`.
-- Each plugin namespaces its permissions with its own plugin name:
+- **Cabbage.Core** is the single native plugin (`cabbage.dll`). It owns the exported metadata and plugin lifecycle, provides `CoreServices` (`cabbage_core`), and invokes the MMO and Mob AI module lifecycles internally.
+- The `mmo` and `mobai` feature crates have no DLL exports or plugin metadata. They remain independently testable and retain their own event/command/service registration code.
+- Core receives `plugins/Cabbage.Core` from `Context::get_data_folder()`. The MMO module explicitly preserves its existing `plugins/Cabbage.Mmo` folder for configuration and SQLite data.
+- Permission namespaces remain stable:
   - `Cabbage.Core:command.cabbage`, `Cabbage.Core:command.clear_drops`, `Cabbage.Core:command.metrics`, `Cabbage.Core:command.events`
   - `Cabbage.Mmo:command.mmo` (default allow), `Cabbage.Mmo:command.mmo.admin` (op level 3)
-  - `Cabbage.MobAi` registers no commands or permissions; the engine is toggled via the `mob_ai` key in Core's `config.ron` through the `MobAiService`.
+  - Mob AI registers no commands or permissions; the engine is toggled via the `mob_ai` key in Core's `config.ron` through the `MobAiService`.
 - The old monolithic `Cabbage:*` permission nodes no longer exist — this is a breaking change for admins upgrading from the pre-split plugin.
 
 ### Legacy data migration (`plugins/Cabbage/`)
@@ -101,13 +102,13 @@ Files from the pre-split monolithic plugin are adopted on first load; legacy fil
 
 ## Pumpkin Native Plugin API
 
-Cabbage is a set of native (`cdylib`) plugins loaded by Pumpkin's `NativePluginLoader`. They compile against the `pumpkin` crate directly, not the WebAssembly `pumpkin-plugin-api`. The native API lives in `Pumpkin/pumpkin/src/plugin/` and is re-exported through `pumpkin::plugin`.
+Cabbage is one native (`cdylib`) plugin loaded by Pumpkin's `NativePluginLoader`. It compiles against the `pumpkin` crate directly, not the WebAssembly `pumpkin-plugin-api`. The native API lives in `Pumpkin/pumpkin/src/plugin/` and is re-exported through `pumpkin::plugin`.
 
-Critical compatibility requirement: each compiled DLL must expose the same `PUMPKIN_API_VERSION` as the server (currently `14`, defined in `Pumpkin/pumpkin/src/plugin/mod.rs`). If it changes, recompile all Cabbage crates against the same Pumpkin source or the loader will reject the DLLs with `ApiVersionMismatch`.
+Critical compatibility requirement: the compiled DLL must expose the same `PUMPKIN_API_VERSION` as the server (currently `14`, defined in `Pumpkin/pumpkin/src/plugin/mod.rs`). If it changes, recompile Cabbage against the same Pumpkin source or the loader will reject the DLL with `ApiVersionMismatch`.
 
 ### Required DLL symbols
 
-The native loader expects three symbols (each plugin crate exports its own set):
+The native loader expects three symbols from the Core crate:
 
 ```rust
 use std::mem::MaybeUninit;
@@ -346,8 +347,8 @@ Services must implement `Payload + 'static`.
 - Use `cargo fmt` after Rust edits.
 - Use `cargo check --workspace` before handoff. Because the workspace uses path dependencies into `../Pumpkin`, this also validates compatibility with the current Pumpkin source.
 - Use `cargo test --workspace` for the full suite; `cargo test -p cabbage-mobai` for Mob AI changes specifically.
-- Use `.\compile.bat` from this directory to build the workspace and deploy all three DLLs. It copies `cabbage_core.dll`, `cabbage_mmo.dll`, and `cabbage_mobai.dll` from `target/debug/` to `../PumpkinRunner/plugins/` and deletes any stale `cabbage.dll` left over from the monolithic plugin. The file is gitignored (local only).
-- For a release build use `cargo build --release`. Load the resulting DLLs from the Pumpkin console with `/plugin load plugins/cabbage_core.dll` (and the other two).
+- Use `.\compile.bat` from this directory to build the workspace and deploy `cabbage.dll` from `target/debug/` to `../PumpkinRunner/plugins/`. It removes the obsolete `cabbage_core.dll`, `cabbage_mmo.dll`, and `cabbage_mobai.dll` files. The file is gitignored (local only).
+- For a release build use `cargo build --release`. Load the resulting DLL from the Pumpkin console with `/plugin load plugins/cabbage.dll`.
 
 ## Git Commits
 

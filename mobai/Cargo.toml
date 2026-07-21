@@ -4,11 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [lib]
-crate-type = ["rlib", "cdylib"]
+crate-type = ["rlib"]
 
 [dependencies]
 cabbage-api = { path = "../api" }
-ctor = "0.2"
 pumpkin = { path = "../../Pumpkin/pumpkin" }
 pumpkin-data = { path = "../../Pumpkin/pumpkin-data" }
 pumpkin-util = { path = "../../Pumpkin/pumpkin-util" }
