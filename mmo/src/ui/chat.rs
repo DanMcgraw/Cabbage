@@ -3,8 +3,9 @@
 //! The summary is one three-column table — a column per branch, a row per
 //! skill index — capped at [`MAX_CHAT_LINES`] explicit lines (title, branch
 //! headers, and one row per skill index) so it fits the vanilla 10-line
-//! unfocused chat view before wrapping. Branch pages list one skill per line
-//! with full XP values for clients that want the detail.
+//! unfocused chat view before wrapping. Every skill cell suggests its
+//! canonical `/mmo skill <skill>` detail command. Branch pages list one
+//! skill per line with full XP values for clients that want the detail.
 //!
 //! Nothing here assumes the server knows a client's chat dimensions:
 //! padding is only ever applied inside `minecraft:uniform` cells, and every
@@ -18,7 +19,7 @@ use super::{
         progression::{PlayerSnapshot, branch_mastery},
         skills::{BranchId, SkillId},
     },
-    progress_percent,
+    progress_percent, skill_detail,
 };
 
 /// Explicit-line budget per chat page (vanilla unfocused chat view).
@@ -50,7 +51,7 @@ const MAX_VISIBLE_LEVEL: u32 = 999;
 /// config once per page build.
 pub(crate) type SkillInfo<'a> = dyn Fn(SkillId) -> (LevelCurve, bool) + 'a;
 
-fn branch_color(branch: BranchId) -> NamedColor {
+pub(crate) fn branch_color(branch: BranchId) -> NamedColor {
     match branch {
         BranchId::Frontier => NamedColor::Green,
         BranchId::Warfare => NamedColor::Red,
@@ -217,7 +218,9 @@ fn branch_header_cell(
 
 /// One skill cell: branch-colored, bold at max level, dark gray and
 /// struck through when disabled (disabled styling wins over max styling,
-/// while the hover reports both states).
+/// while the hover reports both states). The click event suggests the
+/// skill's canonical `/mmo skill <skill>` detail command; it does not
+/// change the cell's fixed width.
 fn skill_cell(
     skill: SkillId,
     snapshot: &PlayerSnapshot,
@@ -226,9 +229,13 @@ fn skill_cell(
 ) -> TextComponent {
     let level = snapshot.level_of(skill, curve);
     let maxed = level >= curve.max_level();
-    let cell = uniform(skill_cell_text(skill, level)).hover_event(HoverEvent::show_text(
-        TextComponent::text(skill_hover(skill, snapshot, curve, enabled)),
-    ));
+    let cell = uniform(skill_cell_text(skill, level))
+        .hover_event(HoverEvent::show_text(TextComponent::text(skill_hover(
+            skill, snapshot, curve, enabled,
+        ))))
+        .click_event(ClickEvent::SuggestCommand {
+            command: skill_detail::skill_command(skill).into(),
+        });
     if !enabled {
         cell.color_named(NamedColor::DarkGray).strikethrough()
     } else if maxed {
@@ -706,6 +713,27 @@ mod tests {
         assert!(hover.contains("Level 2"));
         assert!(hover.contains("XP: 50/200 (25%)"));
         assert!(hover.contains("Total XP: 150"));
+    }
+
+    #[test]
+    fn every_skill_cell_suggests_its_canonical_detail_command() {
+        let snapshot = PlayerSnapshot::default();
+        let lines = summary_lines(&snapshot, &enabled_info(), None);
+        for (column, branch) in BranchId::ALL.iter().enumerate() {
+            for (row, skill) in branch.skills().iter().enumerate() {
+                let cell = row_cells(&lines[2 + row])[column];
+                assert_eq!(
+                    cell.style.click_event,
+                    Some(ClickEvent::SuggestCommand {
+                        command: format!("/mmo skill {}", skill.as_str().to_ascii_lowercase())
+                            .into()
+                    }),
+                    "{skill} cell must suggest its canonical detail command"
+                );
+                // The hover text is preserved alongside the click event.
+                assert!(cell.style.hover_event.is_some(), "{skill} cell hover");
+            }
+        }
     }
 
     #[test]

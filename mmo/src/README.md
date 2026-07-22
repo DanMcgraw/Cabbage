@@ -27,7 +27,8 @@ mmo/src/
 |-- frontier/          # Frontier skill handlers + branch config
 |-- warfare/           # Warfare skill handlers + branch config
 |-- enterprise/        # Enterprise skill handlers + branch config
-|-- ui/                # bossbars, protected native skill menu, default chat summary grid
+|-- ui/                # bossbars, protected native skill menu, default chat summary grid,
+|                      # per-skill detail pages
 |-- commands.rs        # /mmo command tree and admin subcommands
 |-- config.rs          # RON config, per-skill level curves, global perk caps
 |-- db.rs              # SQLite worker thread, schema migrations, async DB API
@@ -359,6 +360,8 @@ proc chances, curve parameters) are clamped on load via `MmoConfig::sanitized`.
   online player (players); full text table (console/RCON).
 - `/mmo stats chat [branch]` — compatibility alias for the chat summary
   grid, or one branch in detail with full XP values.
+- `/mmo skill <skill> [page]` — your detail page for one skill: level, XP,
+  XP sources, live perk effects, and planned milestone unlocks (players).
 - `/mmo help [page]` — compact, paginated command list.
 - `/mmo top <skill>` — top players for any of the 18 canonical skills.
 - `/mmo reload` — reload config.ron (admin).
@@ -379,7 +382,9 @@ and a three-character right-aligned level with no `L` marker. Levels above
 text on headers and cells carries full branch/skill names, mastery, enabled
 counts, progress toward the next level, and total XP. Disabled skills keep
 their level in dark gray strikethrough (winning over the max-level bold
-style, with hover reporting both states). The summary never assumes a
+style, with hover reporting both states). Clicking a skill cell suggests the
+canonical `/mmo skill <skill>` command (retired names are never suggested).
+The summary never assumes a
 client's chat dimensions: padding is applied only inside uniform-font cells
 and each page stays within the 10-line vanilla chat budget.
 
@@ -389,7 +394,28 @@ in slots 1-6, 10-15, and 19-24, a Help slot at 17 that closes the menu and
 prints the command list, and inert filler slots at 7-8, 16, and 25-26. It is
 read-only — items cannot be taken out or placed into it. Icon names stay
 concise while structured lore shows progress toward the next level, total XP,
-and explicit Disabled or Max level states.
+and explicit Disabled or Max level states. Clicking a skill icon closes the
+menu and sends that skill's `/mmo skill` detail page for the menu's target;
+branch headers and fillers stay inert.
+
+`/mmo skill <skill> [page]` sends one skill's detail page in chat: a
+branch-coloured `<Skill> — <Branch>` heading, the current level with total
+XP and progress toward the next level (or `Max level`), an explicit
+explanation when the MMO module or the skill itself is disabled (stored
+level and XP stay visible), the XP activities that feed the skill (merged
+skills name both activity families), and the progression section. Live perk
+effects are shown as `Active from level 1` with their live configured value
+at the viewer's level, resolved from the current config so `/mmo reload`
+takes effect immediately; a disabled global perk switch or individual
+feature switch labels the row `Disabled` instead of hiding it. The shared
+milestone slots at levels 25/50/75/100 (from `perks::eligibility`) stay
+visibly `Planned` until their concrete perk is implemented. A clickable
+footer navigates to the previous/next skill in canonical branch order, the
+branch page, and `/mmo`. Page 1 always fits the 10-line vanilla chat
+budget; skills whose rows overflow (by default Cultivation, Athletics, and
+Maintenance) continue on `/mmo skill <skill> 2` without omitting or
+duplicating rows. The page is informational only: gameplay handlers remain
+the authority on perk activation.
 
 ## Threading Model
 

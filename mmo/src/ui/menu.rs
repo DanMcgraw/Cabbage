@@ -3,8 +3,10 @@
 //! Layout: one branch per row, the branch summary in the row's first slot,
 //! member skills in canonical order, a Help icon in the last Warfare-row
 //! slot, and inert filler panes in the remaining row-end slots. The menu is
-//! read-only (`allow_grab_items` and `allow_put_items` stay false); the only
-//! interaction is the Help slot's click callback.
+//! read-only (`allow_grab_items` and `allow_put_items` stay false) and every
+//! click is cancelled; the only interactions are the Help slot (closes the
+//! GUI and prints the command list) and the skill slots (close the GUI and
+//! send that skill's `/mmo skill` detail page for the menu's target).
 //!
 use std::sync::Arc;
 
@@ -31,7 +33,7 @@ use super::{
         progression::{PlayerSkillSnapshot, PlayerSnapshot, branch_mastery, fetch_snapshot},
         skills::{BranchId, SkillId},
     },
-    progress_percent, skill_enabled,
+    progress_percent, skill_detail, skill_enabled,
 };
 
 /// Number of container slots in a `Generic9x3` window.
@@ -72,6 +74,13 @@ pub(crate) fn menu_layout() -> [MenuSlot; MENU_SLOTS] {
             .all(|slot| layout[*slot] == MenuSlot::Filler)
     );
     layout
+}
+
+/// What one menu slot displays at `slot`, or `None` outside the window.
+/// Click handling resolves actions through this server-owned mapping, never
+/// through the clicked item stack.
+fn menu_slot_at(slot: usize) -> Option<MenuSlot> {
+    menu_layout().get(slot).copied()
 }
 
 fn branch_icon(branch: BranchId) -> &'static Item {
@@ -199,28 +208,68 @@ fn branch_lore(
 }
 
 /// Owned click handler for the skill menu. Every click is cancelled so the
-/// menu stays read-only; the Help slot additionally closes the GUI and sends
-/// the compact help page. The action identity comes from the server-owned
-/// slot mapping and the live session, never from the clicked item stack.
-struct SkillMenuHandler;
+/// menu stays read-only; the Help slot closes the GUI and sends the compact
+/// help page, and a skill slot closes the GUI and sends that skill's detail
+/// page for the menu's target. The action identity comes from the
+/// server-owned slot mapping and the live session, never from the clicked
+/// item stack.
+struct SkillMenuHandler {
+    state: Arc<MmoState>,
+    /// The player whose skills the menu shows (usually the viewer).
+    target: uuid::Uuid,
+}
 
 impl PluginGuiHandler for SkillMenuHandler {
     fn on_click(&self, context: PluginGuiClickContext) -> BoxFuture<'_, PluginGuiInputResult> {
         Box::pin(async move {
-            if context.is_container_slot
-                && context.slot == HELP_SLOT as i16
-                && context.player.plugin_gui_session().await == Some(context.session_id)
+            if !context.is_container_slot
+                || context.player.plugin_gui_session().await != Some(context.session_id)
             {
-                context
-                    .player
-                    .close_plugin_gui(PluginGuiCloseReason::PluginRequested)
-                    .await;
-                let admin = matches!(
-                    context.player.permission_lvl.load(),
-                    PermissionLvl::Three | PermissionLvl::Four
-                );
-                let message = super::super::commands::help_message(admin, 1);
-                context.player.send_system_message(&message).await;
+                return PluginGuiInputResult::Cancel;
+            }
+            match usize::try_from(context.slot).ok().and_then(menu_slot_at) {
+                Some(MenuSlot::Help) => {
+                    context
+                        .player
+                        .close_plugin_gui(PluginGuiCloseReason::PluginRequested)
+                        .await;
+                    let admin = matches!(
+                        context.player.permission_lvl.load(),
+                        PermissionLvl::Three | PermissionLvl::Four
+                    );
+                    let message = super::super::commands::help_message(admin, 1);
+                    context.player.send_system_message(&message).await;
+                }
+                Some(MenuSlot::Skill(skill)) => {
+                    context
+                        .player
+                        .close_plugin_gui(PluginGuiCloseReason::PluginRequested)
+                        .await;
+                    match fetch_snapshot(&self.state, self.target).await {
+                        Ok(snapshot) => {
+                            let config = self.state.config();
+                            let curve = self.state.curve(skill);
+                            for line in skill_detail::skill_detail_lines(
+                                skill, &snapshot, &curve, &config, 1,
+                            ) {
+                                context.player.send_system_message(&line).await;
+                            }
+                        }
+                        Err(error) => {
+                            context
+                                .player
+                                .send_system_message(
+                                    &TextComponent::text(format!(
+                                        "Failed to fetch skills: {error}"
+                                    ))
+                                    .color_named(NamedColor::Red),
+                                )
+                                .await;
+                        }
+                    }
+                }
+                // Branch headers and fillers stay inert.
+                _ => {}
             }
             PluginGuiInputResult::Cancel
         })
@@ -280,7 +329,8 @@ fn menu_title(viewer_is_target: bool, target_name: &str) -> String {
 
 /// Assemble the read-only window specification. Both transfer flags stay
 /// false so no click, drag, or shift-click path can move items; the click
-/// handler additionally cancels every input except the Help action.
+/// handler additionally cancels every input after resolving the Help and
+/// skill actions.
 fn menu_spec(title: String, slots: Vec<ItemStack>) -> PluginGuiSpec {
     PluginGuiSpec {
         window_type: WindowType::Generic9x3,
@@ -309,7 +359,14 @@ pub(crate) async fn open_skill_menu(
 
     state
         .context()
-        .open_plugin_gui(viewer, menu_spec(title, slots), Arc::new(SkillMenuHandler))
+        .open_plugin_gui(
+            viewer,
+            menu_spec(title, slots),
+            Arc::new(SkillMenuHandler {
+                state: state.clone(),
+                target: target.gameprofile.id,
+            }),
+        )
         .await
         .map(|_| ())
         .map_err(|error| format!("failed to open MMO skill menu: {error}"))
@@ -395,6 +452,29 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn click_slots_resolve_through_the_layout() {
+        for (branch, row_start) in BranchId::ALL.iter().zip(BRANCH_HEADER_SLOTS) {
+            assert_eq!(
+                menu_slot_at(row_start),
+                Some(MenuSlot::BranchHeader(*branch))
+            );
+            for (column, skill) in branch.skills().iter().enumerate() {
+                assert_eq!(
+                    menu_slot_at(row_start + 1 + column),
+                    Some(MenuSlot::Skill(*skill)),
+                    "slot {} must resolve to {skill}",
+                    row_start + 1 + column
+                );
+            }
+        }
+        assert_eq!(menu_slot_at(HELP_SLOT), Some(MenuSlot::Help));
+        for slot in FILLER_SLOTS {
+            assert_eq!(menu_slot_at(slot), Some(MenuSlot::Filler));
+        }
+        assert_eq!(menu_slot_at(MENU_SLOTS), None);
     }
 
     fn lore_text(lines: &[TextComponent]) -> Vec<String> {

@@ -6,8 +6,8 @@
 //! behind configuration kill switches. This module owns the level gates so
 //! every future perk uses the same thresholds.
 
-/// Levels at which major perks unlock.
-#[allow(dead_code)] // consumed by the first major perks (Phase 4, after live tests)
+/// Levels at which major perks unlock. The skill detail catalog builds its
+/// planned milestone slots from this list.
 pub(crate) const MAJOR_PERK_LEVELS: [u32; 3] = [25, 50, 75];
 
 /// Level at which a skill's capstone unlocks.

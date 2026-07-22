@@ -18,7 +18,7 @@ use super::{
     MmoState,
     progression::{PlayerSnapshot, branch_mastery, fetch_snapshot},
     skills::{BranchId, SkillId},
-    ui::{chat, menu, skill_enabled},
+    ui::{chat, menu, skill_detail, skill_enabled},
 };
 
 pub const MMO_NAMES: [&str; 1] = ["mmo"];
@@ -43,6 +43,7 @@ fn help_lines(admin: bool) -> Vec<String> {
         "/mmo menu [player] - Open the protected skill grid GUI.".to_string(),
         "/mmo stats [player] - Chat skill summary (text table for console).".to_string(),
         "/mmo stats chat [branch] - Chat summary, or one branch in detail.".to_string(),
+        "/mmo skill <skill> [page] - Your progress and unlocks for one skill.".to_string(),
         "/mmo top <skill> - Show top players for a skill.".to_string(),
         "/mmo help [page] - Show this command list.".to_string(),
     ];
@@ -353,6 +354,96 @@ impl CommandExecutor for MmoChatStatsExecutor {
                 |skill: SkillId| (self.state.curve(skill), skill_enabled(&config, skill));
 
             for line in chat::branch_lines(&snapshot, &skill_info, branch) {
+                player.send_system_message(&line).await;
+            }
+            Ok(1)
+        })
+    }
+}
+
+struct SkillDetailExecutor {
+    state: Arc<MmoState>,
+}
+
+impl CommandExecutor for SkillDetailExecutor {
+    fn execute<'a>(
+        &'a self,
+        sender: &'a CommandSender,
+        _server: &'a Server,
+        args: &'a ConsumedArgs<'a>,
+    ) -> CommandResult<'a> {
+        Box::pin(async move {
+            // The page is chat output, so console/RCON get the same concise
+            // online-player error as /mmo menu.
+            let Some(player) = sender.as_player() else {
+                sender
+                    .send_message(
+                        TextComponent::text("Only players can view a skill detail page.")
+                            .color_named(NamedColor::Red),
+                    )
+                    .await;
+                return Ok(0);
+            };
+
+            let skill_arg: &str = match SimpleArgConsumer::find_arg(args, "skill") {
+                Ok(s) => s,
+                Err(_) => {
+                    sender
+                        .send_message(
+                            TextComponent::text("Usage: /mmo skill <skill> [page]")
+                                .color_named(NamedColor::Red),
+                        )
+                        .await;
+                    return Ok(0);
+                }
+            };
+
+            // Retired spellings resolve to their canonical destination here
+            // (e.g. /mmo skill repair opens Maintenance).
+            let Some(skill) = SkillId::from_name(skill_arg) else {
+                sender
+                    .send_message(
+                        TextComponent::text(format!("Unknown skill. Try: {}", skill_names_hint()))
+                            .color_named(NamedColor::Red),
+                    )
+                    .await;
+                return Ok(0);
+            };
+
+            let page = match SimpleArgConsumer::find_arg(args, "page") {
+                Ok(raw) => match raw.parse::<usize>() {
+                    Ok(page) => page,
+                    Err(_) => {
+                        sender
+                            .send_message(
+                                TextComponent::text("Usage: /mmo skill <skill> [page]")
+                                    .color_named(NamedColor::Red),
+                            )
+                            .await;
+                        return Ok(0);
+                    }
+                },
+                Err(_) => 1,
+            };
+
+            // The caller's own progress only; no target argument until a
+            // permissions and privacy policy exists for it.
+            let snapshot = match fetch_snapshot(&self.state, player.gameprofile.id).await {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    sender
+                        .send_message(
+                            TextComponent::text(format!("Failed to fetch skills: {error}"))
+                                .color_named(NamedColor::Red),
+                        )
+                        .await;
+                    return Ok(0);
+                }
+            };
+
+            let config = self.state.config();
+            let curve = self.state.curve(skill);
+            for line in skill_detail::skill_detail_lines(skill, &snapshot, &curve, &config, page) {
                 player.send_system_message(&line).await;
             }
             Ok(1)
@@ -763,6 +854,20 @@ pub fn mmo_command_tree(state: Arc<MmoState>) -> CommandTree {
                     ),
                 ),
         )
+        .then(
+            literal("skill").then(
+                pumpkin::command::tree::builder::argument("skill", SimpleArgConsumer)
+                    .execute(SkillDetailExecutor {
+                        state: state.clone(),
+                    })
+                    .then(
+                        pumpkin::command::tree::builder::argument("page", SimpleArgConsumer)
+                            .execute(SkillDetailExecutor {
+                                state: state.clone(),
+                            }),
+                    ),
+            ),
+        )
         .then(literal("top").then(
             pumpkin::command::tree::builder::argument("skill", SimpleArgConsumer).execute(
                 MmoTopExecutor {
@@ -819,6 +924,15 @@ mod tests {
         );
         assert!(
             text.contains("/mmo stats chat [branch] - Chat summary, or one branch in detail."),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn help_text_documents_the_skill_detail_command() {
+        let text = help_lines(false).join("\n");
+        assert!(
+            text.contains("/mmo skill <skill> [page] - Your progress and unlocks for one skill."),
             "{text}"
         );
     }

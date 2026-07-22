@@ -1,9 +1,11 @@
 //! Player-facing presentation: bossbars, the protected native skill menu
-//! (`/mmo menu`), and the default chat summary grid (`/mmo`).
+//! (`/mmo menu`), the default chat summary grid (`/mmo`), and the per-skill
+//! detail pages (`/mmo skill`).
 
 pub(crate) mod bossbar;
 pub(crate) mod chat;
 pub(crate) mod menu;
+pub(crate) mod skill_detail;
 
 pub(crate) use bossbar::BossbarState;
 

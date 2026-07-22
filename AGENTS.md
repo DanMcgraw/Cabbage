@@ -50,7 +50,8 @@ Cabbage/
 |       |-- frontier/      # Frontier skill handlers and configuration
 |       |-- warfare/       # Warfare skill handlers and configuration
 |       |-- enterprise/    # Enterprise skill handlers and configuration
-|       |-- ui/            # bossbars, protected skill menu, default chat summary grid
+|       |-- ui/            # bossbars, protected skill menu, default chat summary grid,
+|       |                  # /mmo skill detail pages + progression catalog
 |       |-- commands.rs    # /mmo command tree and admin subcommands
 |       |-- config.rs      # RON config and per-skill level curves
 |       |-- db.rs          # SQLite worker thread, migrations, async DB API
