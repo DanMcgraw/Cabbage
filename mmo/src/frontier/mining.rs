@@ -12,7 +12,7 @@ use pumpkin::{
         block_drop_item::BlockDropItemEvent,
     },
 };
-use rand::Rng;
+use rand::RngExt;
 
 use super::super::{
     MmoState,

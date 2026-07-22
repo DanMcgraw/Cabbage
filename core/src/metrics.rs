@@ -20,7 +20,7 @@ use pumpkin_util::{
     permission::PermissionLvl,
     text::{TextComponent, color::NamedColor},
 };
-use sysinfo::{Pid, System, get_current_pid};
+use sysinfo::{Pid, ProcessesToUpdate, System, get_current_pid};
 
 use crate::drops::SavedPumpData;
 
@@ -418,7 +418,7 @@ impl EventHandler<ServerTickStartEvent> for MetricsReporterState {
                 std::thread::spawn(move || {
                     let app_ram = {
                         let mut sys_lock = sys.lock().unwrap();
-                        sys_lock.refresh_process(pid);
+                        sys_lock.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
                         if let Some(process) = sys_lock.process(pid) {
                             process.memory()
                         } else {

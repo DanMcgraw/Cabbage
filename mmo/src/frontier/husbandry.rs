@@ -8,7 +8,7 @@
 use pumpkin::plugin::api::events::entity::{
     entity_breed::EntityBreedCompleteEvent, entity_product::AnimalProductCollectCompleteEvent,
 };
-use rand::Rng;
+use rand::RngExt;
 
 use super::super::{
     MmoState,

@@ -12,7 +12,7 @@ use pumpkin::plugin::api::events::{
     block::block_broken::BlockBrokenEvent, block::bone_meal::BoneMealApplyCompleteEvent,
 };
 use pumpkin_data::{Block, BlockStateId, item::Item, item_stack::ItemStack};
-use rand::Rng;
+use rand::RngExt;
 
 use super::super::{
     MmoState,

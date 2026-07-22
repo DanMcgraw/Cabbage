@@ -8,7 +8,7 @@ use pumpkin::{plugin::api::events::block::block_broken::BlockBrokenEvent, world:
 use pumpkin_data::{Block, BlockDirection};
 use pumpkin_util::{GameMode, math::position::BlockPos};
 use pumpkin_world::world::BlockFlags;
-use rand::Rng;
+use rand::RngExt;
 
 use self::{
     config::{CompiledOreRevealConfig, OreRevealConfig},

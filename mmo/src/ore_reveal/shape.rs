@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use pumpkin_data::BlockDirection;
 use pumpkin_util::math::position::BlockPos;
-use rand::Rng;
+use rand::{Rng, RngExt};
 
 use super::config::VeinShapeConfig;
 
@@ -83,15 +83,15 @@ fn inside_radius(origin: BlockPos, candidate: BlockPos, radius: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use rand::{SeedableRng, rngs::SmallRng};
+    use rand::{SeedableRng, rngs::StdRng};
 
     use super::*;
 
     #[test]
     fn shape_is_deterministic_bounded_and_unique() {
         let config = VeinShapeConfig::default();
-        let mut first_rng = SmallRng::seed_from_u64(7);
-        let mut second_rng = SmallRng::seed_from_u64(7);
+        let mut first_rng = StdRng::seed_from_u64(7);
+        let mut second_rng = StdRng::seed_from_u64(7);
         let first = grow_vein(
             &mut first_rng,
             BlockPos::ZERO,
@@ -120,7 +120,7 @@ mod tests {
 
     #[test]
     fn ineligible_seed_prevents_a_vein() {
-        let mut rng = SmallRng::seed_from_u64(1);
+        let mut rng = StdRng::seed_from_u64(1);
         assert!(
             grow_vein(
                 &mut rng,

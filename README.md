@@ -19,6 +19,9 @@ plugins/Cabbage.dll
 ```
 
 The feature crates are linked into `Cabbage.dll`, so Pumpkin loads only one native plugin and the common Rust/Pumpkin code is linked once.
+Cabbage depends on Pumpkin with default features disabled because it is a
+native-only plugin and does not embed Pumpkin's WASM/WASI plugin host. The
+Pumpkin server continues to enable its `wasm-plugins` feature by default.
 
 ### Data and permission compatibility
 

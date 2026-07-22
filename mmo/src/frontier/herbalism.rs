@@ -10,7 +10,7 @@ use pumpkin::plugin::api::events::{
     player::player_item_use_complete::PlayerItemUseCompleteEvent,
 };
 use pumpkin_data::item_stack::ItemStack;
-use rand::Rng;
+use rand::RngExt;
 
 use super::super::{
     MmoState,

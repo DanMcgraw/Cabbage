@@ -14,13 +14,13 @@ crate-type = ["cdylib"]
 cabbage-api = { path = "../api" }
 cabbage-mmo = { path = "../mmo" }
 cabbage-mobai = { path = "../mobai" }
-ctor = "0.2"
-pumpkin = { path = "../../Pumpkin/pumpkin" }
+ctor = "1.0.10"
+pumpkin = { path = "../../Pumpkin/pumpkin", default-features = false }
 pumpkin-nbt = { path = "../../Pumpkin/pumpkin-nbt" }
 pumpkin-util = { path = "../../Pumpkin/pumpkin-util" }
 pumpkin-world = { path = "../../Pumpkin/pumpkin-world" }
-ron = "0.8"
-ruzstd = "0.8.3"
-serde = { version = "1.0", features = ["derive"] }
-sysinfo = "0.30"
-uuid = "1.23"
+ron = "0.12.2"
+ruzstd = { version = "0.8.3", default-features = false, features = ["std"] }
+serde = { version = "1.0.229", default-features = false, features = ["derive", "std"] }
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
+uuid = { version = "1.24.0", default-features = false, features = ["std", "v4"] }

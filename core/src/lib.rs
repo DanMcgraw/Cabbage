@@ -27,7 +27,7 @@ pub static PUMPKIN_API_VERSION: u32 = PLUGIN_API_VERSION;
 #[unsafe(no_mangle)]
 pub static mut METADATA: MaybeUninit<PluginMetadata> = MaybeUninit::uninit();
 
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 fn init_metadata() {
     let metadata = PluginMetadata {
         name: PLUGIN_NAME.to_string(),

@@ -10,7 +10,7 @@ use pumpkin::{
     plugin::api::events::block::{block_break::BlockBreakEvent, block_broken::BlockBrokenEvent},
 };
 use pumpkin_data::item_stack::ItemStack;
-use rand::Rng;
+use rand::RngExt;
 
 use super::super::{
     MmoState,
