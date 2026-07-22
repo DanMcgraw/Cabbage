@@ -225,8 +225,8 @@ into RON once, then drops those obsolete SQLite tables.
 
 ## Configuration
 
-The plugin config is stored as RON in the Cabbage.Mmo data folder
-(`plugins/Cabbage.Mmo/config.ron`). `config_version`
+The plugin config is stored as RON in the unified Cabbage data folder
+(`plugins/Cabbage/config.ron`). `config_version`
 tracks the MMO config schema; older files gain safe defaults for missing
 sections and are saved back on upgrade. Unknown skill names in the `skills`
 map (e.g. the retired `Combat`) are skipped with a warning.

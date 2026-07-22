@@ -22,8 +22,8 @@ use super::{
 };
 
 pub const MMO_NAMES: [&str; 1] = ["mmo"];
-pub const MMO_PERMISSION: &str = "Cabbage.Mmo:command.mmo";
-pub(crate) const MMO_ADMIN_PERMISSION: &str = "Cabbage.Mmo:command.mmo.admin";
+pub const MMO_PERMISSION: &str = "Cabbage:command.mmo";
+pub(crate) const MMO_ADMIN_PERMISSION: &str = "Cabbage:command.mmo.admin";
 
 /// Commands shown per `/mmo help` page; keeps each page inside the vanilla
 /// chat view.

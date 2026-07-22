@@ -53,14 +53,9 @@ impl Default for MmoModule {
 }
 
 impl MmoModule {
-    /// Registers the MMO module using its existing `Cabbage.Mmo` data folder.
-    /// This preserves data produced by the former standalone MMO DLL.
+    /// Registers the MMO module in the combined plugin's unified data folder.
     pub async fn load(&mut self, context: Arc<Context>) {
-        let data_folder = context
-            .get_data_folder()
-            .parent()
-            .map(|plugins_dir| plugins_dir.join("Cabbage.Mmo"))
-            .unwrap_or_else(|| context.get_data_folder().join("mmo"));
+        let data_folder = context.get_data_folder();
         let state = match MmoState::new_in_data_folder(context.clone(), data_folder).await {
             Ok(state) => state,
             Err(error) => {

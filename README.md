@@ -2,7 +2,7 @@
 
 A native dynamic plugin (`cdylib`) for the [Pumpkin](https://github.com/Pumpkin-MC/Pumpkin) server, built from a Cargo workspace with refactored feature crates:
 
-* **Cabbage.Core** (`cabbage.dll`) — the single Pumpkin plugin entry point: administrative utility commands, drop cleanup, server metrics, event logging, MMO skilling, and Mob AI.
+* **Cabbage** (`Cabbage.dll`) — the single Pumpkin plugin entry point: administrative utility commands, drop cleanup, server metrics, event logging, MMO skilling, and Mob AI.
 * **`mmo` crate** — the MMO-style skilling module (23 skills, bossbars, ore reveal, SQLite persistence), registered by Core during plugin load.
 * **`mobai` crate** — the custom mob AI & pathfinding engine, also registered by Core and exposed through the internal service registry for metrics/control.
 
@@ -15,15 +15,15 @@ Because they compile directly to native machine code (`.dll` / `.so`), the Cabba
 Drop the one DLL into the server's `plugins/` directory:
 
 ```text
-plugins/cabbage.dll
+plugins/Cabbage.dll
 ```
 
-The feature crates are linked into `cabbage.dll`, so Pumpkin loads only one native plugin and the common Rust/Pumpkin code is linked once.
+The feature crates are linked into `Cabbage.dll`, so Pumpkin loads only one native plugin and the common Rust/Pumpkin code is linked once.
 
 ### Data and permission compatibility
 
-* **Permission nodes were renamed.** The old `Cabbage:*` nodes are gone. Use `Cabbage.Core:command.cabbage`, `Cabbage.Core:command.clear_drops`, `Cabbage.Core:command.metrics`, `Cabbage.Core:command.events`, `Cabbage.Mmo:command.mmo`, and `Cabbage.Mmo:command.mmo.admin` instead.
-* **Data remains split by feature.** Core uses `plugins/Cabbage.Core` for `config.ron` and `output.log`; the MMO module continues to use `plugins/Cabbage.Mmo` for `config.ron`, `mmo.db`, and `mmo-audit.log`. Both retain their existing legacy migration from `plugins/Cabbage/`.
+* **Permissions use one namespace.** Use `Cabbage:command.cabbage`, `Cabbage:command.clear_drops`, `Cabbage:command.metrics`, `Cabbage:command.events`, `Cabbage:command.mmo`, and `Cabbage:command.mmo.admin`. The base MMO permission defaults to allow for normal players.
+* **Data uses one folder.** The unified `config.ron`, `mmo.db`, `mmo-audit.log`, and `output.log` live in `plugins/Cabbage/`. On first load, missing files are copied from the former `Cabbage.Core` and `Cabbage.Mmo` folders; those source folders are left untouched as backups.
 
 ---
 
@@ -44,7 +44,7 @@ Designed from the ground up to prevent TPS drops under entity load:
 * **Staggered Searches**: Spaces out nearest-player distance checks and target scans instead of running expensive searches for every mob on every single tick.
 * **Memory Buffer Caching**: Minimizes heap allocation cycles by reusing pre-allocated vectors during block grid sampling.
 
-### 3. Administrative Utility Commands (Cabbage.Core)
+### 3. Administrative Utility Commands (Cabbage)
 * `/cabbage`
   * Displays help, current configuration options, and plugin status.
 * `/cleardrops`
@@ -54,10 +54,10 @@ Designed from the ground up to prevent TPS drops under entity load:
   * Prints a live report of server tick rates, thread states, memory allocations, and Mob AI counters.
   * `/metrics log`: Toggles real-time console metrics logging.
 * `/events`
-  * Toggles event diagnostic logging to chat and `output.log` in the Cabbage.Core data folder.
+  * Toggles event diagnostic logging to chat and `output.log` in the Cabbage data folder.
 
 ### 4. Configuration & Tuning Options
-Each plugin owns a `config.ron` in its data folder. Core's config holds the `metrics_log` and `mob_ai` switches (the latter enables or disables the Mob AI engine through the cross-plugin service); Mmo's config carries the full skilling/ore-reveal balance profile. Exposed parameters balance detail vs. performance:
+The plugin owns one `config.ron` in `plugins/Cabbage/`. Its `metrics_log` and `mob_ai` switches control the utility and AI modules, while its `mmo` section carries the full skilling and ore-reveal balance profile. Exposed parameters balance detail vs. performance:
 * **Tick Intervals**: Adjust the AI update rate and pathfinder recalculation cooldowns.
 * **Pathfinding Search Bounds**: Configure constraints like max jump height (`MAX_PATH_HEIGHT_DIFFERENCE`) and search space volume limit (`MAX_PATH_GRID_VOLUME`).
 * **Entity Radius & Range**: Limit how far mobs can search for targets and when they clear out-of-range path caches.
@@ -74,7 +74,7 @@ To compile the plugins locally:
 
 This builds the whole workspace in debug mode and copies the combined DLL into the server's plugins directory. It removes the obsolete split DLL names:
 ```text
-../PumpkinRunner/plugins/cabbage.dll
+../PumpkinRunner/plugins/Cabbage.dll
 ```
 
 ## Production Build
@@ -87,7 +87,7 @@ cargo build --release
 
 Load the compiled plugin dynamically from the Pumpkin console:
 ```text
-/plugin load plugins/cabbage.dll
+/plugin load plugins/Cabbage.dll
 ```
 
 ---

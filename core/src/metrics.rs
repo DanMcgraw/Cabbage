@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -20,37 +20,9 @@ use pumpkin_util::{
     permission::PermissionLvl,
     text::{TextComponent, color::NamedColor},
 };
-use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, System, get_current_pid};
 
-use crate::{LEGACY_DATA_FOLDER, drops::SavedPumpData};
-
-fn default_true() -> bool {
-    true
-}
-
-/// Core plugin configuration (`config.ron` in the `Cabbage.Core` data
-/// folder).
-///
-/// The pre-split `Cabbage` plugin stored a superset of this shape (an extra
-/// `mmo` section); unknown fields are ignored while parsing, so legacy files
-/// migrate cleanly.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub(crate) struct CoreConfig {
-    #[serde(default)]
-    pub metrics_log: bool,
-    #[serde(default = "default_true")]
-    pub mob_ai: bool,
-}
-
-impl Default for CoreConfig {
-    fn default() -> Self {
-        Self {
-            metrics_log: false,
-            mob_ai: true,
-        }
-    }
-}
+use crate::drops::SavedPumpData;
 
 pub(crate) struct MetricsReporterState {
     sys: Arc<Mutex<System>>,
@@ -275,31 +247,14 @@ impl MetricsSnapshot {
     }
 }
 
-/// Reads the legacy monolithic plugin's config (`plugins/Cabbage/config.ron`)
-/// when the new `Cabbage.Core` config does not exist yet. The legacy file is
-/// a superset of [`CoreConfig`]; its `mmo` section is ignored here and the
-/// legacy file itself is left in place.
-fn migrate_legacy_config(data_folder: &Path) -> Option<CoreConfig> {
-    let legacy_path = data_folder
-        .parent()?
-        .join(LEGACY_DATA_FOLDER)
-        .join("config.ron");
-    let contents = fs::read_to_string(&legacy_path).ok()?;
-    let config = ron::from_str::<CoreConfig>(&contents).ok()?;
-    println!(
-        "[Cabbage.Core] Migrated legacy config {} to {}",
-        legacy_path.display(),
-        data_folder.join("config.ron").display()
-    );
-    Some(config)
-}
-
 impl MetricsReporterState {
     pub(crate) fn load_config(&self, data_folder: PathBuf) {
         let path = data_folder.join("config.ron");
         let config = match fs::read_to_string(&path) {
-            Ok(contents) => ron::from_str::<CoreConfig>(&contents).unwrap_or_default(),
-            Err(_) => migrate_legacy_config(&data_folder).unwrap_or_default(),
+            Ok(contents) => {
+                ron::from_str::<cabbage_mmo::PluginConfig>(&contents).unwrap_or_default()
+            }
+            Err(_) => cabbage_mmo::PluginConfig::default(),
         };
 
         self.metrics_log.store(config.metrics_log, Ordering::SeqCst);
@@ -313,7 +268,9 @@ impl MetricsReporterState {
             *config_path = Some(path);
         }
 
-        self.save_config(config.metrics_log, Some(config.mob_ai));
+        // The MMO module creates the complete unified config when it is
+        // missing. Avoid writing a Core-only shape before that module gets a
+        // chance to migrate a legacy config.json.
     }
 
     pub(crate) fn toggle_metrics_log(&self) -> bool {
@@ -341,7 +298,7 @@ impl MetricsReporterState {
 
         let mut config = fs::read_to_string(&path)
             .ok()
-            .and_then(|contents| ron::from_str::<CoreConfig>(&contents).ok())
+            .and_then(|contents| ron::from_str::<cabbage_mmo::PluginConfig>(&contents).ok())
             .unwrap_or_default();
         config.metrics_log = metrics_log;
         if let Some(mob_ai) = mob_ai {
@@ -487,21 +444,22 @@ impl EventHandler<ServerTickStartEvent> for MetricsReporterState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
-    fn legacy_plugin_config_deserializes_into_core_config() {
-        // The pre-split `Cabbage` plugin wrote this superset shape; the
-        // unknown `mmo` field must be ignored for migration to work.
-        let legacy = "(metrics_log: true, mob_ai: false, mmo: Some((enabled: false)))";
-        let config: CoreConfig = ron::from_str(legacy).unwrap();
+    fn unified_plugin_config_preserves_mmo_settings() {
+        let mut original = cabbage_mmo::PluginConfig::default();
+        original.metrics_log = true;
+        original.mob_ai = false;
+        original.mmo.as_mut().unwrap().enabled = false;
+        let serialized = ron::to_string(&original).unwrap();
+        let config: cabbage_mmo::PluginConfig = ron::from_str(&serialized).unwrap();
         assert!(config.metrics_log);
         assert!(!config.mob_ai);
+        assert!(!config.mmo.unwrap().enabled);
     }
 
     #[test]
     fn missing_fields_fall_back_to_defaults() {
-        let config: CoreConfig = ron::from_str("()").unwrap();
-        assert_eq!(config, CoreConfig::default());
+        let config: cabbage_mmo::PluginConfig = ron::from_str("()").unwrap();
+        assert_eq!(config, cabbage_mmo::PluginConfig::default());
     }
 }

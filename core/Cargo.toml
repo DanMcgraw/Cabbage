@@ -7,7 +7,7 @@ description = "Cabbage core server utility plugin: commands, drop cleanup, metri
 license = "GPL-3.0"
 
 [lib]
-name = "cabbage"
+name = "Cabbage"
 crate-type = ["cdylib"]
 
 [dependencies]

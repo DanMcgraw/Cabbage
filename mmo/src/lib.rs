@@ -110,7 +110,6 @@ impl MmoState {
         context: Arc<Context>,
         data_folder: PathBuf,
     ) -> Result<Arc<Self>, String> {
-        migrate_legacy_data_folder(&data_folder);
         let mut plugin_config = load_plugin_config(&data_folder)?;
         let mut mmo_config = plugin_config.mmo.clone().unwrap_or_default().sanitized();
         let mut config_dirty = false;
@@ -368,43 +367,6 @@ fn build_curves(config: &MmoConfig) -> HashMap<SkillId, LevelCurve> {
         curves.insert(*skill, LevelCurve::new(&skill_config));
     }
     curves
-}
-
-/// Data folder name of the pre-split monolithic `Cabbage` plugin.
-const LEGACY_DATA_FOLDER: &str = "Cabbage";
-
-/// Copies data files from the legacy monolithic plugin's data folder into
-/// this plugin's folder when they do not exist there yet. The legacy
-/// `config.ron` is a full `PluginConfig`, which is exactly the format this
-/// crate reads, so copying it as-is is correct. Legacy files are never
-/// deleted.
-fn migrate_legacy_data_folder(data_folder: &PathBuf) {
-    const MIGRATED_FILES: [&str; 4] = [CONFIG_FILE, LEGACY_CONFIG_FILE, "mmo.db", "mmo-audit.log"];
-
-    let Some(legacy_folder) = data_folder.parent().map(|p| p.join(LEGACY_DATA_FOLDER)) else {
-        return;
-    };
-    for file in MIGRATED_FILES {
-        let new_path = data_folder.join(file);
-        if new_path.exists() {
-            continue;
-        }
-        let legacy_path = legacy_folder.join(file);
-        if !legacy_path.exists() {
-            continue;
-        }
-        match fs::copy(&legacy_path, &new_path) {
-            Ok(_) => log::info!(
-                "[Cabbage MMO] migrated legacy {} to {}",
-                legacy_path.display(),
-                new_path.display()
-            ),
-            Err(error) => log::warn!(
-                "[Cabbage MMO] failed to migrate legacy {}: {error}",
-                legacy_path.display()
-            ),
-        }
-    }
 }
 
 fn load_plugin_config(data_folder: &PathBuf) -> Result<PluginConfig, String> {

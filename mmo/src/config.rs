@@ -13,6 +13,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_mmo_config() -> Option<MmoConfig> {
+    Some(MmoConfig::default())
+}
+
 /// Current schema version of `MmoConfig`. Older files are upgraded in place
 /// on load (missing sections gain safe defaults) and saved back.
 pub const CURRENT_CONFIG_VERSION: u32 = 1;
@@ -20,9 +24,11 @@ pub const CURRENT_CONFIG_VERSION: u32 = 1;
 /// Top-level Cabbage plugin configuration, now stored as RON.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PluginConfig {
+    #[serde(default)]
     pub metrics_log: bool,
     #[serde(default = "default_true")]
     pub mob_ai: bool,
+    #[serde(default = "default_mmo_config")]
     pub mmo: Option<MmoConfig>,
 }
 
