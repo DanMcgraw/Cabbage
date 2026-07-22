@@ -1,8 +1,9 @@
-//! Salvage: grindstone experience bonus and material-recovery rolls.
+//! Salvage activity: grindstone experience bonus and material-recovery rolls.
 //!
 //! The experience bonus is previewed in the grindstone prepare event (while
 //! the cooldown is ready); XP, the cooldown, and the material-recovery roll
-//! happen only when the output is taken.
+//! happen only when the output is taken. Since the six-skill consolidation
+//! both the bonus gate and the award use the shared Maintenance track.
 
 use pumpkin::{
     entity::EntityBase,
@@ -17,9 +18,14 @@ use super::super::{
     skills::SkillId,
 };
 
+/// The shared skill track this activity awards and gates on: salvage and
+/// repair both feed Maintenance since the six-skill consolidation.
+pub(crate) const SKILL: SkillId = SkillId::Maintenance;
+
 const SALVAGE_COOLDOWN_KEY: &str = "salvage.bonus";
 
-/// Preview the Salvage experience bonus in the grindstone prepare event.
+/// Preview the Maintenance (salvage activity) experience bonus in the
+/// grindstone prepare event.
 pub async fn handle_grindstone(state: &MmoState, event: &mut GrindstoneEvent) {
     if event.cancelled || !earns_xp(&event.player) {
         return;
@@ -49,8 +55,8 @@ pub async fn handle_grindstone(state: &MmoState, event: &mut GrindstoneEvent) {
     state.mark_perk_preview(event.transaction.id, SALVAGE_COOLDOWN_KEY);
 }
 
-/// Award Salvage XP, charge the cooldown, and roll material recovery when
-/// the grindstone output is taken.
+/// Award Maintenance XP, charge the cooldown, and roll material recovery
+/// when the grindstone output is taken.
 pub async fn handle_grindstone_complete(state: &MmoState, event: &GrindstoneCompleteEvent) {
     if !earns_xp(&event.player) {
         return;
@@ -70,14 +76,7 @@ pub async fn handle_grindstone_complete(state: &MmoState, event: &GrindstoneComp
         );
     }
 
-    progression::award_xp(
-        state,
-        player,
-        SkillId::Salvage,
-        salvage.xp,
-        XpSource::Salvage,
-    )
-    .await;
+    progression::award_xp(state, player, SKILL, salvage.xp, XpSource::Salvage).await;
     state.audit(&format!(
         "grindstone commit: {} took output for {} experience",
         player.gameprofile.id, event.experience
@@ -120,10 +119,10 @@ fn recovery_material<'a>(
 }
 
 async fn player_level(state: &MmoState, player: &pumpkin::entity::player::Player) -> u32 {
-    let curve = state.curve(SkillId::Salvage);
+    let curve = state.curve(SKILL);
     state
         .db()
-        .get_skill(player.gameprofile.id, SkillId::Salvage)
+        .get_skill(player.gameprofile.id, SKILL)
         .await
         .map(|data| curve.level_for_xp(data.xp).0)
         .unwrap_or(1)

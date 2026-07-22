@@ -5,7 +5,7 @@
 //! plan's Frontier rules); the quality seed keeps per-crop rolls
 //! deterministic across restarts.
 
-// Consumed by Agriculture handlers landing in Phase 1.
+// Consumed by the agriculture handlers (Cultivation track).
 #![allow(dead_code)]
 
 use pumpkin::{plugin::Context, world::World};

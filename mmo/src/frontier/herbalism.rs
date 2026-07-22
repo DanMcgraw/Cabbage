@@ -1,9 +1,10 @@
-//! Herbalism skill: plant/forage XP, quality yield, and consumable-healing
+//! Herbalism activity: plant/forage XP, quality yield, and consumable-healing
 //! bonuses.
 //!
-//! XP rule: one Herbalism award per broken natural plant or per eaten
-//! configured consumable. Tracked plants are provenance-marked on placement,
-//! so player-placed plants earn nothing.
+//! XP rule: one award per broken natural plant or per eaten configured
+//! consumable. Since the six-skill consolidation the awards feed Cultivation,
+//! shared with the agriculture activity. Tracked plants are
+//! provenance-marked on placement, so player-placed plants earn nothing.
 
 use pumpkin::plugin::api::events::{
     block::block_broken::BlockBrokenEvent,
@@ -18,7 +19,11 @@ use super::super::{
     skills::SkillId,
 };
 
-/// Award Herbalism XP for a broken natural plant, then roll quality yield.
+/// The shared skill track this activity awards: herbalism and agriculture
+/// both feed Cultivation since the six-skill consolidation.
+pub(crate) const SKILL: SkillId = SkillId::Cultivation;
+
+/// Award Cultivation XP for a broken natural plant, then roll quality yield.
 pub async fn handle_block_broken(
     state: &MmoState,
     event: &BlockBrokenEvent,
@@ -36,7 +41,7 @@ pub async fn handle_block_broken(
         return;
     };
 
-    progression::award_xp(state, player, SkillId::Herbalism, xp, XpSource::Forage).await;
+    progression::award_xp(state, player, SKILL, xp, XpSource::Forage).await;
 
     // Quality yield: chance for one bonus item of the broken plant.
     if !config.perks.enabled {
@@ -56,7 +61,7 @@ pub async fn handle_block_broken(
     }
 }
 
-/// Award Herbalism XP and a bounded healing bonus for eating configured
+/// Award Cultivation XP and a bounded healing bonus for eating configured
 /// plant-based consumables.
 pub async fn handle_item_use_complete(state: &MmoState, event: &PlayerItemUseCompleteEvent) {
     let player = &event.player;
@@ -70,7 +75,7 @@ pub async fn handle_item_use_complete(state: &MmoState, event: &PlayerItemUseCom
         return;
     };
 
-    progression::award_xp(state, player, SkillId::Herbalism, xp, XpSource::Consume).await;
+    progression::award_xp(state, player, SKILL, xp, XpSource::Consume).await;
 
     // Consumable-healing bonus, bounded by config and the global perk switch.
     if !config.perks.enabled || herbalism.consumable_heal_bonus <= 0.0 {

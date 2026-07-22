@@ -134,8 +134,8 @@ impl CommandExecutor for MmoRootExecutor {
     ) -> CommandResult<'a> {
         Box::pin(async move {
             if let Some(player) = sender.as_player() {
-                // Players get the 10-line chat summary grid; the protected
-                // inventory GUI lives at /mmo menu.
+                // Players get the eight-line compact chat summary grid; the
+                // protected inventory GUI lives at /mmo menu.
                 let result = send_summary_grid(&self.state, sender, &player, &player).await;
                 return Ok(result);
             }
@@ -843,5 +843,77 @@ mod tests {
         assert_eq!(help_message(false, 0).get_text(), first);
         assert_eq!(help_message(false, 999).get_text(), first);
         assert!(!first.contains("Next page"));
+    }
+
+    #[test]
+    fn skill_hint_lists_exactly_the_18_canonical_names() {
+        let hint = skill_names_hint();
+        let names: Vec<&str> = hint.split(", ").collect();
+        assert_eq!(names.len(), 18, "{hint}");
+        for (name, skill) in names.iter().zip(SkillId::ALL) {
+            assert_eq!(*name, skill.as_str().to_ascii_lowercase());
+        }
+        // Retired names are never advertised in hints.
+        for retired in [
+            "agriculture",
+            "herbalism",
+            "husbandry",
+            "taming",
+            "unarmed",
+            "acrobatics",
+            "repair",
+            "salvage",
+            "trading",
+            "charisma",
+        ] {
+            assert!(!names.contains(&retired), "{retired} leaked into {hint}");
+        }
+    }
+
+    #[test]
+    fn help_text_never_mentions_retired_skill_names() {
+        for admin in [false, true] {
+            let text = help_lines(admin).join("\n");
+            for retired in [
+                "Agriculture",
+                "Herbalism",
+                "Husbandry",
+                "Taming",
+                "Unarmed",
+                "Acrobatics",
+                "Repair",
+                "Salvage",
+                "Trading",
+                "Charisma",
+            ] {
+                assert!(
+                    !text
+                        .to_ascii_lowercase()
+                        .contains(&retired.to_ascii_lowercase()),
+                    "{retired} leaked into help (admin={admin}): {text}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn skill_arguments_accept_retired_aliases_as_canonical_skills() {
+        // Command arguments (top/setxp/migrate combat) share SkillId::from_name:
+        // retired spellings still parse, but always to the merged skill.
+        let expected = [
+            ("repair", SkillId::Maintenance),
+            ("Salvage", SkillId::Maintenance),
+            ("agriculture", SkillId::Cultivation),
+            ("HERBALISM", SkillId::Cultivation),
+            ("husbandry", SkillId::AnimalHandling),
+            ("taming", SkillId::AnimalHandling),
+            ("unarmed", SkillId::Athletics),
+            ("acrobatics", SkillId::Athletics),
+            ("trading", SkillId::Commerce),
+            ("charisma", SkillId::Commerce),
+        ];
+        for (alias, destination) in expected {
+            assert_eq!(SkillId::from_name(alias), Some(destination), "{alias}");
+        }
     }
 }

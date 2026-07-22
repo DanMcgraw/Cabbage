@@ -1,8 +1,10 @@
 # Cabbage MMO Module
 
 This crate implements a three-branch MMORPG-style levelling system for
-Pumpkin, following the phased plan in `plan.md`. It supports **23
-skills** across the Frontier, Warfare, and Enterprise branches, persists
+Pumpkin, following the phased plan in `plan.md`. It supports **18
+skills** across the Frontier, Warfare, and Enterprise branches — six per
+branch since the six-skill consolidation (`../../skill_consolidation_plan.md`)
+merged five skill pairs into shared progression tracks. It persists
 player progress in SQLite, and shows a transient bossbar (similar to mcMMO)
 when a player earns XP. It also replaces disabled world-generated ores with a
 configurable discovery mechanic: mining natural stone can expose a biome- and
@@ -17,7 +19,7 @@ mmo/src/
 |-- plan.md            # phased implementation plan
 |-- lib.rs             # MmoState, EventHandler impls, config load/save, feature blacklist
 |-- plugin.rs          # module lifecycle plus event/command registration
-|-- skills.rs          # SkillId (23 skills), BranchId, branch/skill metadata
+|-- skills.rs          # SkillId (18 skills), BranchId, branch/skill metadata, legacy aliases
 |-- progression.rs     # central award_xp path, XpSource, branch mastery, snapshots
 |-- audit.rs           # queued append-only audit worker (mmo-audit.log)
 |-- perks/             # perk scaffolding: cooldowns, batch breaks, level gates
@@ -36,21 +38,45 @@ mmo/src/
 
 | Branch | Skills |
 |---|---|
-| Frontier | Agriculture, Herbalism, Woodcutting, Mining, Excavation, Fishing, Husbandry, Taming |
-| Warfare | Blades, Axes, Archery, Unarmed, Defense, Acrobatics, Sorcery |
-| Enterprise | Smithing, Repair, Salvage, Alchemy, Enchanting, Tinkering, Trading, Charisma |
+| Frontier | Cultivation, Woodcutting, Mining, Excavation, Fishing, AnimalHandling |
+| Warfare | Blades, Axes, Archery, Athletics, Defense, Sorcery |
+| Enterprise | Smithing, Maintenance, Alchemy, Enchanting, Tinkering, Commerce |
 
 Each skill levels independently (default max level 100); branch mastery is the
-average of its member skill levels. The legacy `Combat` skill is retired: its
+average of its six member skill levels. Five skills are merged tracks that
+share one XP pool and one level with a retired partner skill:
+
+- `Cultivation` merges Agriculture + Herbalism (crop and herbal activities).
+- `AnimalHandling` merges Husbandry + Taming (breeding and taming activities).
+- `Athletics` merges Unarmed + Acrobatics (empty-hand combat and fall actions).
+- `Maintenance` merges Repair + Salvage (anvil and grindstone activities).
+- `Commerce` merges Trading + Charisma (both still disabled; see below).
+
+The merged skill is the only `SkillId`: both activities award into the shared
+pool and every perk gate reads the shared level, while the activity-specific
+config sections (XP values, block/action rules, enable switches) stay
+separate. Audit `XpSource` values remain activity-specific (e.g. `Repair` and
+`Salvage` stay distinct). Existing databases and configs are upgraded by the
+transactional, idempotent SQLite schema v2 and config v2 migrations described
+below (sum-of-XP for player rows; deterministic anchor rule for curves).
+
+The legacy `Combat` skill is retired: its
 stored XP is preserved in a `legacy_combat_xp` record (SQLite schema v1) until
 an administrator migrates it via `combat_migration.target` in config.ron or
 `/mmo migrate combat <skill>`. `Mining` XP remains Mining XP.
 
+For one compatibility period, `SkillId::from_name` and single-value config
+fields (including `combat_migration.target`) still accept the ten retired
+skill names and route them to their merged destination, but they are never
+written back out or shown in help/completion output.
+
 ## Perks
 
 Perk effects are gated by the global `perks` config (`enabled` kill switch,
-batch caps, proc-chance caps) and per-skill knobs in the `frontier` config
-section. Cooldowns are tick-based and in-memory. Multi-break perks always go
+batch caps, proc-chance caps) and per-activity knobs in the branch config
+sections. Every gate reads the merged skill's shared level (e.g. both the
+crop harvest bonus and the herbal quality yield gate on Cultivation).
+Cooldowns are tick-based and in-memory. Multi-break perks always go
 through `Context::break_blocks` (max 128 blocks, deduplicated, protection-
 and durability-aware); the cooldown is charged before the transaction so the
 events fired per broken block cannot re-trigger the perk recursively.
@@ -61,55 +87,59 @@ events fired per broken block cannot re-trigger the perk recursively.
 | Vein Miner | Mining | sneak + break ore | Breaks the connected ore vein in one bounded transaction. |
 | Heartwood | Woodcutting | passive | Chance (capped) of one bonus log + bonus XP on natural log breaks. |
 | Timber | Woodcutting | sneak + break natural log | Fells connected logs of the same type, bounded. |
-| Harvest bonus | Agriculture | passive | Chance (capped) of one bonus crop item on mature harvests; fertilized crops (bone meal) get a deterministic roll and bonus XP. |
+| Harvest bonus | Cultivation | passive | Chance (capped) of one bonus crop item on mature harvests; fertilized crops (bone meal) get a deterministic roll and bonus XP. |
 | Reel | Fishing | passive | Extra vanilla experience on a successful catch. |
 | Treasure replacement | Fishing | passive | Configured caught items are swapped for their mapped replacement (off by default). |
-| Quality yield | Herbalism | passive | Chance (capped) of one bonus item on natural plant breaks. |
-| Consumable healing | Herbalism | passive | Configured plant foods restore bonus health (bounded). |
+| Quality yield | Cultivation | passive | Chance (capped) of one bonus item on natural plant breaks. |
+| Consumable healing | Cultivation | passive | Configured plant foods restore bonus health (bounded). |
 | Earthmover | Excavation | sneak + break diggable block | Excavates connected blocks of the same type, bounded. |
 | Archaeology loot | Excavation | passive | Chance (capped) of a configured bonus item on diggable breaks. |
-| Skill damage | Blades / Axes / Unarmed | passive | Level-scaled attack damage bonus, capped per skill and by the global damage cap. |
+| Skill damage | Blades / Axes / Athletics | passive | Level-scaled attack damage bonus, capped per skill and by the global damage cap. |
 | Riposte | Blades | passive (cooldown) | Bonus damage when striking shortly after taking damage. |
-| Knockback | Unarmed | passive | Level-scaled knockback bonus, capped. |
+| Knockback | Athletics | passive | Level-scaled knockback bonus, capped. |
 | Resilience | Defense | passive | Level-scaled incoming-damage reduction, capped. |
-| Roll | Acrobatics | passive | Level-scaled fall-damage reduction, capped. |
+| Roll | Athletics | passive | Level-scaled fall-damage reduction, capped. |
 | Healing bolt | Sorcery | right-click staff (mana + cooldown) | Restores bounded health; costs mana. |
-| Repair discount | Repair | anvil (prepare preview) | Level-cost reduction while off cooldown; cooldown charged on take. |
-| Salvage bonus | Salvage | grindstone (prepare preview) | Bonus disenchant experience; cooldown charged on take. |
-| Material recovery | Salvage | grindstone take | Chance (capped) of one tool-tier material item. |
+| Repair discount | Maintenance | anvil (prepare preview) | Level-cost reduction while off cooldown; cooldown charged on take. |
+| Salvage bonus | Maintenance | grindstone (prepare preview) | Bonus disenchant experience; cooldown charged on take. |
+| Material recovery | Maintenance | grindstone take | Chance (capped) of one tool-tier material item. |
 | Offer discount | Enchanting | enchanting table (offer preview) | Level-requirement reduction, capped per level. |
 | Anvil marking | Smithing | anvil output | Adds creator/provenance item data; vanilla result preserved. |
 
 Warfare XP attribution: melee weapons are classified from the attack event's
-weapon snapshot (`_sword` → Blades, `_axe` → Axes, empty hand → Unarmed, bow
+weapon snapshot (`_sword` → Blades, `_axe` → Axes, empty hand → Athletics, bow
 and crossbow → the projectile path). Kill XP is awarded exactly once from
 Pumpkin's authoritative `PlayerKillEntityEvent`; its damage attribution and
 weapon snapshot select the skill without consulting the player's later
 inventory. Archery additionally earns small per-hit XP through projectile
-owner provenance. Defense XP comes from damage taken; Acrobatics XP from fall
-damage; Sorcery XP from casting.
+owner provenance. Defense XP comes from damage taken; Athletics also earns XP
+from fall damage; Sorcery XP from casting.
 
 Enterprise notes: Smithing earns craft and furnace-extraction XP; Alchemy
 earns XP only for explicitly configured potion item keys after a committed
 consumption (brewing itself is not attributable — `BrewEvent` carries no
 player — and potency mutation has no safe hook, both documented as blocked).
-Repair, Salvage, and Enchanting correlate previews with Pumpkin transaction
+Maintenance (repair and salvage activities) and Enchanting correlate previews
+with Pumpkin transaction
 IDs and award XP only from their committed completion events. `CraftItemEvent`
 is observational in this Pumpkin build, so creator/provenance markers are
 written onto honored anvil outputs instead.
-Trading and Charisma stay **disabled**: there is no villager-trade commit
-transaction or general economy hook yet. Their config sections and the
+Commerce has no live XP source yet: the trading and charisma activity configs
+stay **disabled** because there is no villager-trade commit transaction or
+general economy hook yet. Their config sections and the
 `rep_v1` reputation ledger exist so server owners can migrate in later
 without a schema change.
 
-XP-only Frontier sources: Husbandry uses committed breeding and animal-product
-events, with bounded configurable newborn trait rolls. Taming uses completed
-tames and owner-validated, consumed pet feeds. Pumpkin does not yet emit the
+XP-only Frontier sources: AnimalHandling earns from both the husbandry and
+taming activity configs — committed breeding and animal-product events, with
+bounded configurable newborn trait rolls, plus completed tames and
+owner-validated, consumed pet feeds. Pumpkin does not yet emit the
 feed completion for heal/trust interactions with already-tamed pets, so bond
 feeding remains dormant rather than awarding pre-action XP. Likewise, the
 bone-meal completion event is currently wired for bamboo but not ordinary
-crops; Agriculture listens to the committed event and will begin tracking
-fertilizer provenance when Pumpkin emits it for those crops.
+crops; the agriculture activity handler awards Cultivation from the committed
+event and will begin tracking fertilizer provenance when Pumpkin emits it for
+those crops.
 
 Player-placed ores, logs, plants, and diggable blocks never earn XP or feed
 perks: placements of tracked block types are recorded in the shared
@@ -216,6 +246,16 @@ CREATE TABLE legacy_combat_xp (
   loaded into memory at startup and persisted in per-tick batches.
 - `meta` records the schema version (`schema_version`) and migration markers
   (`combat_migrated_to`). Migrations are idempotent and run on open.
+- Schema v2 (six-skill consolidation) consolidates each retired skill pair's
+  `player_skills` rows into the canonical destination in a single
+  transaction: the destination row's XP becomes the sum of both retired rows
+  plus any pre-existing destination row, then the retired rows are deleted.
+  Sums saturate at SQLite's signed 64-bit limit rather than overflowing, and
+  unrelated skill rows are left untouched. The migration is guarded by the
+  schema version, rolls back (and fails the load) if the transaction cannot
+  complete, and is a no-op when an already migrated database is reopened.
+  Back up `mmo.db` before deploying the first build with this migration; a
+  concise success log reports how many player rows were consolidated.
 - `legacy_combat_xp` preserves retired Combat XP until an administrator
   migrates it.
 
@@ -227,9 +267,21 @@ into RON once, then drops those obsolete SQLite tables.
 
 The plugin config is stored as RON in the unified Cabbage data folder
 (`plugins/Cabbage/config.ron`). `config_version`
-tracks the MMO config schema; older files gain safe defaults for missing
-sections and are saved back on upgrade. Unknown skill names in the `skills`
-map (e.g. the retired `Combat`) are skipped with a warning.
+tracks the MMO config schema (currently 2); older files gain safe defaults
+for missing sections and are saved back on upgrade. Unknown skill names in
+the `skills` map (e.g. the retired `Combat`) are skipped with a warning.
+
+Config v2 (six-skill consolidation) merges retired pair entries in the
+`skills` map deterministically during deserialization: an explicit canonical
+entry always wins; otherwise the pair's anchor (Agriculture for Cultivation,
+Husbandry for AnimalHandling, Unarmed for Athletics, Repair for Maintenance,
+Trading for Commerce) supplies `max_level`/`base_xp`/`xp_multiplier`;
+`enabled` is the logical OR of the two retired entries so a partly enabled
+pair stays usable; conflicting curves are logged with the anchor's win.
+Retired keys are removed and the canonical config is saved once. The nested
+activity configs (`frontier.agriculture`, `frontier.herbalism`,
+`warfare.unarmed`, `enterprise.repair`, and so on) are untouched — they
+configure event sources, not levels.
 
 ```ron
 PluginConfig(
@@ -237,7 +289,7 @@ PluginConfig(
     mob_ai: true,
     mmo: Some(MmoConfig(
         enabled: true,
-        config_version: 1,
+        config_version: 2,
         message_on_level_up: true,
         save_interval_ticks: 6000,
         skills: {
@@ -299,35 +351,42 @@ proc chances, curve parameters) are clamped on load via `MmoConfig::sanitized`.
 
 ## Commands
 
-- `/mmo` — show your skill summary as a 10-line chat grid (players);
-  command help (console/RCON).
+- `/mmo` — show your skill summary as an eight-line compact chat grid
+  (players); command help (console/RCON).
 - `/mmo menu [player]` — open the protected 9x3 skill grid GUI for you or
   another online player.
-- `/mmo stats [player]` — the same chat grid for you or another online
-  player (players); full text table (console/RCON).
-- `/mmo stats chat [branch]` — alias for the chat summary grid, or one
-  branch per page with full XP values.
+- `/mmo stats [player]` — the same compact chat grid for you or another
+  online player (players); full text table (console/RCON).
+- `/mmo stats chat [branch]` — compatibility alias for the chat summary
+  grid, or one branch in detail with full XP values.
 - `/mmo help [page]` — compact, paginated command list.
-- `/mmo top <skill>` — top players for any skill.
+- `/mmo top <skill>` — top players for any of the 18 canonical skills.
 - `/mmo reload` — reload config.ron (admin).
 - `/mmo setxp <player> <skill> <xp>` — set a player's skill XP (admin).
 - `/mmo migrate status` — legacy Combat XP preservation status (admin).
 - `/mmo migrate combat <skill>` — move preserved Combat XP to a skill (admin).
 
-The default chat summary is a three-column table — one column per branch,
-one row per skill index — of fixed 10-character `minecraft:uniform` cells: a
-four-letter skill code plus a right-aligned level. Levels above 999 show a
-compact `1k+` marker; the exact level stays in hover text. Hover text on
-headers and cells carries full branch/skill names, mastery, enabled counts,
-progress toward the next level, and total XP. Disabled skills keep their
-level in dark gray strikethrough (winning over the max-level bold style,
-with hover reporting both states). The summary never assumes a client's
-chat dimensions: padding is applied only inside uniform-font cells and each
-page stays within 10 explicit lines.
+Skill arguments suggest and display only the 18 canonical skill names, but
+still parse the ten retired names as aliases for one compatibility period
+(see Skill Model).
+
+The default chat summary is exactly eight lines — a title with a `/mmo menu`
+hint, one branch-header row, and six skill rows — laid out as a three-column
+table (one column per branch, one row per skill index) of fixed 12-character
+`minecraft:uniform` cells: an up-to-eight-character skill label, one space,
+and a three-character right-aligned level with no `L` marker. Levels above
+999 show a compact `1k+` marker; the exact level stays in hover text. Hover
+text on headers and cells carries full branch/skill names, mastery, enabled
+counts, progress toward the next level, and total XP. Disabled skills keep
+their level in dark gray strikethrough (winning over the max-level bold
+style, with hover reporting both states). The summary never assumes a
+client's chat dimensions: padding is applied only inside uniform-font cells
+and each page stays within the 10-line vanilla chat budget.
 
 `/mmo menu` opens the protected `Generic9x3` skill grid: one branch per row,
-a branch summary in each row's first slot, all 23 skills visible at once, and
-a Help slot that closes the menu and prints the command list. It is
+a branch summary in each row's first slot (0/9/18), the 18 canonical skills
+in slots 1-6, 10-15, and 19-24, a Help slot at 17 that closes the menu and
+prints the command list, and inert filler slots at 7-8, 16, and 25-26. It is
 read-only — items cannot be taken out or placed into it. Icon names stay
 concise while structured lore shows progress toward the next level, total XP,
 and explicit Disabled or Max level states.

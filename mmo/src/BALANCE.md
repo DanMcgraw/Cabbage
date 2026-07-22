@@ -7,11 +7,29 @@ value lives in `config.ron` and can be tuned per server.
 
 ## Skill model
 
-- 23 skills in 3 branches. Each levels independently to 100 by default.
-- Branch mastery = average of the branch's member skill levels.
+- 18 skills in 3 branches (six per branch). Each levels independently to
+  100 by default.
+- Branch mastery = average of the branch's six member skill levels.
+- Five skills are merged progression tracks that share one XP pool and one
+  level with a retired partner skill: Cultivation (Agriculture +
+  Herbalism), AnimalHandling (Husbandry + Taming), Athletics (Unarmed +
+  Acrobatics), Maintenance (Repair + Salvage), Commerce (Trading +
+  Charisma). The activity-specific XP sources below are unchanged; both
+  activities in a pair simply award the merged skill, and every shared perk
+  gates on the merged level (Cultivation drives crop and herbal perks,
+  AnimalHandling breeding and taming perks, Athletics unarmed and
+  acrobatics perks, Maintenance repair and salvage perks). Perk strength
+  values are unchanged from the pre-merge profiles.
+- **Rate decision:** for all five pairs we accept faster progression
+  because each merged skill covers a broader discipline — no XP rate
+  numbers were changed.
+- Commerce has no live XP source yet: the trading and charisma activity
+  configs stay disabled (no villager-trade commit transaction or general
+  economy hook), so the merged skill currently earns nothing.
 - Default curve for every skill: `base_xp: 50`, `xp_multiplier: 1.15`
   (level 2 at 50 XP, requirement grows ×1.15 per level). Older configs keep
-  their serialized per-skill values (e.g. `max_level: 99`).
+  their serialized per-skill values (e.g. `max_level: 99`); config v2
+  migrates retired pair curves deterministically (see the migration guide).
 
 ## Frontier
 
@@ -19,12 +37,10 @@ value lives in `config.ron` and can be tuned per server.
 |---|---|---|
 | Mining | ore breaks from the `xp_rewards.blocks` table (coal 8 → ancient debris 150) | Prospector (5% + 0.2%/level, cap 35%, +1 approved ore drop; no bonus skill XP), Vein Miner (sneak+break, ≤16 blocks) |
 | Woodcutting | natural logs 6–8 | Heartwood (2%: bonus log + 25 XP), Timber (sneak+break, ≤32 blocks) |
-| Agriculture | mature harvests 10–14 | Harvest bonus (10% +1 item), fertilizer (bone meal): deterministic roll, guaranteed bonus + 10 XP |
-| Herbalism | plants 2–6, consumables 3–25 | Quality yield (8% +1 item), consumable healing (+1.0 health) |
+| Cultivation | mature harvests 10–14 (agriculture); plants 2–6, consumables 3–25 (herbalism) | Harvest bonus (10% +1 item), fertilizer (bone meal): deterministic roll, guaranteed bonus + 10 XP; Quality yield (8% +1 item), consumable healing (+1.0 health) |
 | Excavation | diggable blocks 4–8 | Archaeology loot (3–8% per table), Earthmover (sneak+break, ≤16 blocks) |
 | Fishing | catches 5–60, default 10 | Reel (+2 vanilla XP), treasure replacement (off) |
-| Husbandry | breeding 15–40, default 15; products 8–10 | Newborn trait roll (15%, bounded by global proc cap; configured trait list) |
-| Taming | tames 30–50, default 30; pet feeding 4 | — |
+| AnimalHandling | breeding 15–40, default 15; products 8–10 (husbandry); tames 30–50, default 30; pet feeding 4 (taming) | Newborn trait roll (15%, bounded by global proc cap; configured trait list) |
 
 Player-placed blocks never earn XP (shared provenance denylist). Batch perks
 are capped by `perks.batch_break_max_blocks` (16) and Pumpkin's hard 128, and
@@ -37,9 +53,8 @@ share `perks.batch_break_cooldown_ticks` (100).
 | Blades | kills from `xp_rewards.mobs` (attributed by weapon snapshot) | Damage +0.4%/level (cap 50%), Riposte (+25% within 60 ticks of taking damage, 200-tick cooldown) |
 | Axes | kills | Damage +0.5%/level (cap 60%) |
 | Archery | kills; +4 XP per projectile hit | — |
-| Unarmed | kills | Damage +0.3%/level (cap 40%), knockback +0.4%/level (cap 50%) |
+| Athletics | empty-hand kills (unarmed); 3 XP per fall-damage point, cap 60/fall (acrobatics) | Damage +0.3%/level (cap 40%), knockback +0.4%/level (cap 50%); Roll: −0.2%/level fall damage (cap 25%) |
 | Defense | 2 XP per damage point taken (cap 40/hit) | Resilience: −0.15%/level incoming damage (cap 15%) |
-| Acrobatics | 3 XP per fall-damage point (cap 60/fall) | Roll: −0.2%/level fall damage (cap 25%) |
 | Sorcery | 15 XP per cast | Healing bolt: 25 mana, 100-tick cooldown, heals 4.0; mana 100 max, 0.05/tick regen |
 
 All damage perks are clamped by `perks.max_damage_multiplier` (2.0× base) and
@@ -50,13 +65,11 @@ proc chances by `perks.max_proc_chance` (35%).
 | Skill | XP sources (defaults) | Perks (defaults) |
 |---|---|---|
 | Smithing | crafts 8–110, furnace extraction 1–40 (default 2) | Anvil outputs carry creator/provenance item data |
-| Repair | 20 XP per anvil take | −0.05 cost/level (cap 10), 100-tick cooldown |
-| Salvage | 15 XP per grindstone take | +0.2% experience/level (cap 25%), recovery roll 10% |
+| Maintenance | 20 XP per anvil take (repair); 15 XP per grindstone take (salvage) | Repair discount −0.05 cost/level (cap 10), 100-tick cooldown; salvage +0.2% experience/level (cap 25%), recovery roll 10% |
 | Alchemy | potions 10–14, default 8 | — |
 | Enchanting | 5 XP per level of cost (cap 100) | −0.02 offer requirement/level (cap 5) |
 | Tinkering | mechanism crafts 4–18 | — |
-| Trading | **disabled** (no trade transaction) | reputation ledger only |
-| Charisma | **disabled** (no economy/NPC hook) | reputation ledger only |
+| Commerce | **disabled** (trading: no trade transaction; charisma: no economy/NPC hook) | reputation ledger only |
 
 ## Progression bounds
 
@@ -95,13 +108,38 @@ proc chances by `perks.max_proc_chance` (35%).
 4. Review the new `frontier`/`warfare`/`enterprise`/`perks` sections in
    `config.ron` and tune to taste; `/mmo reload` applies changes.
 
+## Migration guide (23 skills → 18 skills)
+
+1. **Backup** `plugins/Cabbage/mmo.db` and `plugins/Cabbage/config.ron`
+   before upgrading.
+2. On first load, Cabbage upgrades automatically and idempotently:
+   - SQLite schema v2 consolidates each retired pair's `player_skills` rows
+     in one transaction: the canonical destination row receives the sum of
+     both retired rows plus any pre-existing destination row (saturating at
+     the signed 64-bit limit), then the retired rows are deleted. Unrelated
+     rows are untouched, a failure rolls back and fails the load, and
+     reopening a migrated database is a no-op.
+   - Config v2 merges retired `skills` map entries deterministically: an
+     explicit canonical entry wins; otherwise the anchor (Agriculture,
+     Husbandry, Unarmed, Repair, Trading) supplies
+     `max_level`/`base_xp`/`xp_multiplier`, `enabled` is the logical OR of
+     the pair, and curve conflicts are logged with the anchor's win. New
+     saves contain only canonical keys.
+   - Nested activity configs (agriculture, herbalism, husbandry, taming,
+     unarmed, acrobatics, repair, salvage, trading, charisma) and all perk
+     knobs are untouched.
+3. Old admin scripts keep working for one compatibility period: retired
+   skill names still parse as aliases in `/mmo top`, `/mmo setxp`,
+   `/mmo migrate combat`, and `combat_migration.target`, but help and
+   completion output only teach the 18 canonical names.
+
 ## Major perks, capstones, and menus
 
 Per the phased plan, major perks (25/50/75) and capstones (100) are enabled
 one at a time only after a skill's basic XP flow has been live-tested; none
-are on by default. `/mmo` is the default chat-area summary: a 10-line,
+are on by default. `/mmo` is the default chat-area summary: an eight-line,
 three-column level grid for players. `/mmo menu` uses Pumpkin's native
-protected GUI lifecycle to show all 23 skill levels and progress in a
+protected GUI lifecycle to show all 18 skill levels and progress in a
 read-only 9×3 inventory. `/mmo stats [player]` prints the same tabular chat
 summary for players (full text for console), and `/mmo stats chat <branch>`
 keeps the detailed per-branch text view. More interactive perk/capstone

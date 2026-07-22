@@ -1,9 +1,10 @@
-//! Husbandry skill: breeding XP and animal-product XP.
+//! Husbandry activity: breeding XP and animal-product XP.
 //!
-//! XP rules: one Husbandry award per bred animal (attributed to the breeder
-//! from the event) and per collected animal product (right tool on the right
-//! animal). A bounded, configurable trait roll writes directly to the baby
-//! exposed by `EntityBreedCompleteEvent`.
+//! XP rules: one award per bred animal (attributed to the breeder from the
+//! event) and per collected animal product (right tool on the right animal).
+//! Since the six-skill consolidation the awards feed AnimalHandling, shared
+//! with the taming activity. A bounded, configurable trait roll writes
+//! directly to the baby exposed by `EntityBreedCompleteEvent`.
 
 use pumpkin::plugin::api::events::entity::{
     entity_breed::EntityBreedCompleteEvent, entity_product::AnimalProductCollectCompleteEvent,
@@ -17,7 +18,11 @@ use super::super::{
     skills::SkillId,
 };
 
-/// Award Husbandry XP to the breeder when two animals produce a baby.
+/// The shared skill track this activity awards: husbandry and taming both
+/// feed AnimalHandling since the six-skill consolidation.
+pub(crate) const SKILL: SkillId = SkillId::AnimalHandling;
+
+/// Award AnimalHandling XP to the breeder when two animals produce a baby.
 pub async fn handle_entity_breed_complete(state: &MmoState, event: &EntityBreedCompleteEvent) {
     let Some(breeder) = event.breeder.as_ref() else {
         return;
@@ -33,7 +38,7 @@ pub async fn handle_entity_breed_complete(state: &MmoState, event: &EntityBreedC
         .copied()
         .unwrap_or(husbandry.default_breed_xp);
 
-    progression::award_xp(state, breeder, SkillId::Husbandry, xp, XpSource::Breed).await;
+    progression::award_xp(state, breeder, SKILL, xp, XpSource::Breed).await;
 
     if !config.perks.enabled || husbandry.traits.is_empty() {
         return;
@@ -63,7 +68,7 @@ pub async fn handle_entity_breed_complete(state: &MmoState, event: &EntityBreedC
     ));
 }
 
-/// Award Husbandry XP for collecting animal products (bucket on a cow,
+/// Award AnimalHandling XP for collecting animal products (bucket on a cow,
 /// shears on a sheep, bowl on a mooshroom).
 pub async fn handle_product_complete(state: &MmoState, event: &AnimalProductCollectCompleteEvent) {
     let player = &event.player;
@@ -77,12 +82,5 @@ pub async fn handle_product_complete(state: &MmoState, event: &AnimalProductColl
         return;
     };
 
-    progression::award_xp(
-        state,
-        player,
-        SkillId::Husbandry,
-        product.xp,
-        XpSource::AnimalProduct,
-    )
-    .await;
+    progression::award_xp(state, player, SKILL, product.xp, XpSource::AnimalProduct).await;
 }

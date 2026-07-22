@@ -12,8 +12,10 @@ fn default_true() -> bool {
     true
 }
 
-/// Frontier branch configuration (Mining, Woodcutting, Agriculture, Fishing
-/// and, as they land, Herbalism, Excavation, Husbandry, Taming).
+/// Frontier branch configuration (Cultivation, Woodcutting, Mining,
+/// Excavation, Fishing, AnimalHandling). The `agriculture`/`herbalism` and
+/// `husbandry`/`taming` sections keep separate activity knobs while each
+/// pair feeds one shared skill track.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FrontierConfig {
     #[serde(default)]

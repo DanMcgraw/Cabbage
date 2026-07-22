@@ -138,13 +138,11 @@ impl MmoState {
             }
         }
 
-        // Config schema upgrade: fill any missing skill curves so the saved
-        // file documents every skill, and record the current version.
-        if mmo_config.config_version < CURRENT_CONFIG_VERSION {
-            mmo_config.config_version = CURRENT_CONFIG_VERSION;
-            for skill in SkillId::ALL {
-                mmo_config.skills.entry(*skill).or_default();
-            }
+        // Config schema upgrade: retired pair entries were already merged
+        // into their canonical destinations while deserializing (config v2);
+        // here we fill any missing skill curves so the saved file documents
+        // every skill, and record the current version.
+        if upgrade_mmo_config(&mut mmo_config) {
             config_dirty = true;
         }
         if config_dirty {
@@ -367,6 +365,23 @@ fn build_curves(config: &MmoConfig) -> HashMap<SkillId, LevelCurve> {
         curves.insert(*skill, LevelCurve::new(&skill_config));
     }
     curves
+}
+
+/// Bring an older MMO config schema up to the current version, filling any
+/// missing canonical skill curves with defaults. Returns true when the
+/// config changed and should be saved back. Retired pair entries are merged
+/// during deserialization (see `config::deserialize_skill_configs`), before
+/// this runs; this pass is what inserts defaults for canonical skills that
+/// had no old or new entry, and it saves exactly once via the caller.
+fn upgrade_mmo_config(config: &mut MmoConfig) -> bool {
+    if config.config_version >= CURRENT_CONFIG_VERSION {
+        return false;
+    }
+    config.config_version = CURRENT_CONFIG_VERSION;
+    for skill in SkillId::ALL {
+        config.skills.entry(*skill).or_default();
+    }
+    true
 }
 
 fn load_plugin_config(data_folder: &PathBuf) -> Result<PluginConfig, String> {
@@ -931,5 +946,50 @@ mod tests {
         config.disabled_world_features.clear();
         config.ore_reveal.enabled = false;
         assert!(!should_disable_world_feature(&config, "ore_emerald"));
+    }
+
+    #[test]
+    fn config_upgrade_fills_missing_canonical_skills_once() {
+        let mut config = MmoConfig::default();
+        config.config_version = 1;
+        config.skills.retain(|skill, _| *skill == SkillId::Mining);
+
+        assert!(upgrade_mmo_config(&mut config));
+        assert_eq!(config.config_version, CURRENT_CONFIG_VERSION);
+        assert_eq!(config.skills.len(), SkillId::ALL.len());
+        for skill in SkillId::ALL {
+            assert!(config.skills.contains_key(skill));
+        }
+        // A current-version config is left alone (no repeated saves).
+        assert!(!upgrade_mmo_config(&mut config));
+    }
+
+    #[test]
+    fn config_v1_file_with_retired_pairs_upgrades_to_a_full_canonical_map() {
+        // Parse path first (deterministic pair merge), then the version bump
+        // fills the canonical skills no old or new entry ever covered.
+        let mut config: MmoConfig = ron::from_str(
+            "(enabled:true,message_on_level_up:true,save_interval_ticks:6000,\
+             config_version:1,\
+             skills:{\
+                 Mining:(max_level:99,base_xp:50,xp_multiplier:1.15),\
+                 Repair:(max_level:99,base_xp:60,xp_multiplier:1.14,enabled:true),\
+                 Salvage:(max_level:50,base_xp:40,xp_multiplier:1.10,enabled:false)\
+             },\
+             disabled_world_features:[])",
+        )
+        .unwrap();
+        assert_eq!(config.skills.len(), 2);
+        assert_eq!(config.skills[&SkillId::Maintenance].max_level, 99);
+        assert!(config.skills[&SkillId::Maintenance].enabled);
+
+        assert!(upgrade_mmo_config(&mut config));
+        assert_eq!(config.skills.len(), SkillId::ALL.len());
+        // The merged destination keeps its migrated curve, not the default.
+        assert_eq!(config.skills[&SkillId::Maintenance].max_level, 99);
+        assert_eq!(
+            config.skills[&SkillId::Cultivation],
+            crate::config::SkillConfig::default()
+        );
     }
 }

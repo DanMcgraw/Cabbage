@@ -1,5 +1,13 @@
 # Cabbage MMO GUI Plan
 
+> **Superseded (historical record).** The 23-skill model this plan was
+> written for was replaced by the 18-skill, six-per-branch consolidation in
+> `skill_consolidation_plan.md`, which defines the final `/mmo` chat grid
+> (eight lines, 12-character cells) and the `/mmo menu` 9x3 layout (3
+> headers, 18 skills, Help, 5 fillers). Keep this document as the design
+> record of the original GUI work; do not treat its skill counts or layout
+> as current.
+
 ## Goal
 
 Replace the oversized `/mmo` chat response with a player-facing grid that

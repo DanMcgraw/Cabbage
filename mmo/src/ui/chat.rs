@@ -26,11 +26,15 @@ pub(crate) const MAX_CHAT_LINES: usize = 10;
 
 const UNIFORM_FONT: &str = "minecraft:uniform";
 
-/// Fixed character width of every table column (header and skill cells).
-const CELL_WIDTH: usize = 10;
+/// Visible budget for a skill label inside its cell.
+const LABEL_WIDTH: usize = 8;
 
 /// Character width of the right-aligned visible level field inside a cell.
 const LEVEL_FIELD_WIDTH: usize = 3;
+
+/// Fixed character width of every table column (header and skill cells):
+/// label, one space, and the level field.
+const CELL_WIDTH: usize = LABEL_WIDTH + 1 + LEVEL_FIELD_WIDTH;
 
 /// Column separator between table cells.
 const SEPARATOR: &str = " | ";
@@ -54,32 +58,28 @@ fn branch_color(branch: BranchId) -> NamedColor {
     }
 }
 
-/// Four-letter skill abbreviations used in the compact summary.
-fn skill_abbr(skill: SkillId) -> &'static str {
+/// Short visible labels used in the compact summary, each at most
+/// [`LABEL_WIDTH`] characters. Full names stay in each cell's hover text.
+fn skill_label(skill: SkillId) -> &'static str {
     match skill {
-        SkillId::Agriculture => "Agri",
-        SkillId::Herbalism => "Herb",
-        SkillId::Woodcutting => "Wood",
-        SkillId::Mining => "Mine",
-        SkillId::Excavation => "Exca",
-        SkillId::Fishing => "Fish",
-        SkillId::Husbandry => "Husb",
-        SkillId::Taming => "Tame",
-        SkillId::Blades => "Blad",
+        SkillId::Cultivation => "Cultiv",
+        SkillId::Woodcutting => "Woodcut",
+        SkillId::Mining => "Mining",
+        SkillId::Excavation => "Excavat",
+        SkillId::Fishing => "Fishing",
+        SkillId::AnimalHandling => "Animals",
+        SkillId::Blades => "Blades",
         SkillId::Axes => "Axes",
-        SkillId::Archery => "Arch",
-        SkillId::Unarmed => "Unar",
-        SkillId::Defense => "Defe",
-        SkillId::Acrobatics => "Acro",
-        SkillId::Sorcery => "Sorc",
-        SkillId::Smithing => "Smit",
-        SkillId::Repair => "Repa",
-        SkillId::Salvage => "Salv",
-        SkillId::Alchemy => "Alch",
-        SkillId::Enchanting => "Ench",
-        SkillId::Tinkering => "Tink",
-        SkillId::Trading => "Trad",
-        SkillId::Charisma => "Char",
+        SkillId::Archery => "Archery",
+        SkillId::Athletics => "Athletic",
+        SkillId::Defense => "Defense",
+        SkillId::Sorcery => "Sorcery",
+        SkillId::Smithing => "Smithing",
+        SkillId::Maintenance => "Maintain",
+        SkillId::Alchemy => "Alchemy",
+        SkillId::Enchanting => "Enchant",
+        SkillId::Tinkering => "Tinker",
+        SkillId::Commerce => "Commerce",
     }
 }
 
@@ -94,10 +94,14 @@ fn level_field(level: u32) -> String {
     }
 }
 
-/// Fixed-width skill cell text: four-character code, `L`, the right-aligned
-/// level field, and one trailing space — exactly [`CELL_WIDTH`] characters.
+/// Fixed-width skill cell text: left-aligned label, one space, and the
+/// right-aligned level field — exactly [`CELL_WIDTH`] characters.
 fn skill_cell_text(skill: SkillId, level: u32) -> String {
-    format!("{} L{} ", skill_abbr(skill), level_field(level))
+    format!(
+        "{:<LABEL_WIDTH$} {}",
+        skill_label(skill),
+        level_field(level)
+    )
 }
 
 /// Fixed-width branch header text: uppercased branch name, left-aligned.
@@ -292,7 +296,7 @@ pub(crate) fn summary_lines(
 }
 
 /// One branch per page with full XP values: heading, one row per skill
-/// (8 at most), and a navigation hint — 10 lines for the largest branch.
+/// (6 at most), and a navigation hint — 8 lines per branch.
 pub(crate) fn branch_lines(
     snapshot: &PlayerSnapshot,
     skill_info: &SkillInfo,
@@ -442,25 +446,74 @@ mod tests {
     }
 
     #[test]
-    fn abbreviations_are_unique_fixed_width_four_letter_codes() {
-        let mut abbrs: Vec<&str> = SkillId::ALL
+    fn labels_match_the_plan_and_fit_the_label_budget() {
+        let expected = [
+            (SkillId::Cultivation, "Cultiv"),
+            (SkillId::Woodcutting, "Woodcut"),
+            (SkillId::Mining, "Mining"),
+            (SkillId::Excavation, "Excavat"),
+            (SkillId::Fishing, "Fishing"),
+            (SkillId::AnimalHandling, "Animals"),
+            (SkillId::Blades, "Blades"),
+            (SkillId::Axes, "Axes"),
+            (SkillId::Archery, "Archery"),
+            (SkillId::Athletics, "Athletic"),
+            (SkillId::Defense, "Defense"),
+            (SkillId::Sorcery, "Sorcery"),
+            (SkillId::Smithing, "Smithing"),
+            (SkillId::Maintenance, "Maintain"),
+            (SkillId::Alchemy, "Alchemy"),
+            (SkillId::Enchanting, "Enchant"),
+            (SkillId::Tinkering, "Tinker"),
+            (SkillId::Commerce, "Commerce"),
+        ];
+        assert_eq!(expected.len(), SkillId::ALL.len());
+        for (skill, label) in expected {
+            assert_eq!(skill_label(skill), label, "{skill} label");
+            assert!(label.len() <= LABEL_WIDTH, "{skill} label too long");
+        }
+        let mut labels: Vec<&str> = SkillId::ALL
             .iter()
-            .map(|skill| skill_abbr(*skill))
+            .map(|skill| skill_label(*skill))
             .collect();
-        assert!(abbrs.iter().all(|abbr| abbr.len() == 4));
-        abbrs.sort_unstable();
-        abbrs.dedup();
-        assert_eq!(abbrs.len(), SkillId::ALL.len());
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(labels.len(), SkillId::ALL.len());
     }
 
     #[test]
-    fn summary_is_ten_lines_title_headers_and_eight_rows() {
+    fn summary_is_eight_lines_title_headers_and_six_rows() {
         let snapshot = PlayerSnapshot::default();
         let lines = summary_lines(&snapshot, &enabled_info(), None);
-        assert_eq!(lines.len(), MAX_CHAT_LINES);
-        // Title, branch header row, then the data rows.
-        assert_eq!(lines.len() - 2, 8);
-        assert_eq!(summary_row_count(), 8);
+        // Title, branch header row, then one data row per skill index; all
+        // three branches have six skills.
+        assert_eq!(lines.len(), 8);
+        assert!(lines.len() <= MAX_CHAT_LINES);
+        assert_eq!(lines.len() - 2, 6);
+        assert_eq!(summary_row_count(), 6);
+    }
+
+    #[test]
+    fn default_summary_matches_the_planned_grid_row_for_row() {
+        let snapshot = PlayerSnapshot::default();
+        let lines = summary_lines(&snapshot, &enabled_info(), None);
+        let rendered: Vec<String> = lines.iter().map(|line| line.clone().get_text()).collect();
+        assert!(rendered[0].contains("/mmo menu"));
+        let header = format!(
+            "{:<CELL_WIDTH$} | {:<CELL_WIDTH$} | {:<CELL_WIDTH$}",
+            "FRONTIER", "WARFARE", "ENTERPRISE"
+        );
+        let expected: Vec<String> = [
+            header,
+            "Cultiv     1 | Blades     1 | Smithing   1".to_string(),
+            "Woodcut    1 | Axes       1 | Maintain   1".to_string(),
+            "Mining     1 | Archery    1 | Alchemy    1".to_string(),
+            "Excavat    1 | Athletic   1 | Enchant    1".to_string(),
+            "Fishing    1 | Defense    1 | Tinker     1".to_string(),
+            "Animals    1 | Sorcery    1 | Commerce   1".to_string(),
+        ]
+        .into();
+        assert_eq!(rendered[1..], expected[..]);
     }
 
     #[test]
@@ -469,7 +522,7 @@ mod tests {
         let text = join_text(&summary_lines(&snapshot, &enabled_info(), None));
         for skill in SkillId::ALL {
             assert_eq!(
-                text.matches(skill_abbr(*skill)).count(),
+                text.matches(skill_label(*skill)).count(),
                 1,
                 "summary must show {skill} exactly once: {text}"
             );
@@ -484,7 +537,7 @@ mod tests {
             for (row, skill) in branch.skills().iter().enumerate() {
                 let cells = row_cells(&lines[2 + row]);
                 assert!(
-                    plain_text(cells[column]).starts_with(skill_abbr(*skill)),
+                    plain_text(cells[column]).starts_with(skill_label(*skill)),
                     "{skill} must sit in row {row}, column {column}"
                 );
             }
@@ -492,13 +545,32 @@ mod tests {
     }
 
     #[test]
-    fn missing_warfare_eighth_skill_is_a_blank_fixed_width_cell() {
+    fn balanced_branches_need_no_blank_cells() {
+        // All three branches have six skills, so every data row is a full
+        // 42-character table row with no blank seventh or eighth cells.
         let snapshot = PlayerSnapshot::default();
         let lines = summary_lines(&snapshot, &enabled_info(), None);
-        let last_row = row_cells(lines.last().expect("eighth data row"));
-        let warfare_cell = plain_text(last_row[1]);
-        assert_eq!(warfare_cell, " ".repeat(CELL_WIDTH));
-        assert_eq!(warfare_cell.len(), CELL_WIDTH);
+        for line in &lines[2..] {
+            assert_eq!(line.clone().get_text().len(), TABLE_WIDTH);
+            let cells = row_cells(line);
+            assert_eq!(cells.len(), 3);
+            for cell in cells {
+                assert_eq!(plain_text(cell).len(), CELL_WIDTH);
+                assert_ne!(plain_text(cell), " ".repeat(CELL_WIDTH));
+            }
+        }
+    }
+
+    #[test]
+    fn no_visible_cell_contains_the_retired_l_marker() {
+        let snapshot = PlayerSnapshot::default();
+        let lines = summary_lines(&snapshot, &enabled_info(), None);
+        for line in &lines {
+            assert!(
+                !line.clone().get_text().contains('L'),
+                "summary line must not show the retired L marker: {line:?}"
+            );
+        }
     }
 
     #[test]
@@ -523,22 +595,29 @@ mod tests {
     }
 
     #[test]
-    fn one_two_and_three_digit_levels_align_identically() {
+    fn level_field_stays_three_characters_across_digit_counts() {
+        // One-XP-per-level curve (xp = level - 1) so tests can reach
+        // three-digit levels without huge XP values.
+        let skill_info = |_: SkillId| (tall_curve(2000), true);
         let mut snapshot = PlayerSnapshot::default();
-        snapshot.set(SkillId::Agriculture, PlayerSkillSnapshot::new(0)); // L1
-        snapshot.set(SkillId::Herbalism, PlayerSkillSnapshot::new(100)); // L2
-        let skill_info = |skill: SkillId| {
-            if skill == SkillId::Woodcutting {
-                (tall_curve(200), true)
-            } else {
-                (test_curve(), true)
-            }
-        };
-        snapshot.set(SkillId::Woodcutting, PlayerSkillSnapshot::new(99)); // L100
+        let cases = [
+            (SkillId::Cultivation, 0, "Cultiv     1"),      // L1
+            (SkillId::Woodcutting, 8, "Woodcut    9"),      // L9
+            (SkillId::Mining, 9, "Mining    10"),           // L10
+            (SkillId::Excavation, 98, "Excavat   99"),      // L99
+            (SkillId::Fishing, 99, "Fishing  100"),         // L100
+            (SkillId::AnimalHandling, 998, "Animals  999"), // L999
+        ];
+        for (skill, xp, _) in &cases {
+            snapshot.set(*skill, PlayerSkillSnapshot::new(*xp));
+        }
         let lines = summary_lines(&snapshot, &skill_info, None);
-        assert_eq!(plain_text(row_cells(&lines[2])[0]), "Agri L  1 ");
-        assert_eq!(plain_text(row_cells(&lines[3])[0]), "Herb L  2 ");
-        assert_eq!(plain_text(row_cells(&lines[4])[0]), "Wood L100 ");
+        for (row, (skill, _, expected)) in cases.iter().enumerate() {
+            // All six cases are Frontier skills in canonical row order.
+            let cell = row_cells(&lines[2 + row])[0];
+            assert_eq!(plain_text(cell), *expected, "{skill} cell");
+            assert_eq!(plain_text(cell).len(), CELL_WIDTH);
+        }
     }
 
     #[test]
@@ -547,30 +626,32 @@ mod tests {
         snapshot.set(SkillId::Mining, PlayerSkillSnapshot::new(1000)); // L1001
         let skill_info = |_: SkillId| (tall_curve(2000), true);
         let lines = summary_lines(&snapshot, &skill_info, None);
-        let cells = row_cells(&lines[5]); // Mining is Frontier row index 3
+        let cells = row_cells(&lines[4]); // Mining is Frontier row index 2
         let mining = cells[0];
-        assert_eq!(plain_text(mining), "Mine L1k+ ");
+        assert_eq!(plain_text(mining), "Mining   1k+");
         assert_eq!(plain_text(mining).len(), CELL_WIDTH);
-        assert!(hover_text(mining).contains("Level 1001"));
+        let hover = hover_text(mining);
+        assert!(hover.contains("Level 1001"));
+        assert!(hover.contains("Total XP: 1000"));
     }
 
     #[test]
     fn disabled_cells_keep_their_level_with_disabled_styling() {
         let mut snapshot = PlayerSnapshot::default();
-        snapshot.set(SkillId::Trading, PlayerSkillSnapshot::new(100)); // L2
-        let skill_info = |skill: SkillId| (test_curve(), skill != SkillId::Trading);
+        snapshot.set(SkillId::Commerce, PlayerSkillSnapshot::new(100)); // L2
+        let skill_info = |skill: SkillId| (test_curve(), skill != SkillId::Commerce);
         let lines = summary_lines(&snapshot, &skill_info, None);
-        // Trading is Enterprise row index 6, column 2.
-        let cells = row_cells(&lines[2 + 6]);
-        let trading = cells[2];
-        assert_eq!(plain_text(trading), "Trad L  2 ");
+        // Commerce is Enterprise row index 5, column 2.
+        let cells = row_cells(&lines[2 + 5]);
+        let commerce = cells[2];
+        assert_eq!(plain_text(commerce), "Commerce   2");
         assert_eq!(
-            trading.style.color,
+            commerce.style.color,
             Some(Color::Named(NamedColor::DarkGray))
         );
-        assert_eq!(trading.style.strikethrough, Some(true));
-        let hover = hover_text(trading);
-        assert!(hover.contains("Trading"));
+        assert_eq!(commerce.style.strikethrough, Some(true));
+        let hover = hover_text(commerce);
+        assert!(hover.contains("Commerce"));
         assert!(hover.contains("Level 2"));
         assert!(hover.contains("Disabled"));
     }
@@ -579,13 +660,13 @@ mod tests {
     fn maxed_cells_are_bold_and_disabled_wins_over_maxed() {
         let mut snapshot = PlayerSnapshot::default();
         snapshot.set(SkillId::Mining, PlayerSkillSnapshot::new(u64::MAX)); // maxed
-        snapshot.set(SkillId::Trading, PlayerSkillSnapshot::new(u64::MAX)); // maxed + disabled
-        let skill_info = |skill: SkillId| (test_curve(), skill != SkillId::Trading);
+        snapshot.set(SkillId::Commerce, PlayerSkillSnapshot::new(u64::MAX)); // maxed + disabled
+        let skill_info = |skill: SkillId| (test_curve(), skill != SkillId::Commerce);
         let lines = summary_lines(&snapshot, &skill_info, None);
 
-        // Mining: Frontier row index 3, column 0.
-        let mining = row_cells(&lines[2 + 3])[0];
-        assert_eq!(plain_text(mining), "Mine L  5 ");
+        // Mining: Frontier row index 2, column 0.
+        let mining = row_cells(&lines[2 + 2])[0];
+        assert_eq!(plain_text(mining), "Mining     5");
         assert_eq!(mining.style.bold, Some(true));
         assert_eq!(mining.style.strikethrough, None);
         assert_eq!(mining.style.color, Some(Color::Named(NamedColor::Green)));
@@ -593,18 +674,18 @@ mod tests {
         assert!(mining_hover.contains("Max level"));
         assert!(!mining_hover.contains("Disabled"));
 
-        // Trading: Enterprise row index 6, column 2.
-        let trading = row_cells(&lines[2 + 6])[2];
-        assert_eq!(plain_text(trading), "Trad L  5 ");
-        assert_eq!(trading.style.strikethrough, Some(true));
-        assert_eq!(trading.style.bold, None);
+        // Commerce: Enterprise row index 5, column 2.
+        let commerce = row_cells(&lines[2 + 5])[2];
+        assert_eq!(plain_text(commerce), "Commerce   5");
+        assert_eq!(commerce.style.strikethrough, Some(true));
+        assert_eq!(commerce.style.bold, None);
         assert_eq!(
-            trading.style.color,
+            commerce.style.color,
             Some(Color::Named(NamedColor::DarkGray))
         );
-        let trading_hover = hover_text(trading);
-        assert!(trading_hover.contains("Disabled"));
-        assert!(trading_hover.contains("Max level"));
+        let commerce_hover = hover_text(commerce);
+        assert!(commerce_hover.contains("Disabled"));
+        assert!(commerce_hover.contains("Max level"));
     }
 
     #[test]
@@ -617,9 +698,9 @@ mod tests {
         let frontier_hover = hover_text(header_cells[0]);
         assert!(frontier_hover.contains("Frontier"));
         assert!(frontier_hover.contains("Mastery:"));
-        assert!(frontier_hover.contains("Enabled: 8/8 skills"));
+        assert!(frontier_hover.contains("Enabled: 6/6 skills"));
 
-        let mining = row_cells(&lines[2 + 3])[0];
+        let mining = row_cells(&lines[2 + 2])[0];
         let hover = hover_text(mining);
         assert!(hover.contains("Mining"));
         assert!(hover.contains("Level 2"));
@@ -675,14 +756,14 @@ mod tests {
         let mut snapshot = PlayerSnapshot::default();
         snapshot.set(SkillId::Mining, PlayerSkillSnapshot::new(150)); // L2, 50/200
         snapshot.set(SkillId::Fishing, PlayerSkillSnapshot::new(u64::MAX)); // maxed
-        let skill_info = |skill: SkillId| (test_curve(), skill != SkillId::Taming);
+        let skill_info = |skill: SkillId| (test_curve(), skill != SkillId::AnimalHandling);
         let text = join_text(&branch_lines(&snapshot, &skill_info, BranchId::Frontier));
         assert!(text.contains("Mining: Level 2 (50/200 XP, 25%)"), "{text}");
         assert!(
             text.contains("Fishing: Level 5 (Max level, 18446744073709551615 total XP)"),
             "{text}"
         );
-        assert!(text.contains("Taming: Disabled"), "{text}");
+        assert!(text.contains("AnimalHandling: Disabled"), "{text}");
     }
 
     #[test]

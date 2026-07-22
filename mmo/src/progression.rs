@@ -174,7 +174,7 @@ pub async fn award_xp(
     })
 }
 
-/// Fetch one immutable snapshot of a player's 23 skill rows.
+/// Fetch one immutable snapshot of a player's 18 skill rows.
 ///
 /// This is the single snapshot loader shared by the skill menu, the stats
 /// commands, and the chat fallback, so every presentation consumes the same
@@ -308,17 +308,53 @@ mod tests {
 
     #[test]
     fn branch_mastery_averages_member_levels() {
+        // Warfare has six member skills since the six-skill consolidation.
         let mastery = branch_mastery(BranchId::Warfare, |skill| match skill {
-            SkillId::Blades => 70,
+            SkillId::Blades => 60,
             SkillId::Axes => 0,
             SkillId::Archery => 0,
-            SkillId::Unarmed => 0,
+            SkillId::Athletics => 0,
             SkillId::Defense => 0,
-            SkillId::Acrobatics => 0,
             SkillId::Sorcery => 0,
             _ => unreachable!(),
         });
         assert!((mastery - 10.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn branch_mastery_uses_six_skills_per_branch() {
+        for branch in BranchId::ALL {
+            assert_eq!(branch.skills().len(), 6, "{branch} must have six skills");
+            let mastery = branch_mastery(*branch, |_| 6);
+            assert!((mastery - 6.0).abs() < f64::EPSILON);
+        }
+    }
+
+    #[test]
+    fn merged_activities_award_the_same_destination_skill() {
+        // Each activity handler names its award skill in a `SKILL` constant;
+        // both activities behind a merged skill must feed one shared track.
+        assert_eq!(crate::frontier::agriculture::SKILL, SkillId::Cultivation);
+        assert_eq!(crate::frontier::herbalism::SKILL, SkillId::Cultivation);
+        assert_eq!(crate::frontier::husbandry::SKILL, SkillId::AnimalHandling);
+        assert_eq!(crate::frontier::taming::SKILL, SkillId::AnimalHandling);
+        assert_eq!(crate::enterprise::repair::SKILL, SkillId::Maintenance);
+        assert_eq!(crate::enterprise::salvage::SKILL, SkillId::Maintenance);
+        assert_eq!(crate::warfare::defense::FALL_SKILL, SkillId::Athletics);
+    }
+
+    #[test]
+    fn merged_audit_sources_stay_activity_specific() {
+        // Both activities in a pair award the same skill but keep distinct
+        // audit sources; they describe *why* XP was awarded.
+        assert_eq!(XpSource::Repair.to_string(), "repair");
+        assert_eq!(XpSource::Salvage.to_string(), "salvage");
+        assert_ne!(XpSource::Repair, XpSource::Salvage);
+        assert_eq!(XpSource::Harvest.to_string(), "harvest");
+        assert_eq!(XpSource::Forage.to_string(), "forage");
+        assert_eq!(XpSource::Breed.to_string(), "breed");
+        assert_eq!(XpSource::Tame.to_string(), "tame");
+        assert_eq!(XpSource::Fall.to_string(), "fall");
     }
 
     #[test]

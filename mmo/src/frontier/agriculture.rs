@@ -1,12 +1,13 @@
-//! Agriculture skill: mature-crop harvest XP, fertilizer provenance, and a
+//! Agriculture activity: mature-crop harvest XP, fertilizer provenance, and a
 //! conservative harvest bonus.
 //!
-//! XP rule: one primary skill (Agriculture) per mature crop harvest.
-//! Maturity comes from the broken block's `age` property, so immature crops
-//! earn nothing. Fertilizer state travels with the block via `Context` block
-//! metadata (`crop_v1`) and drives a deterministic quality roll at harvest;
-//! player-placed crops cannot exist at maturity in survival, so no
-//! provenance tracking is needed here.
+//! XP rule: one primary skill per mature crop harvest. Since the six-skill
+//! consolidation that skill is Cultivation, shared with the herbalism
+//! activity. Maturity comes from the broken block's `age` property, so
+//! immature crops earn nothing. Fertilizer state travels with the block via
+//! `Context` block metadata (`crop_v1`) and drives a deterministic quality
+//! roll at harvest; player-placed crops cannot exist at maturity in
+//! survival, so no provenance tracking is needed here.
 
 use pumpkin::plugin::api::events::{
     block::block_broken::BlockBrokenEvent, block::bone_meal::BoneMealApplyCompleteEvent,
@@ -20,6 +21,10 @@ use super::super::{
     progression::{self, XpSource, earns_xp},
     skills::SkillId,
 };
+
+/// The shared skill track this activity awards: agriculture and herbalism
+/// both feed Cultivation since the six-skill consolidation.
+pub(crate) const SKILL: SkillId = SkillId::Cultivation;
 
 /// Award harvest XP and roll the harvest bonus for a broken mature crop.
 pub async fn handle_block_broken(state: &MmoState, event: &BlockBrokenEvent) {
@@ -48,14 +53,7 @@ pub async fn handle_block_broken(state: &MmoState, event: &BlockBrokenEvent) {
         data
     });
 
-    progression::award_xp(
-        state,
-        player,
-        SkillId::Agriculture,
-        crop.xp,
-        XpSource::Harvest,
-    )
-    .await;
+    progression::award_xp(state, player, SKILL, crop.xp, XpSource::Harvest).await;
 
     let fertilized = fertilizer.is_some();
     if fertilized && agriculture.fertilizer_bonus_xp > 0 {
@@ -66,7 +64,7 @@ pub async fn handle_block_broken(state: &MmoState, event: &BlockBrokenEvent) {
         progression::award_xp(
             state,
             player,
-            SkillId::Agriculture,
+            SKILL,
             agriculture.fertilizer_bonus_xp,
             XpSource::Harvest,
         )

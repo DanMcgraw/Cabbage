@@ -1,5 +1,13 @@
 # Default MMO Chat Grid Plan
 
+> **Superseded (historical record).** The 23-skill, 10-line grid this plan
+> produced was replaced by the 18-skill, six-per-branch consolidation in
+> `skill_consolidation_plan.md`: the default `/mmo` summary is now exactly
+> eight lines of 12-character uniform cells with up-to-eight-character
+> labels and no `L` marker. Keep this document as the design record of the
+> original chat grid; do not treat its line counts, cell format, or skill
+> abbreviations as current.
+
 ## Objective
 
 Make `/mmo` show a compact tabular skill summary in the chat area by default.

@@ -10,8 +10,10 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-/// Enterprise branch configuration (Smithing, Repair, Salvage, Alchemy,
-/// Enchanting, Tinkering, Trading, Charisma).
+/// Enterprise branch configuration (Smithing, Maintenance, Alchemy,
+/// Enchanting, Tinkering, Commerce). The `repair`/`salvage` sections
+/// configure the two activities feeding the shared Maintenance track; the
+/// `trading`/`charisma` sections remain dormant Commerce configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct EnterpriseConfig {
     #[serde(default)]
@@ -119,10 +121,11 @@ fn default_smelt_xp() -> HashMap<String, u64> {
     .collect()
 }
 
-/// Repair: anvil cost discount in the prepare preview, XP on take.
+/// Repair: anvil cost discount in the prepare preview, XP on take. Both the
+/// discount and the award use the merged Maintenance track.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RepairConfig {
-    /// Level-cost reduction per Repair level.
+    /// Level-cost reduction per Maintenance level.
     pub discount_per_level: f64,
     /// Hard cap for the level-cost reduction.
     pub discount_cap: f64,
@@ -144,10 +147,11 @@ impl Default for RepairConfig {
     }
 }
 
-/// Salvage: grindstone experience bonus and material-recovery rolls.
+/// Salvage: grindstone experience bonus and material-recovery rolls. Both
+/// the bonus and the award use the merged Maintenance track.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SalvageConfig {
-    /// Fractional experience bonus per Salvage level.
+    /// Fractional experience bonus per Maintenance level.
     pub xp_bonus_per_level: f64,
     /// Hard cap for the experience bonus fraction.
     pub xp_bonus_cap: f64,
@@ -294,7 +298,7 @@ fn default_tinkering_craft_xp() -> HashMap<String, u64> {
 ///
 /// **Blocked** until Pumpkin exposes a villager-trade commit transaction;
 /// no prices are ever modified. The reputation ledger (`rep_v1` player data)
-/// records faction standing for future trade and Charisma effects.
+/// records faction standing for future Commerce effects.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TradingConfig {
     /// Master switch; stays false while the trade transaction is missing.
@@ -317,7 +321,8 @@ impl Default for TradingConfig {
 /// Charisma: configuration only.
 ///
 /// **Blocked** for effects: there is no general economy/NPC transaction in
-/// Pumpkin to hook. Reputation effects arrive with the Trading transaction.
+/// Pumpkin to hook. Commerce reputation effects arrive with the Trading
+/// transaction.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CharismaConfig {
     /// Master switch; stays false while effects have no transaction path.

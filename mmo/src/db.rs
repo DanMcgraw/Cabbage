@@ -98,7 +98,19 @@ pub const LEGACY_COMBAT_SKILL_KEY: &str = "Combat";
 
 /// Current SQLite schema version. Bump when adding migrations; each version's
 /// migration runs exactly once, in order.
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+
+/// Retired `player_skills` keys merged by schema v2, as
+/// `(anchor, secondary, destination)` storage keys. Both retired rows plus
+/// any pre-existing destination row sum into the destination; the retired
+/// rows are then deleted.
+const RETIRED_SKILL_PAIRS: [(&str, &str, &str); 5] = [
+    ("Agriculture", "Herbalism", "Cultivation"),
+    ("Husbandry", "Taming", "AnimalHandling"),
+    ("Unarmed", "Acrobatics", "Athletics"),
+    ("Repair", "Salvage", "Maintenance"),
+    ("Trading", "Charisma", "Commerce"),
+];
 
 /// Snapshot of the legacy Combat XP preservation record.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,9 +136,14 @@ pub struct MmoDatabase {
 
 impl MmoDatabase {
     /// Spawn a dedicated worker thread and open the SQLite database in it.
+    ///
+    /// Blocks until the worker reports that the database opened and every
+    /// schema migration committed, so a failed migration surfaces here as a
+    /// clear load error instead of a silently dead worker.
     pub fn open(data_folder: PathBuf) -> Result<Self, String> {
         let db_path = data_folder.join("mmo.db");
         let (sender, receiver) = mpsc::channel::<DbRequest>();
+        let (ready_sender, ready_receiver) = mpsc::channel::<Result<(), String>>();
 
         let worker = thread::Builder::new()
             .name("cabbage-mmo-db".to_string())
@@ -134,16 +151,21 @@ impl MmoDatabase {
                 let mut conn = match Connection::open(&db_path) {
                     Ok(conn) => conn,
                     Err(e) => {
-                        log::error!(
-                            "[Cabbage MMO] failed to open database at {}: {e}",
-                            db_path.display()
-                        );
+                        let message =
+                            format!("failed to open database at {}: {e}", db_path.display());
+                        log::error!("[Cabbage MMO] {message}");
+                        let _ = ready_sender.send(Err(message));
                         return;
                     }
                 };
 
                 if let Err(e) = Self::migrate(&mut conn) {
-                    log::error!("[Cabbage MMO] failed to run migrations: {e}");
+                    let message = format!("failed to run migrations: {e}");
+                    log::error!("[Cabbage MMO] {message}");
+                    let _ = ready_sender.send(Err(message));
+                    return;
+                }
+                if ready_sender.send(Ok(())).is_err() {
                     return;
                 }
                 while let Ok(request) = receiver.recv() {
@@ -222,10 +244,14 @@ impl MmoDatabase {
             })
             .map_err(|e| format!("failed to spawn mmo database worker: {e}"))?;
 
-        Ok(Self {
-            sender,
-            _worker: worker,
-        })
+        match ready_receiver.recv() {
+            Ok(Ok(())) => Ok(Self {
+                sender,
+                _worker: worker,
+            }),
+            Ok(Err(message)) => Err(message),
+            Err(_) => Err("mmo database worker died during startup".to_string()),
+        }
     }
 
     fn migrate(conn: &mut Connection) -> Result<(), String> {
@@ -268,7 +294,7 @@ impl MmoDatabase {
         // later via config or `/mmo migrate combat <skill>`. Idempotent: the
         // version row guards re-entry even if the server restarts mid-upgrade.
         let schema_version = Self::schema_version(conn)?;
-        if schema_version < CURRENT_SCHEMA_VERSION {
+        if schema_version < 1 {
             let transaction = conn
                 .transaction()
                 .map_err(|e| format!("failed to start combat retirement migration: {e}"))?;
@@ -298,6 +324,145 @@ impl MmoDatabase {
             log::info!("[Cabbage MMO] retired Combat skill; XP preserved in legacy record");
         }
 
+        // Schema v2: merge the five retired skill pairs into their shared
+        // destination tracks. Runs after the v1 migration so v0 and v1
+        // databases follow the same deterministic upgrade path.
+        if Self::schema_version(conn)? < CURRENT_SCHEMA_VERSION {
+            Self::migrate_skill_consolidation(conn)?;
+        }
+
+        Ok(())
+    }
+
+    /// Schema v2: consolidate the retired skill pairs of the six-skill branch
+    /// consolidation into their canonical destination rows.
+    ///
+    /// For every player and every pair, the cumulative XP of both retired
+    /// keys plus any pre-existing destination row is summed and written to
+    /// the destination row, then the retired rows are deleted. Raw XP is
+    /// summed (never the larger level, never an average) and is not capped
+    /// to a level curve; normal level calculation interprets the total on
+    /// read. A destination row is only written when the sum is positive or a
+    /// destination row already exists, so pairs of zero-XP retired rows do
+    /// not fabricate new rows. Unrelated skill rows are never touched.
+    ///
+    /// Saturation policy: stored XP values are non-negative (negative
+    /// anomalies clamp to 0, matching every read path). The three values are
+    /// summed with checked i64 addition; on overflow the total saturates at
+    /// `i64::MAX` and a warning is logged rather than failing the migration
+    /// — an error would strand the whole database over an unreachable value.
+    ///
+    /// The whole consolidation runs in one transaction: any failure rolls
+    /// every player back and is returned as a load error. Guarded by the
+    /// schema version row, so reopening a migrated database is a no-op.
+    fn migrate_skill_consolidation(conn: &mut Connection) -> Result<(), String> {
+        let transaction = conn
+            .transaction()
+            .map_err(|e| format!("failed to start skill consolidation migration: {e}"))?;
+
+        let rows: Vec<(String, String, i64)> = {
+            let mut stmt = transaction
+                .prepare(
+                    "SELECT player_uuid, skill, xp FROM player_skills
+                     WHERE skill IN (
+                         'Agriculture', 'Herbalism', 'Husbandry', 'Taming',
+                         'Unarmed', 'Acrobatics', 'Repair', 'Salvage',
+                         'Trading', 'Charisma', 'Cultivation', 'AnimalHandling',
+                         'Athletics', 'Maintenance', 'Commerce'
+                     )",
+                )
+                .map_err(|e| format!("failed to prepare skill consolidation query: {e}"))?;
+            let mapped = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .map_err(|e| format!("failed to read skill consolidation rows: {e}"))?;
+            mapped
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("failed to read skill consolidation row: {e}"))?
+        };
+
+        let mut by_player: HashMap<String, HashMap<String, i64>> = HashMap::new();
+        for (player_uuid, skill, xp) in rows {
+            let xp = xp.max(0);
+            by_player.entry(player_uuid).or_default().insert(skill, xp);
+        }
+
+        let mut players_consolidated = 0u64;
+        let mut retired_rows_removed = 0u64;
+        for (player_uuid, skills) in &by_player {
+            let mut player_had_retired_rows = false;
+            for (anchor, secondary, destination) in RETIRED_SKILL_PAIRS {
+                let anchor_xp = skills.get(anchor).copied();
+                let secondary_xp = skills.get(secondary).copied();
+                if anchor_xp.is_none() && secondary_xp.is_none() {
+                    continue;
+                }
+                player_had_retired_rows = true;
+                retired_rows_removed +=
+                    u64::from(anchor_xp.is_some()) + u64::from(secondary_xp.is_some());
+
+                let destination_xp = skills.get(destination).copied();
+                let mut sum = 0i64;
+                let mut saturated = false;
+                for value in [anchor_xp, secondary_xp, destination_xp]
+                    .into_iter()
+                    .flatten()
+                {
+                    match sum.checked_add(value) {
+                        Some(total) => sum = total,
+                        None => {
+                            sum = i64::MAX;
+                            saturated = true;
+                        }
+                    }
+                }
+                if saturated {
+                    log::warn!(
+                        "[Cabbage MMO] skill consolidation for player {player_uuid} exceeded \
+                         the SQLite 64-bit XP range; saturated {destination} at i64::MAX"
+                    );
+                }
+
+                if sum > 0 || destination_xp.is_some() {
+                    transaction
+                        .execute(
+                            "INSERT INTO player_skills (player_uuid, skill, xp)
+                             VALUES (?1, ?2, ?3)
+                             ON CONFLICT(player_uuid, skill)
+                             DO UPDATE SET xp = excluded.xp",
+                            params![player_uuid, destination, sum],
+                        )
+                        .map_err(|e| {
+                            format!("failed to write consolidated {destination} row: {e}")
+                        })?;
+                }
+                transaction
+                    .execute(
+                        "DELETE FROM player_skills
+                         WHERE player_uuid = ?1 AND skill IN (?2, ?3)",
+                        params![player_uuid, anchor, secondary],
+                    )
+                    .map_err(|e| {
+                        format!("failed to remove retired {anchor}/{secondary} rows: {e}")
+                    })?;
+            }
+            if player_had_retired_rows {
+                players_consolidated += 1;
+            }
+        }
+
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '2')",
+                [],
+            )
+            .map_err(|e| format!("failed to record schema version: {e}"))?;
+        transaction
+            .commit()
+            .map_err(|e| format!("failed to commit skill consolidation migration: {e}"))?;
+        log::info!(
+            "[Cabbage MMO] schema v2: consolidated {retired_rows_removed} retired skill row(s) \
+             across {players_consolidated} player(s) into the five merged skills"
+        );
         Ok(())
     }
 
@@ -985,6 +1150,389 @@ mod tests {
         let status = db.combat_migration_status().await.unwrap();
         assert_eq!(status.schema_version, CURRENT_SCHEMA_VERSION);
         assert_eq!(status.players_with_legacy_xp, 0);
+        cleanup(&folder);
+    }
+
+    /// Write a schema-v1-shaped database (post-Combat-retirement) with the
+    /// given `player_skills` rows, bypassing the worker so retired skill keys
+    /// can exist on disk.
+    fn seed_v1_db(folder: &PathBuf, rows: &[(&str, &str, i64)]) {
+        let conn = Connection::open(folder.join("mmo.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE player_skills (
+                player_uuid TEXT NOT NULL,
+                skill TEXT NOT NULL,
+                xp INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (player_uuid, skill)
+            );
+            CREATE TABLE non_natural_blocks (
+                world_name TEXT NOT NULL,
+                dimension_name TEXT NOT NULL,
+                x INTEGER NOT NULL,
+                y INTEGER NOT NULL,
+                z INTEGER NOT NULL,
+                PRIMARY KEY (world_name, dimension_name, x, y, z)
+            );
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE legacy_combat_xp (
+                player_uuid TEXT PRIMARY KEY,
+                xp INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO meta (key, value) VALUES ('schema_version', '1');",
+        )
+        .unwrap();
+        for (player_uuid, skill, xp) in rows {
+            conn.execute(
+                "INSERT INTO player_skills (player_uuid, skill, xp) VALUES (?1, ?2, ?3)",
+                params![player_uuid, skill, xp],
+            )
+            .unwrap();
+        }
+    }
+
+    /// Read one raw XP value straight from SQLite, bypassing the worker, so
+    /// retired keys (no longer representable as `SkillId`) can be checked.
+    fn raw_xp(folder: &PathBuf, player_uuid: &str, skill: &str) -> Option<i64> {
+        let conn = Connection::open(folder.join("mmo.db")).unwrap();
+        conn.query_row(
+            "SELECT xp FROM player_skills WHERE player_uuid = ?1 AND skill = ?2",
+            params![player_uuid, skill],
+            |row| row.get(0),
+        )
+        .ok()
+    }
+
+    fn raw_schema_version(folder: &PathBuf) -> String {
+        let conn = Connection::open(folder.join("mmo.db")).unwrap();
+        conn.query_row(
+            "SELECT value FROM meta WHERE key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn consolidation_sums_both_retired_rows() {
+        let folder = test_db_folder();
+        let uuid = Uuid::new_v4();
+        let uuid_str = uuid.to_string();
+        seed_v1_db(
+            &folder,
+            &[
+                (&uuid_str, "Agriculture", 100),
+                (&uuid_str, "Herbalism", 50),
+                (&uuid_str, "Mining", 500),
+            ],
+        );
+
+        let db = MmoDatabase::open(folder.clone()).unwrap();
+        let cultivation = db.get_skill(uuid, SkillId::Cultivation).await.unwrap();
+        assert_eq!(cultivation.xp, 150);
+        drop(db);
+
+        assert_eq!(raw_xp(&folder, &uuid_str, "Agriculture"), None);
+        assert_eq!(raw_xp(&folder, &uuid_str, "Herbalism"), None);
+        assert_eq!(raw_xp(&folder, &uuid_str, "Cultivation"), Some(150));
+        cleanup(&folder);
+    }
+
+    #[tokio::test]
+    async fn consolidation_migrates_anchor_only_rows() {
+        let folder = test_db_folder();
+        let uuid_str = Uuid::new_v4().to_string();
+        seed_v1_db(&folder, &[(&uuid_str, "Husbandry", 200)]);
+
+        let db = MmoDatabase::open(folder.clone()).unwrap();
+        drop(db);
+        assert_eq!(raw_xp(&folder, &uuid_str, "AnimalHandling"), Some(200));
+        assert_eq!(raw_xp(&folder, &uuid_str, "Husbandry"), None);
+        cleanup(&folder);
+    }
+
+    #[tokio::test]
+    async fn consolidation_migrates_secondary_only_rows() {
+        let folder = test_db_folder();
+        let uuid_str = Uuid::new_v4().to_string();
+        seed_v1_db(&folder, &[(&uuid_str, "Taming", 75)]);
+
+        let db = MmoDatabase::open(folder.clone()).unwrap();
+        drop(db);
+        assert_eq!(raw_xp(&folder, &uuid_str, "AnimalHandling"), Some(75));
+        assert_eq!(raw_xp(&folder, &uuid_str, "Taming"), None);
+        cleanup(&folder);
+    }
+
+    #[tokio::test]
+    async fn consolidation_adds_pre_existing_destination_xp_to_the_sum() {
+        let folder = test_db_folder();
+        let uuid_str = Uuid::new_v4().to_string();
+        seed_v1_db(
+            &folder,
+            &[
+                (&uuid_str, "Repair", 100),
+                (&uuid_str, "Salvage", 40),
+                (&uuid_str, "Maintenance", 25),
+            ],
+        );
+
+        let db = MmoDatabase::open(folder.clone()).unwrap();
+        drop(db);
+        assert_eq!(raw_xp(&folder, &uuid_str, "Maintenance"), Some(165));
+        assert_eq!(raw_xp(&folder, &uuid_str, "Repair"), None);
+        assert_eq!(raw_xp(&folder, &uuid_str, "Salvage"), None);
+        cleanup(&folder);
+    }
+
+    #[tokio::test]
+    async fn consolidation_runs_independently_per_player() {
+        let folder = test_db_folder();
+        let alice = Uuid::new_v4().to_string();
+        let bob = Uuid::new_v4().to_string();
+        seed_v1_db(
+            &folder,
+            &[
+                (&alice, "Unarmed", 10),
+                (&alice, "Acrobatics", 5),
+                (&bob, "Unarmed", 70),
+                (&bob, "Defense", 9),
+            ],
+        );
+
+        let db = MmoDatabase::open(folder.clone()).unwrap();
+        drop(db);
+        assert_eq!(raw_xp(&folder, &alice, "Athletics"), Some(15));
+        assert_eq!(raw_xp(&folder, &bob, "Athletics"), Some(70));
+        assert_eq!(raw_xp(&folder, &alice, "Unarmed"), None);
+        assert_eq!(raw_xp(&folder, &bob, "Acrobatics"), None);
+        assert_eq!(raw_xp(&folder, &bob, "Defense"), Some(9));
+        cleanup(&folder);
+    }
+
+    #[tokio::test]
+    async fn consolidation_zero_xp_rows_do_not_fabricate_totals() {
+        let folder = test_db_folder();
+        let zero_pair = Uuid::new_v4().to_string();
+        let mixed = Uuid::new_v4().to_string();
+        let zero_destination = Uuid::new_v4().to_string();
+        seed_v1_db(
+            &folder,
+            &[
+                // Both retired rows at 0 XP, no destination row: nothing to write.
+                (&zero_pair, "Agriculture", 0),
+                (&zero_pair, "Herbalism", 0),
+                // A zero-XP anchor must not drag down the secondary's total.
+                (&mixed, "Unarmed", 0),
+                (&mixed, "Acrobatics", 30),
+                // A pre-existing (zero) destination row is kept at its sum.
+                (&zero_destination, "Trading", 0),
+                (&zero_destination, "Charisma", 0),
+                (&zero_destination, "Commerce", 0),
+            ],
+        );
+
+        let db = MmoDatabase::open(folder.clone()).unwrap();
+        drop(db);
+        assert_eq!(raw_xp(&folder, &zero_pair, "Cultivation"), None);
+        assert_eq!(raw_xp(&folder, &zero_pair, "Agriculture"), None);
+        assert_eq!(raw_xp(&folder, &zero_pair, "Herbalism"), None);
+        assert_eq!(raw_xp(&folder, &mixed, "Athletics"), Some(30));
+        assert_eq!(raw_xp(&folder, &zero_destination, "Commerce"), Some(0));
+        assert_eq!(raw_xp(&folder, &zero_destination, "Trading"), None);
+        assert_eq!(raw_xp(&folder, &zero_destination, "Charisma"), None);
+        cleanup(&folder);
+    }
+
+    #[tokio::test]
+    async fn consolidation_leaves_unrelated_rows_untouched() {
+        let folder = test_db_folder();
+        let uuid_str = Uuid::new_v4().to_string();
+        seed_v1_db(
+            &folder,
+            &[
+                (&uuid_str, "Agriculture", 10),
+                (&uuid_str, "Mining", 500),
+                (&uuid_str, "Blades", 60),
+                (&uuid_str, "SomeFutureSkill", 7),
+            ],
+        );
+
+        let db = MmoDatabase::open(folder.clone()).unwrap();
+        drop(db);
+        assert_eq!(raw_xp(&folder, &uuid_str, "Mining"), Some(500));
+        assert_eq!(raw_xp(&folder, &uuid_str, "Blades"), Some(60));
+        assert_eq!(raw_xp(&folder, &uuid_str, "SomeFutureSkill"), Some(7));
+        assert_eq!(raw_xp(&folder, &uuid_str, "Cultivation"), Some(10));
+        cleanup(&folder);
+    }
+
+    #[tokio::test]
+    async fn consolidation_is_idempotent_on_reopen() {
+        let folder = test_db_folder();
+        let uuid_str = Uuid::new_v4().to_string();
+        seed_v1_db(
+            &folder,
+            &[
+                (&uuid_str, "Agriculture", 100),
+                (&uuid_str, "Herbalism", 50),
+            ],
+        );
+
+        let db = MmoDatabase::open(folder.clone()).unwrap();
+        assert_eq!(raw_schema_version(&folder), "2");
+        assert_eq!(raw_xp(&folder, &uuid_str, "Cultivation"), Some(150));
+        drop(db);
+
+        // Reopening must not re-run or re-sum the migration.
+        let db = MmoDatabase::open(folder.clone()).unwrap();
+        drop(db);
+        assert_eq!(raw_schema_version(&folder), "2");
+        assert_eq!(raw_xp(&folder, &uuid_str, "Cultivation"), Some(150));
+        assert_eq!(raw_xp(&folder, &uuid_str, "Agriculture"), None);
+        cleanup(&folder);
+    }
+
+    #[tokio::test]
+    async fn v0_and_v1_databases_both_reach_schema_v2() {
+        // v0: no meta table at all; both migrations run in order.
+        let v0_folder = test_db_folder();
+        let uuid_str = Uuid::new_v4().to_string();
+        let conn = Connection::open(v0_folder.join("mmo.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE player_skills (
+                player_uuid TEXT NOT NULL,
+                skill TEXT NOT NULL,
+                xp INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (player_uuid, skill)
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO player_skills (player_uuid, skill, xp) VALUES (?1, 'Combat', 750)",
+            params![uuid_str],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO player_skills (player_uuid, skill, xp) VALUES (?1, 'Agriculture', 40)",
+            params![uuid_str],
+        )
+        .unwrap();
+        drop(conn);
+
+        let db = MmoDatabase::open(v0_folder.clone()).unwrap();
+        let status = db.combat_migration_status().await.unwrap();
+        assert_eq!(status.schema_version, 2);
+        assert_eq!(status.total_legacy_xp, 750);
+        drop(db);
+        assert_eq!(raw_xp(&v0_folder, &uuid_str, "Cultivation"), Some(40));
+        cleanup(&v0_folder);
+
+        // v1: only the consolidation remains to run.
+        let v1_folder = test_db_folder();
+        let uuid_str = Uuid::new_v4().to_string();
+        seed_v1_db(&v1_folder, &[(&uuid_str, "Agriculture", 40)]);
+        let db = MmoDatabase::open(v1_folder.clone()).unwrap();
+        let status = db.combat_migration_status().await.unwrap();
+        assert_eq!(status.schema_version, 2);
+        assert_eq!(status.total_legacy_xp, 0);
+        drop(db);
+        assert_eq!(raw_xp(&v1_folder, &uuid_str, "Cultivation"), Some(40));
+        cleanup(&v1_folder);
+    }
+
+    #[tokio::test]
+    async fn failed_consolidation_rolls_back_and_surfaces_a_load_error() {
+        let folder = test_db_folder();
+        let uuid_str = Uuid::new_v4().to_string();
+        seed_v1_db(
+            &folder,
+            &[
+                (&uuid_str, "Agriculture", 100),
+                (&uuid_str, "Herbalism", 50),
+            ],
+        );
+        // Force the consolidation's first upsert to fail inside the
+        // transaction (a test-only trigger; no production hook needed).
+        let conn = Connection::open(folder.join("mmo.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_consolidation BEFORE INSERT ON player_skills
+             WHEN NEW.skill = 'Cultivation'
+             BEGIN SELECT RAISE(ABORT, 'forced consolidation failure'); END;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let error = MmoDatabase::open(folder.clone())
+            .err()
+            .expect("consolidation should fail and surface a load error");
+        assert!(
+            error.contains("forced consolidation failure"),
+            "unexpected error: {error}"
+        );
+
+        // Nothing was committed: retired rows and the old version survive.
+        assert_eq!(raw_schema_version(&folder), "1");
+        assert_eq!(raw_xp(&folder, &uuid_str, "Agriculture"), Some(100));
+        assert_eq!(raw_xp(&folder, &uuid_str, "Herbalism"), Some(50));
+        assert_eq!(raw_xp(&folder, &uuid_str, "Cultivation"), None);
+        cleanup(&folder);
+    }
+
+    #[tokio::test]
+    async fn consolidation_saturates_at_the_sqlite_64_bit_limit() {
+        let folder = test_db_folder();
+        let uuid = Uuid::new_v4();
+        let uuid_str = uuid.to_string();
+        seed_v1_db(
+            &folder,
+            &[
+                (&uuid_str, "Agriculture", i64::MAX),
+                (&uuid_str, "Herbalism", 1),
+            ],
+        );
+
+        let db = MmoDatabase::open(folder.clone()).unwrap();
+        let cultivation = db.get_skill(uuid, SkillId::Cultivation).await.unwrap();
+        assert_eq!(cultivation.xp, i64::MAX as u64);
+        drop(db);
+        cleanup(&folder);
+    }
+
+    #[test]
+    fn consolidation_destinations_are_canonical_storage_keys() {
+        for (anchor, secondary, destination) in RETIRED_SKILL_PAIRS {
+            let anchor_skill = SkillId::from_name(anchor).expect("anchor must alias");
+            let secondary_skill = SkillId::from_name(secondary).expect("secondary must alias");
+            assert_eq!(anchor_skill.as_str(), destination);
+            assert_eq!(secondary_skill.as_str(), destination);
+        }
+    }
+
+    #[tokio::test]
+    async fn merged_pair_activities_share_one_cumulative_xp_track() {
+        // Both activities behind a merged skill award through the same `SKILL`
+        // constant, so their XP accumulates on one shared track.
+        let (db, folder) = open_test_db();
+        let uuid = Uuid::new_v4();
+        let curve = LevelCurve::new(&super::super::config::SkillConfig::default());
+
+        let agriculture = crate::frontier::agriculture::SKILL;
+        let herbalism = crate::frontier::herbalism::SKILL;
+        assert_eq!(agriculture, herbalism);
+        db.add_xp(uuid, agriculture, 10, curve.clone())
+            .await
+            .unwrap();
+        db.add_xp(uuid, herbalism, 14, curve.clone()).await.unwrap();
+        let cultivation = db.get_skill(uuid, SkillId::Cultivation).await.unwrap();
+        assert_eq!(cultivation.xp, 24);
+
+        let repair = crate::enterprise::repair::SKILL;
+        let salvage = crate::enterprise::salvage::SKILL;
+        assert_eq!(repair, salvage);
+        db.add_xp(uuid, repair, 20, curve.clone()).await.unwrap();
+        db.add_xp(uuid, salvage, 15, curve).await.unwrap();
+        let maintenance = db.get_skill(uuid, SkillId::Maintenance).await.unwrap();
+        assert_eq!(maintenance.xp, 35);
         cleanup(&folder);
     }
 }

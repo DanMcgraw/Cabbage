@@ -1,9 +1,11 @@
-//! Taming skill: Cabbage pet profiles and owner-validated interactions.
+//! Taming activity: Cabbage pet profiles and owner-validated interactions.
 //!
-//! XP rules: one Taming award per successful tame (the event's owner is
-//! authoritative) and a small award per owner-validated feeding. Entity data
-//! is never treated as proof of ownership: feeding checks Pumpkin's actual
-//! tameable owner state (`EntityBase::owner_uuid`).
+//! XP rules: one award per successful tame (the event's owner is
+//! authoritative) and a small award per owner-validated feeding. Since the
+//! six-skill consolidation the awards feed AnimalHandling, shared with the
+//! husbandry activity. Entity data is never treated as proof of ownership:
+//! feeding checks Pumpkin's actual tameable owner state
+//! (`EntityBase::owner_uuid`).
 
 use pumpkin::plugin::api::events::entity::{
     entity_feed::{EntityFeedCompleteEvent, FeedOutcome},
@@ -17,8 +19,12 @@ use super::super::{
     skills::SkillId,
 };
 
-/// Record a Cabbage pet profile and award Taming XP when a player tames an
-/// animal.
+/// The shared skill track this activity awards: taming and husbandry both
+/// feed AnimalHandling since the six-skill consolidation.
+pub(crate) const SKILL: SkillId = SkillId::AnimalHandling;
+
+/// Record a Cabbage pet profile and award AnimalHandling XP when a player
+/// tames an animal.
 pub async fn handle_entity_tame(state: &MmoState, event: &EntityTameEvent) {
     if event.cancelled || !earns_xp(&event.owner) {
         return;
@@ -38,7 +44,7 @@ pub async fn handle_entity_tame(state: &MmoState, event: &EntityTameEvent) {
         log::warn!("[Cabbage MMO] failed to record pet profile: {error}");
     }
 
-    progression::award_xp(state, &event.owner, SkillId::Taming, xp, XpSource::Tame).await;
+    progression::award_xp(state, &event.owner, SKILL, xp, XpSource::Tame).await;
 }
 
 /// Award bond and XP when an owner feeds their own tamed pet.
@@ -85,12 +91,5 @@ pub async fn handle_feed_complete(state: &MmoState, event: &EntityFeedCompleteEv
         return;
     }
 
-    progression::award_xp(
-        state,
-        player,
-        SkillId::Taming,
-        taming.bond_feed_xp,
-        XpSource::PetFeed,
-    )
-    .await;
+    progression::award_xp(state, player, SKILL, taming.bond_feed_xp, XpSource::PetFeed).await;
 }

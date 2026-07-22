@@ -42,7 +42,7 @@ Cabbage/
 |       |-- README.md      # MMO module guide (read before editing mmo/)
 |       |-- BALANCE.md     # default balance profile and migration guide
 |       |-- plan.md        # phased MMO implementation plan (historical)
-|       |-- skills.rs      # SkillId (23 skills), BranchId, metadata
+|       |-- skills.rs      # SkillId (18 skills, 6/6/6 branches; retired names are aliases), BranchId, metadata
 |       |-- progression.rs # central award_xp path and branch mastery
 |       |-- audit.rs       # append-only audit log (mmo-audit.log)
 |       |-- perks/         # perk scaffolding (cooldowns, batch breaks, level gates)

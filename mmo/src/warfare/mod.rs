@@ -1,7 +1,9 @@
 //! Warfare branch skill handlers, state, and configuration.
 //!
-//! Warfare skills: Blades, Axes, Archery, Unarmed, Defense, Acrobatics,
-//! Sorcery. Melee weapons are classified from the attack event's weapon
+//! Warfare skills: Blades, Axes, Archery, Athletics, Defense, Sorcery.
+//! (The retired Unarmed and Acrobatics tracks merged into Athletics in the
+//! six-skill consolidation; their activity configs below keep their own
+//! knobs.) Melee weapons are classified from the attack event's weapon
 //! snapshot, never inferred later from a possibly changed inventory. Kill XP
 //! is awarded exactly once through Pumpkin's authoritative
 //! `PlayerKillEntityEvent`; projectile provenance retained here is used for
@@ -30,7 +32,7 @@ const PROJECTILE_RECORD_TTL_TICKS: i32 = 600;
 /// Weapon classification derived from the attack event's weapon snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WeaponClass {
-    /// A melee weapon mapped to a Warfare skill (or an empty hand → Unarmed).
+    /// A melee weapon mapped to a Warfare skill (or an empty hand → Athletics).
     Melee(SkillId),
     /// Bow or crossbow; XP flows through the projectile path.
     Ranged,
@@ -41,7 +43,7 @@ pub(crate) enum WeaponClass {
 /// Classify the held weapon from an event's item snapshot.
 pub(crate) fn classify_weapon(stack: &ItemStack) -> WeaponClass {
     if stack.item_count == 0 {
-        return WeaponClass::Melee(SkillId::Unarmed);
+        return WeaponClass::Melee(SkillId::Athletics);
     }
     let key = stack.item.registry_key;
     if key.ends_with("_sword") {
@@ -133,6 +135,34 @@ impl WarfareState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn weapon_classification_routes_empty_hand_to_athletics() {
+        assert_eq!(
+            classify_weapon(&ItemStack::EMPTY.clone()),
+            WeaponClass::Melee(SkillId::Athletics)
+        );
+        let sword = ItemStack::new(
+            1,
+            pumpkin_data::item::Item::from_registry_key("iron_sword").unwrap(),
+        );
+        assert_eq!(classify_weapon(&sword), WeaponClass::Melee(SkillId::Blades));
+        let axe = ItemStack::new(
+            1,
+            pumpkin_data::item::Item::from_registry_key("iron_axe").unwrap(),
+        );
+        assert_eq!(classify_weapon(&axe), WeaponClass::Melee(SkillId::Axes));
+        let bow = ItemStack::new(
+            1,
+            pumpkin_data::item::Item::from_registry_key("bow").unwrap(),
+        );
+        assert_eq!(classify_weapon(&bow), WeaponClass::Ranged);
+        let shovel = ItemStack::new(
+            1,
+            pumpkin_data::item::Item::from_registry_key("iron_shovel").unwrap(),
+        );
+        assert_eq!(classify_weapon(&shovel), WeaponClass::Other);
+    }
 
     #[test]
     fn projectile_records_resolve_owner_and_hits() {

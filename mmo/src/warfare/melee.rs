@@ -1,4 +1,5 @@
-//! Blades, Axes, and Unarmed: melee classification and bounded damage perks.
+//! Blades, Axes, and Athletics (empty hand): melee classification and
+//! bounded damage perks.
 //!
 //! Weapons are classified from the event's weapon snapshot and recorded for
 //! kill attribution. Perk effects only ever *scale* the event's
@@ -49,7 +50,7 @@ pub async fn handle_attack_damage(state: &MmoState, event: &mut PlayerAttackDama
             warfare.axes.damage_bonus_per_level,
             warfare.axes.damage_bonus_cap,
         ),
-        SkillId::Unarmed => (
+        SkillId::Athletics => (
             warfare.unarmed.damage_bonus_per_level,
             warfare.unarmed.damage_bonus_cap,
         ),
@@ -60,8 +61,9 @@ pub async fn handle_attack_damage(state: &MmoState, event: &mut PlayerAttackDama
         event.final_damage *= 1.0 + bonus as f32;
     }
 
-    // Unarmed knockback bonus, bounded by its own cap.
-    if skill == SkillId::Unarmed {
+    // Empty-hand knockback bonus, gated on the merged Athletics level and
+    // bounded by its own cap.
+    if skill == SkillId::Athletics {
         let knockback_bonus = (warfare.unarmed.knockback_bonus_per_level * level as f64)
             .min(warfare.unarmed.knockback_cap);
         if knockback_bonus > 0.0 {

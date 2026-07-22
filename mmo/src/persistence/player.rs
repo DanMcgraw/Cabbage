@@ -101,8 +101,9 @@ impl PlayerProfileV1 {
 }
 
 /// Cabbage reputation ledger, version 1: faction standings for future
-/// Trading and Charisma effects. Unused while those skills are blocked; the
-/// codec exists so reputation can be recorded without a schema change later.
+/// Commerce effects. Unused while the trading/charisma activity configs stay
+/// disabled; the codec exists so reputation can be recorded without a schema
+/// change later.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReputationLedgerV1 {
     /// Faction name → standing.
@@ -160,7 +161,7 @@ impl ReputationLedgerV1 {
     }
 
     /// Add standing to a faction and persist the ledger.
-    #[allow(dead_code)] // used when Trading/Charisma effects un-block
+    #[allow(dead_code)] // used when Commerce effects un-block
     pub async fn add_reputation(
         context: &Context,
         player_uuid: Uuid,

@@ -1,5 +1,14 @@
 # Cabbage MMO Implementation Plan
 
+> **Historical record.** This phased plan describes the original 23-skill,
+> 8/7/8 branch rollout. The skill model has since been consolidated to 18
+> skills, six per branch, by `../../skill_consolidation_plan.md`
+> (Agriculture+Herbalism → Cultivation, Husbandry+Taming → AnimalHandling,
+> Unarmed+Acrobatics → Athletics, Repair+Salvage → Maintenance,
+> Trading+Charisma → Commerce). Skill lists, counts, and phase groupings
+> below are historical; the consolidation plan and `README.md` describe the
+> current model.
+
 ## Purpose
 
 Implement the Cabbage-owned MMO layer described by

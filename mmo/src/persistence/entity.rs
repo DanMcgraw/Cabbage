@@ -5,7 +5,7 @@
 //! always consult Pumpkin's actual tameable owner state (plan Frontier
 //! rules). This payload only records Cabbage's pet profile.
 
-// Consumed by Taming/Husbandry handlers landing in Phase 1.
+// Consumed by the taming/husbandry handlers (AnimalHandling track).
 #![allow(dead_code)]
 
 use pumpkin::{entity::EntityBase, plugin::Context};

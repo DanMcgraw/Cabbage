@@ -11,8 +11,9 @@ fn default_true() -> bool {
     true
 }
 
-/// Warfare branch configuration (Blades, Axes, Archery, Unarmed, Defense,
-/// Acrobatics, Sorcery).
+/// Warfare branch configuration (Blades, Axes, Archery, Athletics, Defense,
+/// Sorcery). The `unarmed` and `acrobatics` sections configure the retired
+/// activities' knobs; both now feed and read the shared Athletics track.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct WarfareConfig {
     #[serde(default)]
@@ -95,14 +96,15 @@ impl Default for ArcheryConfig {
     }
 }
 
-/// Unarmed: empty-hand damage and knockback bonuses.
+/// Unarmed: empty-hand damage and knockback bonuses. These knobs gate on the
+/// merged Athletics level since the six-skill consolidation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UnarmedConfig {
-    /// Damage multiplier gained per Unarmed level.
+    /// Damage multiplier gained per Athletics level.
     pub damage_bonus_per_level: f64,
-    /// Hard cap for the total Unarmed damage multiplier.
+    /// Hard cap for the total empty-hand damage multiplier.
     pub damage_bonus_cap: f64,
-    /// Knockback multiplier gained per Unarmed level.
+    /// Knockback multiplier gained per Athletics level.
     pub knockback_bonus_per_level: f64,
     /// Hard cap for the knockback multiplier bonus.
     pub knockback_cap: f64,
@@ -143,14 +145,15 @@ impl Default for DefenseConfig {
     }
 }
 
-/// Acrobatics: fall XP and the bounded safe-landing roll.
+/// Acrobatics: fall XP and the bounded safe-landing roll. The awards and the
+/// roll use the merged Athletics track since the six-skill consolidation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AcrobaticsConfig {
     /// XP per point of fall damage (before reductions).
     pub xp_per_fall_damage: f64,
-    /// Maximum Acrobatics XP from a single fall.
+    /// Maximum Athletics XP from a single fall.
     pub xp_cap_per_fall: u64,
-    /// Fall-damage reduction gained per Acrobatics level.
+    /// Fall-damage reduction gained per Athletics level.
     pub roll_reduction_per_level: f64,
     /// Hard cap for the roll reduction (0.25 = 25%).
     pub roll_reduction_cap: f64,

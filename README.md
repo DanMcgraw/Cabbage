@@ -3,7 +3,7 @@
 A native dynamic plugin (`cdylib`) for the [Pumpkin](https://github.com/Pumpkin-MC/Pumpkin) server, built from a Cargo workspace with refactored feature crates:
 
 * **Cabbage** (`Cabbage.dll`) — the single Pumpkin plugin entry point: administrative utility commands, drop cleanup, server metrics, event logging, MMO skilling, and Mob AI.
-* **`mmo` crate** — the MMO-style skilling module (23 skills, bossbars, ore reveal, SQLite persistence), registered by Core during plugin load.
+* **`mmo` crate** — the MMO-style skilling module (18 skills in three 6-skill branches, bossbars, ore reveal, SQLite persistence), registered by Core during plugin load.
 * **`mobai` crate** — the custom mob AI & pathfinding engine, also registered by Core and exposed through the internal service registry for metrics/control.
 
 Because they compile directly to native machine code (`.dll` / `.so`), the Cabbage plugins execute at bare-metal speeds without Wasm sandboxing overhead, allowing them to manage complex AI calculations and large-scale entity operations efficiently.

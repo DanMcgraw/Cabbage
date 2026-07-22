@@ -1,8 +1,10 @@
-//! Repair: anvil cost discount and repair XP.
+//! Repair activity: anvil cost discount and repair XP.
 //!
 //! Per the plan's Enterprise rules: the discount is previewed in the prepare
 //! event (only while the cooldown is ready), and XP is awarded plus the
-//! cooldown charged only when the output is actually taken.
+//! cooldown charged only when the output is actually taken. Since the
+//! six-skill consolidation both the discount gate and the award use the
+//! shared Maintenance track.
 
 use pumpkin::plugin::api::events::player::{
     anvil_prepare::AnvilPrepareEvent, anvil_repair::AnvilCompleteEvent,
@@ -14,9 +16,14 @@ use super::super::{
     skills::SkillId,
 };
 
+/// The shared skill track this activity awards and gates on: repair and
+/// salvage both feed Maintenance since the six-skill consolidation.
+pub(crate) const SKILL: SkillId = SkillId::Maintenance;
+
 const REPAIR_COOLDOWN_KEY: &str = "repair.discount";
 
-/// Preview the Repair level-cost discount in the anvil prepare event.
+/// Preview the Maintenance (repair activity) level-cost discount in the
+/// anvil prepare event.
 pub async fn handle_anvil_prepare(state: &MmoState, event: &mut AnvilPrepareEvent) {
     if event.cancelled || !earns_xp(&event.player) {
         return;
@@ -45,7 +52,7 @@ pub async fn handle_anvil_prepare(state: &MmoState, event: &mut AnvilPrepareEven
     state.mark_perk_preview(event.transaction.id, REPAIR_COOLDOWN_KEY);
 }
 
-/// Award Repair XP and charge the cooldown when the output is taken.
+/// Award Maintenance XP and charge the cooldown when the output is taken.
 pub async fn handle_anvil_complete(state: &MmoState, event: &AnvilCompleteEvent) {
     if !earns_xp(&event.player) {
         return;
@@ -64,14 +71,7 @@ pub async fn handle_anvil_complete(state: &MmoState, event: &AnvilCompleteEvent)
         );
     }
 
-    progression::award_xp(
-        state,
-        &event.player,
-        SkillId::Repair,
-        repair.xp,
-        XpSource::Repair,
-    )
-    .await;
+    progression::award_xp(state, &event.player, SKILL, repair.xp, XpSource::Repair).await;
     state.audit(&format!(
         "anvil commit: {} took output for {} level(s)",
         event.player.gameprofile.id, event.level_cost
@@ -79,10 +79,10 @@ pub async fn handle_anvil_complete(state: &MmoState, event: &AnvilCompleteEvent)
 }
 
 async fn player_level(state: &MmoState, player: &pumpkin::entity::player::Player) -> u32 {
-    let curve = state.curve(SkillId::Repair);
+    let curve = state.curve(SKILL);
     state
         .db()
-        .get_skill(player.gameprofile.id, SkillId::Repair)
+        .get_skill(player.gameprofile.id, SKILL)
         .await
         .map(|data| curve.level_for_xp(data.xp).0)
         .unwrap_or(1)

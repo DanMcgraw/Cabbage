@@ -1,9 +1,10 @@
 //! Protected native 9x3 skill-summary menu.
 //!
 //! Layout: one branch per row, the branch summary in the row's first slot,
-//! member skills in canonical order, and a Help icon in the last Warfare-row
-//! slot. The menu is read-only (`allow_grab_items` and `allow_put_items`
-//! stay false); the only interaction is the Help slot's click callback.
+//! member skills in canonical order, a Help icon in the last Warfare-row
+//! slot, and inert filler panes in the remaining row-end slots. The menu is
+//! read-only (`allow_grab_items` and `allow_put_items` stay false); the only
+//! interaction is the Help slot's click callback.
 //!
 use std::sync::Arc;
 
@@ -39,19 +40,25 @@ pub(crate) const MENU_SLOTS: usize = 27;
 pub(crate) const BRANCH_HEADER_SLOTS: [usize; 3] = [0, 9, 18];
 /// Slot holding the Help icon (end of the Warfare row).
 pub(crate) const HELP_SLOT: usize = 17;
+/// Slots holding inert filler panes (row ends without a skill or Help).
+pub(crate) const FILLER_SLOTS: [usize; 5] = [7, 8, 16, 25, 26];
 
 /// What one menu slot displays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MenuSlot {
     BranchHeader(BranchId),
     Skill(SkillId),
+    /// Visually inert padding; the read-only window flags and the click
+    /// handler's global cancel keep it from ever being taken or used.
+    Filler,
     Help,
 }
 
 /// The fixed 27-slot assignment: one branch per row in canonical order,
-/// branch header first, Help at [`HELP_SLOT`].
+/// branch header first, Help at [`HELP_SLOT`], and every remaining
+/// non-skill slot an inert filler.
 pub(crate) fn menu_layout() -> [MenuSlot; MENU_SLOTS] {
-    let mut layout = [MenuSlot::Help; MENU_SLOTS];
+    let mut layout = [MenuSlot::Filler; MENU_SLOTS];
     for (branch, row_start) in BranchId::ALL.iter().zip(BRANCH_HEADER_SLOTS) {
         layout[row_start] = MenuSlot::BranchHeader(*branch);
         for (column, skill) in branch.skills().iter().enumerate() {
@@ -59,6 +66,11 @@ pub(crate) fn menu_layout() -> [MenuSlot; MENU_SLOTS] {
         }
     }
     layout[HELP_SLOT] = MenuSlot::Help;
+    debug_assert!(
+        FILLER_SLOTS
+            .iter()
+            .all(|slot| layout[*slot] == MenuSlot::Filler)
+    );
     layout
 }
 
@@ -74,31 +86,31 @@ fn branch_icon(branch: BranchId) -> &'static Item {
 /// Deterministic skill-to-icon mapping; unknown keys fall back to stone.
 fn skill_icon(skill: SkillId) -> &'static Item {
     let key = match skill {
-        SkillId::Agriculture => "wheat",
-        SkillId::Herbalism => "sweet_berries",
+        SkillId::Cultivation => "wheat",
         SkillId::Woodcutting => "oak_log",
         SkillId::Mining => "iron_pickaxe",
         SkillId::Excavation => "iron_shovel",
         SkillId::Fishing => "fishing_rod",
-        SkillId::Husbandry => "egg",
-        SkillId::Taming => "bone",
+        SkillId::AnimalHandling => "bone",
         SkillId::Blades => "diamond_sword",
         SkillId::Axes => "diamond_axe",
         SkillId::Archery => "bow",
-        SkillId::Unarmed => "stick",
+        SkillId::Athletics => "feather",
         SkillId::Defense => "shield",
-        SkillId::Acrobatics => "feather",
         SkillId::Sorcery => "blaze_rod",
         SkillId::Smithing => "anvil",
-        SkillId::Repair => "iron_ingot",
-        SkillId::Salvage => "grindstone",
+        SkillId::Maintenance => "iron_ingot",
         SkillId::Alchemy => "brewing_stand",
         SkillId::Enchanting => "enchanting_table",
         SkillId::Tinkering => "piston",
-        SkillId::Trading => "gold_ingot",
-        SkillId::Charisma => "name_tag",
+        SkillId::Commerce => "emerald",
     };
     Item::from_registry_key(key).unwrap_or(&Item::STONE)
+}
+
+/// Inert padding icon for slots that are neither headers, skills, nor Help.
+fn filler_icon() -> &'static Item {
+    Item::from_registry_key("gray_stained_glass_pane").unwrap_or(&Item::STONE)
 }
 
 fn help_icon() -> &'static Item {
@@ -112,15 +124,33 @@ fn skill_display_name(skill: SkillId, progress: PlayerSkillSnapshot, curve: &Lev
     format!("{} - Level {}", skill.display_name(), level)
 }
 
-/// Structured lore for a skill icon: state, progress toward the next level,
-/// and total accumulated XP.
+/// One-line explanation of the disciplines a merged skill covers, shown at
+/// the top of its lore. Unmerged skills return `None`.
+fn merged_discipline_line(skill: SkillId) -> Option<&'static str> {
+    let line = match skill {
+        SkillId::Cultivation => "Covers crops and herbalism",
+        SkillId::AnimalHandling => "Covers husbandry and taming",
+        SkillId::Athletics => "Covers unarmed combat and acrobatics",
+        SkillId::Maintenance => "Covers repair and salvage",
+        SkillId::Commerce => "Covers trading and charisma",
+        _ => return None,
+    };
+    Some(line)
+}
+
+/// Structured lore for a skill icon: merged-discipline explanation, state,
+/// progress toward the next level, and total accumulated XP.
 fn skill_lore(
+    skill: SkillId,
     progress: PlayerSkillSnapshot,
     curve: &LevelCurve,
     enabled: bool,
 ) -> Vec<TextComponent> {
     let (level, into, needed) = curve.level_for_xp(progress.xp);
-    let mut lore = Vec::with_capacity(3);
+    let mut lore = Vec::with_capacity(4);
+    if let Some(line) = merged_discipline_line(skill) {
+        lore.push(TextComponent::text(line).color_named(NamedColor::DarkGray));
+    }
     if !enabled {
         lore.push(TextComponent::text("Disabled").color_named(NamedColor::Red));
     }
@@ -197,6 +227,70 @@ impl PluginGuiHandler for SkillMenuHandler {
     }
 }
 
+/// Build the 27 icon stacks for the fixed layout against one snapshot.
+fn menu_slots(
+    snapshot: &PlayerSnapshot,
+    skill_info: &dyn Fn(SkillId) -> (LevelCurve, bool),
+) -> Vec<ItemStack> {
+    menu_layout()
+        .iter()
+        .map(|menu_slot| {
+            let (icon, name, lore) = match menu_slot {
+                MenuSlot::BranchHeader(branch) => (
+                    branch_icon(*branch),
+                    branch.display_name().to_string(),
+                    branch_lore(*branch, snapshot, skill_info),
+                ),
+                MenuSlot::Skill(skill) => {
+                    let (curve, enabled) = skill_info(*skill);
+                    let progress = snapshot.get(*skill);
+                    (
+                        skill_icon(*skill),
+                        skill_display_name(*skill, progress, &curve),
+                        skill_lore(*skill, progress, &curve, enabled),
+                    )
+                }
+                MenuSlot::Filler => (filler_icon(), " ".to_string(), Vec::new()),
+                MenuSlot::Help => (
+                    help_icon(),
+                    "Help".to_string(),
+                    vec![
+                        TextComponent::text("Click for the /mmo command list")
+                            .color_named(NamedColor::Yellow),
+                    ],
+                ),
+            };
+            let mut stack = ItemStack::new(1, icon);
+            stack.set_custom_name(name);
+            stack.set_lore(lore);
+            stack
+        })
+        .collect()
+}
+
+/// Menu window title: first person when viewers open their own skills,
+/// possessive when viewing another player.
+fn menu_title(viewer_is_target: bool, target_name: &str) -> String {
+    if viewer_is_target {
+        "Your MMO Skills".to_string()
+    } else {
+        format!("{target_name}'s MMO Skills")
+    }
+}
+
+/// Assemble the read-only window specification. Both transfer flags stay
+/// false so no click, drag, or shift-click path can move items; the click
+/// handler additionally cancels every input except the Help action.
+fn menu_spec(title: String, slots: Vec<ItemStack>) -> PluginGuiSpec {
+    PluginGuiSpec {
+        window_type: WindowType::Generic9x3,
+        title: TextComponent::text(title),
+        slots,
+        allow_grab_items: false,
+        allow_put_items: false,
+    }
+}
+
 /// Open the read-only skill grid for `viewer`, showing `target`'s skills.
 pub(crate) async fn open_skill_menu(
     state: &Arc<MmoState>,
@@ -207,58 +301,15 @@ pub(crate) async fn open_skill_menu(
     let config = state.config();
     let skill_info = |skill: SkillId| (state.curve(skill), skill_enabled(&config, skill));
 
-    let layout = menu_layout();
-    let mut slots = vec![ItemStack::EMPTY.clone(); MENU_SLOTS];
-    for (index, menu_slot) in layout.iter().enumerate() {
-        let (icon, name, lore) = match menu_slot {
-            MenuSlot::BranchHeader(branch) => (
-                branch_icon(*branch),
-                branch.display_name().to_string(),
-                branch_lore(*branch, &snapshot, &skill_info),
-            ),
-            MenuSlot::Skill(skill) => {
-                let (curve, enabled) = skill_info(*skill);
-                let progress = snapshot.get(*skill);
-                (
-                    skill_icon(*skill),
-                    skill_display_name(*skill, progress, &curve),
-                    skill_lore(progress, &curve, enabled),
-                )
-            }
-            MenuSlot::Help => (
-                help_icon(),
-                "Help".to_string(),
-                vec![
-                    TextComponent::text("Click for the /mmo command list")
-                        .color_named(NamedColor::Yellow),
-                ],
-            ),
-        };
-        let mut stack = ItemStack::new(1, icon);
-        stack.set_custom_name(name);
-        stack.set_lore(lore);
-        slots[index] = stack;
-    }
-
-    let title = if viewer.gameprofile.id == target.gameprofile.id {
-        "Your MMO Skills".to_string()
-    } else {
-        format!("{}'s MMO Skills", target.gameprofile.name)
-    };
+    let slots = menu_slots(&snapshot, &skill_info);
+    let title = menu_title(
+        viewer.gameprofile.id == target.gameprofile.id,
+        &target.gameprofile.name,
+    );
 
     state
         .context()
-        .open_plugin_gui(
-            viewer,
-            PluginGuiSpec {
-                window_type: WindowType::Generic9x3,
-                title: TextComponent::text(title),
-                slots,
-                allow_grab_items: false,
-                allow_put_items: false,
-            },
-            Arc::new(SkillMenuHandler),
-        )
+        .open_plugin_gui(viewer, menu_spec(title, slots), Arc::new(SkillMenuHandler))
         .await
         .map(|_| ())
         .map_err(|error| format!("failed to open MMO skill menu: {error}"))
@@ -305,12 +356,17 @@ mod tests {
             .iter()
             .filter(|slot| matches!(slot, MenuSlot::Help))
             .count();
-        assert_eq!((headers, skills, help), (3, 23, 1));
-        assert_eq!(headers + skills + help, MENU_SLOTS);
+        let fillers = layout
+            .iter()
+            .filter(|slot| matches!(slot, MenuSlot::Filler))
+            .count();
+        // 3 headers + 18 skills + 1 interactive Help slot + 5 inert fillers.
+        assert_eq!((headers, skills, help, fillers), (3, 18, 1, 5));
+        assert_eq!(headers + skills + help + fillers, MENU_SLOTS);
     }
 
     #[test]
-    fn branch_headers_and_help_occupy_reserved_slots() {
+    fn branch_headers_help_and_fillers_occupy_reserved_slots() {
         let layout = menu_layout();
         for (index, branch) in BranchId::ALL.iter().enumerate() {
             assert_eq!(BRANCH_HEADER_SLOTS[index], index * 9);
@@ -321,18 +377,22 @@ mod tests {
         }
         assert_eq!(HELP_SLOT, 17);
         assert_eq!(layout[HELP_SLOT], MenuSlot::Help);
+        assert_eq!(FILLER_SLOTS, [7, 8, 16, 25, 26]);
+        for slot in FILLER_SLOTS {
+            assert_eq!(layout[slot], MenuSlot::Filler, "slot {slot} must be filler");
+        }
     }
 
     #[test]
-    fn each_skill_sits_in_its_branch_row() {
+    fn skills_sit_in_canonical_order_after_each_branch_header() {
         let layout = menu_layout();
-        for (index, slot) in layout.iter().enumerate() {
-            if let MenuSlot::Skill(skill) = slot {
-                let row = BranchId::ALL
-                    .iter()
-                    .position(|branch| *branch == skill.branch())
-                    .expect("every skill has a branch");
-                assert_eq!(index / 9, row, "{skill} sits outside its branch row");
+        for (branch, row_start) in BranchId::ALL.iter().zip(BRANCH_HEADER_SLOTS) {
+            for (column, skill) in branch.skills().iter().enumerate() {
+                assert_eq!(
+                    layout[row_start + 1 + column],
+                    MenuSlot::Skill(*skill),
+                    "{skill} must sit at column {column} of the {branch} row"
+                );
             }
         }
     }
@@ -342,17 +402,73 @@ mod tests {
     }
 
     #[test]
+    fn merged_skills_explain_their_disciplines_in_lore() {
+        let expected = [
+            (SkillId::Cultivation, "Covers crops and herbalism"),
+            (SkillId::AnimalHandling, "Covers husbandry and taming"),
+            (SkillId::Athletics, "Covers unarmed combat and acrobatics"),
+            (SkillId::Maintenance, "Covers repair and salvage"),
+            (SkillId::Commerce, "Covers trading and charisma"),
+        ];
+        let progress = PlayerSkillSnapshot::new(0);
+        for (skill, line) in expected {
+            let lore = skill_lore(skill, progress, &test_curve(), true);
+            assert_eq!(lore_text(&lore)[0], line, "{skill} lore");
+            assert_eq!(
+                lore[0].0.style.color,
+                Some(pumpkin_util::text::color::Color::Named(
+                    NamedColor::DarkGray
+                ))
+            );
+        }
+        // Unmerged skills keep the plain state/progress lore.
+        let lore = skill_lore(SkillId::Mining, progress, &test_curve(), true);
+        assert!(
+            !lore_text(&lore)
+                .iter()
+                .any(|line| line.starts_with("Covers"))
+        );
+    }
+
+    #[test]
+    fn merged_skills_have_the_planned_distinct_icons() {
+        let expected = [
+            (SkillId::Cultivation, "wheat"),
+            (SkillId::AnimalHandling, "bone"),
+            (SkillId::Athletics, "feather"),
+            (SkillId::Maintenance, "iron_ingot"),
+            (SkillId::Commerce, "emerald"),
+        ];
+        for (skill, key) in expected {
+            assert_eq!(skill_icon(skill).registry_key, key, "{skill} icon");
+        }
+        // No two skill slots share an icon.
+        let mut keys: Vec<&str> = SkillId::ALL
+            .iter()
+            .map(|skill| skill_icon(*skill).registry_key)
+            .collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), SkillId::ALL.len());
+    }
+
+    #[test]
     fn disabled_skill_has_concise_name_and_explicit_lore() {
         let progress = PlayerSkillSnapshot::new(0);
-        let name = skill_display_name(SkillId::Trading, progress, &test_curve());
-        let lore = skill_lore(progress, &test_curve(), false);
-        assert_eq!(name, "Trading - Level 1");
+        let name = skill_display_name(SkillId::Commerce, progress, &test_curve());
+        let lore = skill_lore(SkillId::Commerce, progress, &test_curve(), false);
+        assert_eq!(name, "Commerce - Level 1");
         assert_eq!(
             lore_text(&lore),
-            ["Disabled", "Progress: 0/100 XP (0%)", "Total XP: 0"]
+            [
+                "Covers trading and charisma",
+                "Disabled",
+                "Progress: 0/100 XP (0%)",
+                "Total XP: 0"
+            ]
         );
         assert_eq!(
-            lore[0].0.style.color,
+            lore[1].0.style.color,
             Some(pumpkin_util::text::color::Color::Named(NamedColor::Red))
         );
     }
@@ -361,7 +477,7 @@ mod tests {
     fn max_level_state_moves_from_name_into_lore() {
         let progress = PlayerSkillSnapshot::new(u64::MAX);
         let name = skill_display_name(SkillId::Mining, progress, &test_curve());
-        let lore = skill_lore(progress, &test_curve(), true);
+        let lore = skill_lore(SkillId::Mining, progress, &test_curve(), true);
         assert_eq!(name, "Mining - Level 5");
         assert_eq!(
             lore_text(&lore),
@@ -374,7 +490,7 @@ mod tests {
         // Test curve thresholds: 0, 100, 300, 700, 1500 (max level 5).
         let progress = PlayerSkillSnapshot::new(150);
         let name = skill_display_name(SkillId::Mining, progress, &test_curve());
-        let lore = skill_lore(progress, &test_curve(), true);
+        let lore = skill_lore(SkillId::Mining, progress, &test_curve(), true);
         assert_eq!(name, "Mining - Level 2");
         assert_eq!(
             lore_text(&lore),
@@ -388,8 +504,54 @@ mod tests {
         let mut snapshot = PlayerSnapshot::default();
         snapshot.set(SkillId::Blades, PlayerSkillSnapshot::new(150)); // level 2
         let skill_info = |_: SkillId| (curve.clone(), true);
-        // Warfare: levels 2,1,1,1,1,1,1 -> mastery 8/7 ~= 1.1.
+        // Warfare: levels 2,1,1,1,1,1 -> mastery 7/6 ~= 1.2.
         let lore = branch_lore(BranchId::Warfare, &snapshot, &skill_info);
-        assert_eq!(lore_text(&lore), ["Mastery: 1.1", "Enabled skills: 7/7"]);
+        assert_eq!(lore_text(&lore), ["Mastery: 1.2", "Enabled skills: 6/6"]);
+    }
+
+    #[test]
+    fn menu_slots_fill_every_slot_and_render_fillers_inertly() {
+        let snapshot = PlayerSnapshot::default();
+        let skill_info = |_: SkillId| (test_curve(), true);
+        let slots = menu_slots(&snapshot, &skill_info);
+        assert_eq!(slots.len(), MENU_SLOTS);
+        for (index, stack) in slots.iter().enumerate() {
+            assert_ne!(
+                stack.item.registry_key, "air",
+                "slot {index} must be filled"
+            );
+        }
+        for slot in FILLER_SLOTS {
+            let filler = &slots[slot];
+            assert_eq!(filler.item.registry_key, "gray_stained_glass_pane");
+            assert!(
+                filler.get_lore().is_none(),
+                "filler slot {slot} must not carry lore"
+            );
+        }
+        // Spot-check the other slot kinds: branch header, skill, Help.
+        assert_eq!(slots[0].item.registry_key, "grass_block");
+        let mining = &slots[3]; // Frontier header at 0, Mining third skill.
+        assert_eq!(mining.item.registry_key, "iron_pickaxe");
+        assert!(mining.get_lore().is_some_and(|lore| !lore.is_empty()));
+        assert_eq!(slots[HELP_SLOT].item.registry_key, "book");
+    }
+
+    #[test]
+    fn menu_spec_stays_a_read_only_9x3_window() {
+        let spec = menu_spec(
+            "Title".to_string(),
+            vec![ItemStack::EMPTY.clone(); MENU_SLOTS],
+        );
+        assert!(matches!(spec.window_type, WindowType::Generic9x3));
+        assert!(!spec.allow_grab_items);
+        assert!(!spec.allow_put_items);
+        assert_eq!(spec.slots.len(), MENU_SLOTS);
+    }
+
+    #[test]
+    fn menu_title_distinguishes_viewer_and_target() {
+        assert_eq!(menu_title(true, "Alex"), "Your MMO Skills");
+        assert_eq!(menu_title(false, "Alex"), "Alex's MMO Skills");
     }
 }

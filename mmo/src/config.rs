@@ -18,8 +18,11 @@ fn default_mmo_config() -> Option<MmoConfig> {
 }
 
 /// Current schema version of `MmoConfig`. Older files are upgraded in place
-/// on load (missing sections gain safe defaults) and saved back.
-pub const CURRENT_CONFIG_VERSION: u32 = 1;
+/// on load (missing sections gain safe defaults) and saved back. Version 2
+/// merges the retired skill-pair entries of the six-skill consolidation;
+/// that merge happens deterministically while the `skills` map is
+/// deserialized (see [`migrate_skill_configs`]).
+pub const CURRENT_CONFIG_VERSION: u32 = 2;
 
 /// Top-level Cabbage plugin configuration, now stored as RON.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -175,8 +178,11 @@ pub struct MmoConfig {
     /// Schema version of this config; upgraded automatically on load.
     #[serde(default)]
     pub config_version: u32,
-    /// Levelling curve for each skill. Unknown skill names (for example the
-    /// retired `Combat`) are skipped with a warning instead of failing to load.
+    /// Levelling curve for each skill. Retired pair entries from pre-v2 files
+    /// (e.g. `Agriculture`/`Herbalism`) are merged deterministically into
+    /// their canonical destination during deserialization; unknown skill
+    /// names (for example the retired `Combat`) are skipped with a warning
+    /// instead of failing to load.
     #[serde(deserialize_with = "deserialize_skill_configs")]
     pub skills: HashMap<SkillId, SkillConfig>,
     /// Send a chat message when a player levels up.
@@ -241,32 +247,42 @@ impl MmoConfig {
 
 /// Lenient map key used only when deserializing `MmoConfig::skills`.
 ///
-/// Unknown skill names (such as the retired `Combat` in pre-three-branch
-/// config files) deserialize as `Unknown` and are skipped with a warning
-/// instead of failing the entire config load.
+/// Canonical v2 keys map straight to their `SkillId`. Retired pair keys from
+/// pre-v2 files stay *distinct* here so the migration pass can merge them
+/// deterministically — deserializing them as aliases of the destination key
+/// would let hash-map iteration order pick a winner. Unknown skill names
+/// (such as the retired `Combat` in pre-three-branch config files)
+/// deserialize as `Unknown` and are skipped with a warning instead of
+/// failing the entire config load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 enum SkillConfigKey {
-    Agriculture,
-    Herbalism,
+    Cultivation,
     Woodcutting,
     Mining,
     Excavation,
     Fishing,
-    Husbandry,
-    Taming,
+    AnimalHandling,
     Blades,
     Axes,
     Archery,
-    Unarmed,
+    Athletics,
     Defense,
-    Acrobatics,
     Sorcery,
     Smithing,
-    Repair,
-    Salvage,
+    Maintenance,
     Alchemy,
     Enchanting,
     Tinkering,
+    Commerce,
+    // Retired v1 keys, kept distinct for the deterministic migration pass.
+    Agriculture,
+    Herbalism,
+    Husbandry,
+    Taming,
+    Unarmed,
+    Acrobatics,
+    Repair,
+    Salvage,
     Trading,
     Charisma,
     #[serde(other)]
@@ -274,34 +290,145 @@ enum SkillConfigKey {
 }
 
 impl SkillConfigKey {
-    fn skill(self) -> Option<SkillId> {
+    /// The canonical skill for a current config key, or `None` for retired
+    /// and unknown keys.
+    fn canonical_skill(self) -> Option<SkillId> {
         match self {
-            SkillConfigKey::Agriculture => Some(SkillId::Agriculture),
-            SkillConfigKey::Herbalism => Some(SkillId::Herbalism),
+            SkillConfigKey::Cultivation => Some(SkillId::Cultivation),
             SkillConfigKey::Woodcutting => Some(SkillId::Woodcutting),
             SkillConfigKey::Mining => Some(SkillId::Mining),
             SkillConfigKey::Excavation => Some(SkillId::Excavation),
             SkillConfigKey::Fishing => Some(SkillId::Fishing),
-            SkillConfigKey::Husbandry => Some(SkillId::Husbandry),
-            SkillConfigKey::Taming => Some(SkillId::Taming),
+            SkillConfigKey::AnimalHandling => Some(SkillId::AnimalHandling),
             SkillConfigKey::Blades => Some(SkillId::Blades),
             SkillConfigKey::Axes => Some(SkillId::Axes),
             SkillConfigKey::Archery => Some(SkillId::Archery),
-            SkillConfigKey::Unarmed => Some(SkillId::Unarmed),
+            SkillConfigKey::Athletics => Some(SkillId::Athletics),
             SkillConfigKey::Defense => Some(SkillId::Defense),
-            SkillConfigKey::Acrobatics => Some(SkillId::Acrobatics),
             SkillConfigKey::Sorcery => Some(SkillId::Sorcery),
             SkillConfigKey::Smithing => Some(SkillId::Smithing),
-            SkillConfigKey::Repair => Some(SkillId::Repair),
-            SkillConfigKey::Salvage => Some(SkillId::Salvage),
+            SkillConfigKey::Maintenance => Some(SkillId::Maintenance),
             SkillConfigKey::Alchemy => Some(SkillId::Alchemy),
             SkillConfigKey::Enchanting => Some(SkillId::Enchanting),
             SkillConfigKey::Tinkering => Some(SkillId::Tinkering),
-            SkillConfigKey::Trading => Some(SkillId::Trading),
-            SkillConfigKey::Charisma => Some(SkillId::Charisma),
-            SkillConfigKey::Unknown => None,
+            SkillConfigKey::Commerce => Some(SkillId::Commerce),
+            _ => None,
         }
     }
+}
+
+/// Retired config keys merged by config schema v2, as
+/// `(anchor, secondary, destination)`. When the destination has no explicit
+/// entry, the anchor supplies the curve and `enabled` is the logical OR of
+/// both retired entries.
+const RETIRED_CONFIG_PAIRS: [(SkillConfigKey, SkillConfigKey, SkillId); 5] = [
+    (
+        SkillConfigKey::Agriculture,
+        SkillConfigKey::Herbalism,
+        SkillId::Cultivation,
+    ),
+    (
+        SkillConfigKey::Husbandry,
+        SkillConfigKey::Taming,
+        SkillId::AnimalHandling,
+    ),
+    (
+        SkillConfigKey::Unarmed,
+        SkillConfigKey::Acrobatics,
+        SkillId::Athletics,
+    ),
+    (
+        SkillConfigKey::Repair,
+        SkillConfigKey::Salvage,
+        SkillId::Maintenance,
+    ),
+    (
+        SkillConfigKey::Trading,
+        SkillConfigKey::Charisma,
+        SkillId::Commerce,
+    ),
+];
+
+/// Deterministically merge retired pair entries into their canonical
+/// destinations (config schema v2).
+///
+/// Rules, in order: an explicit canonical entry always wins; otherwise the
+/// pair's anchor supplies `max_level`/`base_xp`/`xp_multiplier` (the
+/// secondary's curve is used only when the anchor is absent); `enabled` is
+/// the logical OR of the two retired entries so a partly enabled pair stays
+/// usable. When both retired entries exist and their curves disagree, the
+/// anchor still wins and the conflict is logged — never resolved by map
+/// iteration order. Destinations with no old or new entry are left absent
+/// and gain defaults during the version-bump save in `MmoState`.
+fn migrate_skill_configs(
+    raw: HashMap<SkillConfigKey, SkillConfig>,
+) -> HashMap<SkillId, SkillConfig> {
+    let mut skills = HashMap::with_capacity(raw.len());
+    let mut retired: HashMap<SkillConfigKey, SkillConfig> = HashMap::new();
+    for (key, config) in raw {
+        match key.canonical_skill() {
+            Some(skill) => {
+                skills.insert(skill, config);
+            }
+            None if key != SkillConfigKey::Unknown => {
+                retired.insert(key, config);
+            }
+            None => {
+                log::warn!("[Cabbage MMO] ignoring unknown skill entry in config.ron");
+            }
+        }
+    }
+
+    for (anchor, secondary, destination) in RETIRED_CONFIG_PAIRS {
+        if skills.contains_key(&destination) {
+            if retired.contains_key(&anchor) || retired.contains_key(&secondary) {
+                log::info!(
+                    "[Cabbage MMO] config migration: explicit {destination} entry wins over \
+                     the retired {anchor:?}/{secondary:?} entries"
+                );
+            }
+            continue;
+        }
+        let anchor_config = retired.get(&anchor);
+        let secondary_config = retired.get(&secondary);
+        if anchor_config.is_none() && secondary_config.is_none() {
+            continue;
+        }
+        let enabled = anchor_config.is_some_and(|config| config.enabled)
+            || secondary_config.is_some_and(|config| config.enabled);
+        let curve_source = anchor_config
+            .or(secondary_config)
+            .cloned()
+            .unwrap_or_default();
+        if let (Some(anchor_config), Some(secondary_config)) = (anchor_config, secondary_config) {
+            let anchor_curve = (
+                anchor_config.max_level,
+                anchor_config.base_xp,
+                anchor_config.xp_multiplier,
+            );
+            let secondary_curve = (
+                secondary_config.max_level,
+                secondary_config.base_xp,
+                secondary_config.xp_multiplier,
+            );
+            if anchor_curve != secondary_curve {
+                log::info!(
+                    "[Cabbage MMO] config migration: {anchor:?} and {secondary:?} curves \
+                     disagree; using the {anchor:?} anchor curve for {destination}"
+                );
+            }
+        }
+        skills.insert(
+            destination,
+            SkillConfig {
+                max_level: curve_source.max_level,
+                base_xp: curve_source.base_xp,
+                xp_multiplier: curve_source.xp_multiplier,
+                enabled,
+            },
+        );
+    }
+    skills
 }
 
 fn deserialize_skill_configs<'de, D>(
@@ -311,18 +438,7 @@ where
     D: serde::Deserializer<'de>,
 {
     let raw = HashMap::<SkillConfigKey, SkillConfig>::deserialize(deserializer)?;
-    let mut skills = HashMap::with_capacity(raw.len());
-    for (key, config) in raw {
-        match key.skill() {
-            Some(skill) => {
-                skills.insert(skill, config);
-            }
-            None => {
-                log::warn!("[Cabbage MMO] ignoring unknown skill entry in config.ron");
-            }
-        }
-    }
-    Ok(skills)
+    Ok(migrate_skill_configs(raw))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -639,6 +755,139 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.combat_migration.target, Some(SkillId::Blades));
+    }
+
+    fn parse_skills(skills_ron: &str) -> HashMap<SkillId, SkillConfig> {
+        let config: MmoConfig = ron::from_str(&format!(
+            "(enabled:true,message_on_level_up:true,save_interval_ticks:6000,\
+             skills:{{{skills_ron}}},disabled_world_features:[])"
+        ))
+        .unwrap();
+        config.skills
+    }
+
+    #[test]
+    fn config_v2_merges_equal_curve_pair_and_ors_enabled() {
+        let pair = "Agriculture:(max_level:99,base_xp:60,xp_multiplier:1.14,enabled:false),\
+                    Herbalism:(max_level:99,base_xp:60,xp_multiplier:1.14,enabled:true)";
+        let skills = parse_skills(pair);
+        let cultivation = skills.get(&SkillId::Cultivation).unwrap();
+        assert_eq!(cultivation.max_level, 99);
+        assert_eq!(cultivation.base_xp, 60);
+        assert_eq!(cultivation.xp_multiplier, 1.14);
+        // A partly enabled pair stays usable: enabled is the logical OR.
+        assert!(cultivation.enabled);
+        assert_eq!(skills.len(), 1);
+
+        let pair = "Agriculture:(max_level:99,base_xp:60,xp_multiplier:1.14,enabled:false),\
+                    Herbalism:(max_level:99,base_xp:60,xp_multiplier:1.14,enabled:false)";
+        let skills = parse_skills(pair);
+        assert!(!skills.get(&SkillId::Cultivation).unwrap().enabled);
+    }
+
+    #[test]
+    fn config_v2_conflicting_curves_resolve_to_the_anchor() {
+        let skills = parse_skills(
+            "Unarmed:(max_level:99,base_xp:60,xp_multiplier:1.14,enabled:true),\
+             Acrobatics:(max_level:50,base_xp:40,xp_multiplier:1.10,enabled:false)",
+        );
+        // The deterministic anchor (Unarmed) supplies the curve; the
+        // secondary still contributes to the enabled OR.
+        let athletics = skills.get(&SkillId::Athletics).unwrap();
+        assert_eq!(athletics.max_level, 99);
+        assert_eq!(athletics.base_xp, 60);
+        assert_eq!(athletics.xp_multiplier, 1.14);
+        assert!(athletics.enabled);
+        assert_eq!(skills.len(), 1);
+    }
+
+    #[test]
+    fn config_v2_secondary_only_pair_uses_the_secondary_curve() {
+        let skills =
+            parse_skills("Taming:(max_level:80,base_xp:70,xp_multiplier:1.2,enabled:false)");
+        let animal_handling = skills.get(&SkillId::AnimalHandling).unwrap();
+        assert_eq!(animal_handling.max_level, 80);
+        assert_eq!(animal_handling.base_xp, 70);
+        assert!(!animal_handling.enabled);
+    }
+
+    #[test]
+    fn config_v2_explicit_canonical_entry_wins_over_the_retired_pair() {
+        let skills = parse_skills(
+            "Maintenance:(max_level:42,base_xp:70,xp_multiplier:1.2,enabled:false),\
+             Repair:(max_level:99,base_xp:60,xp_multiplier:1.14,enabled:true),\
+             Salvage:(max_level:99,base_xp:60,xp_multiplier:1.14,enabled:true)",
+        );
+        let maintenance = skills.get(&SkillId::Maintenance).unwrap();
+        assert_eq!(maintenance.max_level, 42);
+        assert_eq!(maintenance.base_xp, 70);
+        assert!(!maintenance.enabled);
+        assert_eq!(skills.len(), 1);
+    }
+
+    #[test]
+    fn config_v2_serialization_contains_only_canonical_names() {
+        let skills = parse_skills(
+            "Agriculture:(max_level:99,base_xp:60,xp_multiplier:1.14),\
+             Herbalism:(max_level:99,base_xp:60,xp_multiplier:1.14),\
+             Husbandry:(max_level:99,base_xp:60,xp_multiplier:1.14),\
+             Taming:(max_level:99,base_xp:60,xp_multiplier:1.14),\
+             Unarmed:(max_level:99,base_xp:60,xp_multiplier:1.14),\
+             Acrobatics:(max_level:99,base_xp:60,xp_multiplier:1.14),\
+             Repair:(max_level:99,base_xp:60,xp_multiplier:1.14),\
+             Salvage:(max_level:99,base_xp:60,xp_multiplier:1.14),\
+             Trading:(max_level:99,base_xp:60,xp_multiplier:1.14),\
+             Charisma:(max_level:99,base_xp:60,xp_multiplier:1.14)",
+        );
+        assert_eq!(skills.len(), 5);
+        let mut config = MmoConfig::default();
+        config.skills = skills;
+        let serialized = ron::ser::to_string(&config).unwrap();
+        // PascalCase retired keys must never be written back; the lowercase
+        // nested activity config fields (agriculture, repair, ...) stay.
+        for retired in [
+            "Agriculture",
+            "Herbalism",
+            "Husbandry",
+            "Taming",
+            "Unarmed",
+            "Acrobatics",
+            "Repair",
+            "Salvage",
+            "Trading",
+            "Charisma",
+        ] {
+            assert!(
+                !serialized.contains(retired),
+                "serialized config still contains {retired}"
+            );
+        }
+        for skill in [
+            "Cultivation",
+            "AnimalHandling",
+            "Athletics",
+            "Maintenance",
+            "Commerce",
+        ] {
+            assert!(serialized.contains(skill), "missing {skill}");
+        }
+    }
+
+    #[test]
+    fn combat_migration_target_routes_retired_names() {
+        let config: MmoConfig = ron::from_str(
+            "(enabled:true,skills:{},message_on_level_up:true,save_interval_ticks:6000,\
+             combat_migration:(target:Some(Repair)))",
+        )
+        .unwrap();
+        assert_eq!(config.combat_migration.target, Some(SkillId::Maintenance));
+
+        let config: MmoConfig = ron::from_str(
+            "(enabled:true,skills:{},message_on_level_up:true,save_interval_ticks:6000,\
+             combat_migration:(target:Some(Charisma)))",
+        )
+        .unwrap();
+        assert_eq!(config.combat_migration.target, Some(SkillId::Commerce));
     }
 
     #[test]
