@@ -247,10 +247,18 @@ impl MmoState {
     }
 
     pub fn block_xp_reward(&self, block_name: &str) -> Option<u64> {
+        let name = block_name.strip_prefix("minecraft:").unwrap_or(block_name);
         self.config
             .lock()
             .ok()
-            .and_then(|config| config.xp_rewards.blocks.get(block_name).copied())
+            .and_then(|config| {
+                config
+                    .xp_rewards
+                    .blocks
+                    .get(name)
+                    .or_else(|| config.xp_rewards.blocks.get(block_name))
+                    .copied()
+            })
     }
 
     /// Shared perk cooldown tracker (tick-based).
