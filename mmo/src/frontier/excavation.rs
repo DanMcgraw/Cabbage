@@ -15,12 +15,33 @@ use rand::RngExt;
 use super::super::{
     MmoState,
     ore_reveal::provenance::ProvenanceKey,
-    perks::batch_break,
-    progression::{self, XpSource, earns_xp},
+    perks::{batch_break, eligibility::perk_tier},
+    progression::{self, XpSource, earns_xp, perk_level},
     skills::SkillId,
 };
 
 const EARTHMOVER_COOLDOWN_KEY: &str = "excavation.earthmover";
+
+/// Archaeology loot chance for one entry: its base chance plus the per-tier
+/// step, clamped by the global proc-chance cap.
+fn loot_chance(
+    excavation: &super::config::ExcavationConfig,
+    loot: &super::config::ExcavationLoot,
+    level: u32,
+    global_cap: f64,
+) -> f64 {
+    (loot.chance + excavation.loot_chance_per_tier * f64::from(perk_tier(level))).min(global_cap)
+}
+
+/// Maximum extra blocks Earthmover may excavate in one action: the base
+/// allowance plus the per-tier step for the player's perk tier.
+fn earthmover_max_blocks(excavation: &super::config::ExcavationConfig, level: u32) -> u32 {
+    excavation.earthmover_max_blocks.saturating_add(
+        excavation
+            .earthmover_max_blocks_per_tier
+            .saturating_mul(perk_tier(level)),
+    )
+}
 
 /// Award Excavation XP for a broken natural diggable block, then roll bonus
 /// loot.
@@ -50,7 +71,8 @@ pub async fn handle_block_broken(
     let Some(loot) = excavation.bonus_loot.get(event.block.name) else {
         return;
     };
-    let chance = loot.chance.min(config.perks.max_proc_chance);
+    let level = perk_level(state, player.gameprofile.id, SkillId::Excavation).await;
+    let chance = loot_chance(excavation, loot, level, config.perks.max_proc_chance);
     if chance <= 0.0 || rand::rng().random::<f64>() >= chance {
         return;
     }
@@ -93,6 +115,7 @@ pub async fn handle_block_break(state: &MmoState, event: &BlockBreakEvent) {
         return;
     }
 
+    let level = perk_level(state, player.gameprofile.id, SkillId::Excavation).await;
     let target = event.block;
     let provenance = state.provenance();
     let closure_world = world.clone();
@@ -101,7 +124,7 @@ pub async fn handle_block_break(state: &MmoState, event: &BlockBreakEvent) {
         &world,
         player,
         event.block_position,
-        excavation.earthmover_max_blocks,
+        earthmover_max_blocks(excavation, level),
         EARTHMOVER_COOLDOWN_KEY,
         move |position| {
             let Some(state_id) = closure_world.get_block_state_id_if_loaded(&position) else {
@@ -114,4 +137,41 @@ pub async fn handle_block_break(state: &MmoState, event: &BlockBreakEvent) {
         },
     )
     .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loot_chance_scales_with_tier() {
+        let excavation = super::super::config::ExcavationConfig::default();
+        let loot = &excavation.bonus_loot["gravel"];
+
+        // Tier 0 adds nothing: the pre-tier base chance (flint 8%).
+        assert!((loot_chance(&excavation, loot, 1, 1.0) - 0.08).abs() < f64::EPSILON);
+        assert!((loot_chance(&excavation, loot, 9, 1.0) - 0.08).abs() < f64::EPSILON);
+        // Tier 4 at level 100: 8% + 4 * 1% = 12%.
+        assert!((loot_chance(&excavation, loot, 100, 1.0) - 0.12).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn loot_chance_respects_global_cap() {
+        let excavation = super::super::config::ExcavationConfig::default();
+        let loot = &excavation.bonus_loot["gravel"];
+
+        assert!((loot_chance(&excavation, loot, 100, 0.10) - 0.10).abs() < f64::EPSILON);
+        assert!((loot_chance(&excavation, loot, 1, 0.05) - 0.05).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn earthmover_max_blocks_scales_with_tier() {
+        let excavation = super::super::config::ExcavationConfig::default();
+
+        assert_eq!(earthmover_max_blocks(&excavation, 1), 16);
+        assert_eq!(earthmover_max_blocks(&excavation, 9), 16);
+        assert_eq!(earthmover_max_blocks(&excavation, 10), 20);
+        assert_eq!(earthmover_max_blocks(&excavation, 50), 28);
+        assert_eq!(earthmover_max_blocks(&excavation, 100), 32);
+    }
 }

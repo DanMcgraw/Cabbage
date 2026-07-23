@@ -17,14 +17,27 @@ use rand::RngExt;
 
 use super::super::{
     MmoState,
+    perks::eligibility::perk_tier,
     persistence::CropDataV1,
-    progression::{self, XpSource, earns_xp},
+    progression::{self, XpSource, earns_xp, perk_level},
     skills::SkillId,
 };
 
 /// The shared skill track this activity awards: agriculture and herbalism
 /// both feed Cultivation since the six-skill consolidation.
 pub(crate) const SKILL: SkillId = SkillId::Cultivation;
+
+/// Harvest bonus chance: the base chance plus the per-tier step, clamped by
+/// the global proc-chance cap.
+fn harvest_bonus_chance(
+    agriculture: &super::config::AgricultureConfig,
+    level: u32,
+    global_cap: f64,
+) -> f64 {
+    (agriculture.harvest_bonus_chance
+        + agriculture.harvest_bonus_chance_per_tier * f64::from(perk_tier(level)))
+    .min(global_cap)
+}
 
 /// Award harvest XP and roll the harvest bonus for a broken mature crop.
 pub async fn handle_block_broken(state: &MmoState, event: &BlockBrokenEvent) {
@@ -76,16 +89,17 @@ pub async fn handle_block_broken(state: &MmoState, event: &BlockBrokenEvent) {
         return;
     }
     let guaranteed = fertilized && agriculture.fertilizer_guarantees_bonus;
-    let roll = match &fertilizer {
-        // Deterministic quality roll from the stored seed.
-        Some(data) => (data.quality_seed % 1000) as f64 / 1000.0,
-        None => rand::rng().random::<f64>(),
-    };
-    let chance = agriculture
-        .harvest_bonus_chance
-        .min(config.perks.max_proc_chance);
-    if !guaranteed && roll >= chance {
-        return;
+    if !guaranteed {
+        let roll = match &fertilizer {
+            // Deterministic quality roll from the stored seed.
+            Some(data) => (data.quality_seed % 1000) as f64 / 1000.0,
+            None => rand::rng().random::<f64>(),
+        };
+        let level = perk_level(state, player.gameprofile.id, SKILL).await;
+        let chance = harvest_bonus_chance(agriculture, level, config.perks.max_proc_chance);
+        if roll >= chance {
+            return;
+        }
     }
     if let Some(item) = Item::from_registry_key(&crop.bonus_item) {
         event
@@ -144,5 +158,24 @@ mod tests {
         let props = mature.expect("wheat has properties");
         assert!(props.iter().any(|(key, _)| *key == "age"));
         assert_eq!(crop_age(Block::WHEAT.default_state.id), Some(0));
+    }
+
+    #[test]
+    fn harvest_bonus_chance_scales_with_tier() {
+        let agriculture = super::super::config::AgricultureConfig::default();
+
+        // Tier 0 adds nothing: the pre-tier base chance (10%).
+        assert!((harvest_bonus_chance(&agriculture, 1, 1.0) - 0.10).abs() < f64::EPSILON);
+        assert!((harvest_bonus_chance(&agriculture, 9, 1.0) - 0.10).abs() < f64::EPSILON);
+        // Tier 4 at level 100: 10% + 4 * 2% = 18%.
+        assert!((harvest_bonus_chance(&agriculture, 100, 1.0) - 0.18).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn harvest_bonus_chance_respects_global_cap() {
+        let agriculture = super::super::config::AgricultureConfig::default();
+
+        assert!((harvest_bonus_chance(&agriculture, 100, 0.15) - 0.15).abs() < f64::EPSILON);
+        assert!((harvest_bonus_chance(&agriculture, 1, 0.05) - 0.05).abs() < f64::EPSILON);
     }
 }

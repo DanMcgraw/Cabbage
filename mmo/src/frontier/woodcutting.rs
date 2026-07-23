@@ -14,12 +14,43 @@ use rand::RngExt;
 use super::super::{
     MmoState,
     ore_reveal::provenance::ProvenanceKey,
-    perks::batch_break,
-    progression::{self, XpSource, earns_xp},
+    perks::{batch_break, eligibility::perk_tier},
+    progression::{self, XpSource, earns_xp, perk_level},
     skills::SkillId,
 };
 
 const TIMBER_COOLDOWN_KEY: &str = "woodcutting.timber";
+
+/// Heartwood roll chance: the base chance plus the per-tier step, clamped by
+/// the global proc-chance cap.
+fn heartwood_chance(
+    woodcutting: &super::config::WoodcuttingConfig,
+    level: u32,
+    global_cap: f64,
+) -> f64 {
+    (woodcutting.heartwood_chance
+        + woodcutting.heartwood_chance_per_tier * f64::from(perk_tier(level)))
+    .min(global_cap)
+}
+
+/// Bonus XP awarded alongside a successful Heartwood roll.
+fn heartwood_xp_bonus(woodcutting: &super::config::WoodcuttingConfig, level: u32) -> u64 {
+    woodcutting.heartwood_xp_bonus.saturating_add(
+        woodcutting
+            .heartwood_xp_bonus_per_tier
+            .saturating_mul(u64::from(perk_tier(level))),
+    )
+}
+
+/// Maximum extra logs Timber may fell in one action: the base allowance plus
+/// the per-tier step for the player's perk tier.
+fn timber_max_blocks(woodcutting: &super::config::WoodcuttingConfig, level: u32) -> u32 {
+    woodcutting.timber_max_blocks.saturating_add(
+        woodcutting
+            .timber_max_blocks_per_tier
+            .saturating_mul(perk_tier(level)),
+    )
+}
 
 /// Award Woodcutting XP for a broken natural log.
 pub async fn handle_block_broken(
@@ -52,9 +83,8 @@ pub async fn handle_block_broken(
     if !config.perks.enabled {
         return;
     }
-    let chance = woodcutting
-        .heartwood_chance
-        .min(config.perks.max_proc_chance);
+    let level = perk_level(state, player.gameprofile.id, SkillId::Woodcutting).await;
+    let chance = heartwood_chance(woodcutting, level, config.perks.max_proc_chance);
     if chance <= 0.0 || rand::rng().random::<f64>() >= chance {
         return;
     }
@@ -71,7 +101,7 @@ pub async fn handle_block_broken(
             state,
             player,
             SkillId::Woodcutting,
-            woodcutting.heartwood_xp_bonus,
+            heartwood_xp_bonus(woodcutting, level),
             XpSource::BlockBreak,
         )
         .await;
@@ -104,6 +134,7 @@ pub async fn handle_block_break(state: &MmoState, event: &BlockBreakEvent) {
         return;
     }
 
+    let level = perk_level(state, player.gameprofile.id, SkillId::Woodcutting).await;
     let target: &'static Block = event.block;
     let provenance = state.provenance();
     let closure_world = world.clone();
@@ -112,7 +143,7 @@ pub async fn handle_block_break(state: &MmoState, event: &BlockBreakEvent) {
         &world,
         player,
         event.block_position,
-        woodcutting.timber_max_blocks,
+        timber_max_blocks(woodcutting, level),
         TIMBER_COOLDOWN_KEY,
         move |position| {
             let Some(state_id) = closure_world.get_block_state_id_if_loaded(&position) else {
@@ -125,4 +156,49 @@ pub async fn handle_block_break(state: &MmoState, event: &BlockBreakEvent) {
         },
     )
     .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn heartwood_chance_scales_with_tier() {
+        let woodcutting = super::super::config::WoodcuttingConfig::default();
+
+        // Tier 0 adds nothing: the pre-tier base chance (2%).
+        assert!((heartwood_chance(&woodcutting, 1, 1.0) - 0.02).abs() < f64::EPSILON);
+        assert!((heartwood_chance(&woodcutting, 9, 1.0) - 0.02).abs() < f64::EPSILON);
+        // Tier 4 at level 100: 2% + 4 * 1% = 6%.
+        assert!((heartwood_chance(&woodcutting, 100, 1.0) - 0.06).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn heartwood_chance_respects_global_cap() {
+        let woodcutting = super::super::config::WoodcuttingConfig::default();
+
+        assert!((heartwood_chance(&woodcutting, 100, 0.05) - 0.05).abs() < f64::EPSILON);
+        assert!((heartwood_chance(&woodcutting, 1, 0.01) - 0.01).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn heartwood_xp_bonus_scales_with_tier() {
+        let woodcutting = super::super::config::WoodcuttingConfig::default();
+
+        assert_eq!(heartwood_xp_bonus(&woodcutting, 1), 25);
+        assert_eq!(heartwood_xp_bonus(&woodcutting, 9), 25);
+        assert_eq!(heartwood_xp_bonus(&woodcutting, 10), 30);
+        assert_eq!(heartwood_xp_bonus(&woodcutting, 100), 45);
+    }
+
+    #[test]
+    fn timber_max_blocks_scales_with_tier() {
+        let woodcutting = super::super::config::WoodcuttingConfig::default();
+
+        assert_eq!(timber_max_blocks(&woodcutting, 1), 32);
+        assert_eq!(timber_max_blocks(&woodcutting, 9), 32);
+        assert_eq!(timber_max_blocks(&woodcutting, 10), 40);
+        assert_eq!(timber_max_blocks(&woodcutting, 50), 56);
+        assert_eq!(timber_max_blocks(&woodcutting, 100), 64);
+    }
 }

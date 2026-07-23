@@ -15,13 +15,33 @@ use rand::RngExt;
 
 use super::super::{
     MmoState,
-    progression::{self, XpSource, earns_xp},
+    perks::eligibility::perk_tier,
+    progression::{self, XpSource, earns_xp, perk_level},
     skills::SkillId,
 };
 
 /// The shared skill track this activity awards: herbalism and agriculture
 /// both feed Cultivation since the six-skill consolidation.
 pub(crate) const SKILL: SkillId = SkillId::Cultivation;
+
+/// Quality yield chance: the base chance plus the per-tier step, clamped by
+/// the global proc-chance cap.
+fn quality_yield_chance(
+    herbalism: &super::config::HerbalismConfig,
+    level: u32,
+    global_cap: f64,
+) -> f64 {
+    (herbalism.quality_yield_chance
+        + herbalism.quality_yield_chance_per_tier * f64::from(perk_tier(level)))
+    .min(global_cap)
+}
+
+/// Bonus health restored by configured consumables (2.0 = one heart): the
+/// base bonus plus the per-tier step.
+fn consumable_heal_bonus(herbalism: &super::config::HerbalismConfig, level: u32) -> f32 {
+    herbalism.consumable_heal_bonus
+        + herbalism.consumable_heal_bonus_per_tier * perk_tier(level) as f32
+}
 
 /// Award Cultivation XP for a broken natural plant, then roll quality yield.
 pub async fn handle_block_broken(
@@ -47,9 +67,8 @@ pub async fn handle_block_broken(
     if !config.perks.enabled {
         return;
     }
-    let chance = herbalism
-        .quality_yield_chance
-        .min(config.perks.max_proc_chance);
+    let level = perk_level(state, player.gameprofile.id, SKILL).await;
+    let chance = quality_yield_chance(herbalism, level, config.perks.max_proc_chance);
     if chance <= 0.0 || rand::rng().random::<f64>() >= chance {
         return;
     }
@@ -78,12 +97,53 @@ pub async fn handle_item_use_complete(state: &MmoState, event: &PlayerItemUseCom
     progression::award_xp(state, player, SKILL, xp, XpSource::Consume).await;
 
     // Consumable-healing bonus, bounded by config and the global perk switch.
-    if !config.perks.enabled || herbalism.consumable_heal_bonus <= 0.0 {
+    if !config.perks.enabled {
+        return;
+    }
+    let level = perk_level(state, player.gameprofile.id, SKILL).await;
+    let heal = consumable_heal_bonus(herbalism, level);
+    if heal <= 0.0 {
         return;
     }
     let living = &player.living_entity;
     let max_health = living.get_max_health();
     if living.health.load() < max_health {
-        living.heal(herbalism.consumable_heal_bonus);
+        living.heal(heal);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quality_yield_chance_scales_with_tier() {
+        let herbalism = super::super::config::HerbalismConfig::default();
+
+        // Tier 0 adds nothing: the pre-tier base chance (8%).
+        assert!((quality_yield_chance(&herbalism, 1, 1.0) - 0.08).abs() < f64::EPSILON);
+        assert!((quality_yield_chance(&herbalism, 9, 1.0) - 0.08).abs() < f64::EPSILON);
+        // Tier 4 at level 100: 8% + 4 * 2% = 16%.
+        assert!((quality_yield_chance(&herbalism, 100, 1.0) - 0.16).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn quality_yield_chance_respects_global_cap() {
+        let herbalism = super::super::config::HerbalismConfig::default();
+
+        assert!((quality_yield_chance(&herbalism, 100, 0.12) - 0.12).abs() < f64::EPSILON);
+        assert!((quality_yield_chance(&herbalism, 1, 0.05) - 0.05).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn consumable_heal_bonus_scales_with_tier() {
+        let herbalism = super::super::config::HerbalismConfig::default();
+
+        // Tier 0 adds nothing: the pre-tier base heal (1 hp).
+        assert_eq!(consumable_heal_bonus(&herbalism, 1), 1.0);
+        assert_eq!(consumable_heal_bonus(&herbalism, 9), 1.0);
+        // Tier 4 at level 100: 1 + 4 * 0.5 = 3 hp.
+        assert_eq!(consumable_heal_bonus(&herbalism, 100), 3.0);
+        assert_eq!(consumable_heal_bonus(&herbalism, 50), 2.5);
     }
 }
