@@ -17,13 +17,15 @@ use pumpkin_data::{
 };
 use pumpkin_util::{
     math::vector3::Vector3,
-    text::{TextComponent, color::NamedColor},
+    text::{TextComponent, click::ClickEvent, color::NamedColor},
 };
 
 use super::{
     MmoState,
     config::LevelCurve,
+    perks::eligibility::tiers_crossed,
     skills::{BranchId, SkillId},
+    ui::{chat::branch_color, skill_detail},
 };
 
 /// Where an XP award originated. Used for audit logging and future rate
@@ -126,7 +128,7 @@ pub async fn award_xp(
     let db = state.db();
 
     let amount = amount.min(config.progression.max_xp_per_award);
-    let result = match db.add_xp(uuid, skill, amount, curve).await {
+    let result = match db.add_xp(uuid, skill, amount, curve.clone()).await {
         Ok(result) => result,
         Err(error) => {
             log::warn!(
@@ -160,6 +162,30 @@ pub async fn award_xp(
             player.send_system_message(&message).await;
         }
         celebrate_level_up(player, result.new_level).await;
+
+        let old_xp = result.new_xp.saturating_sub(result.awarded_xp);
+        let old_level = curve.level_for_xp(old_xp).0;
+        for tier_level in tiers_crossed(old_level, result.new_level) {
+            let detail_cmd = skill_detail::skill_command(skill);
+            let message = TextComponent::text("⭐ ")
+                .color_named(NamedColor::Gold)
+                .add_child(
+                    TextComponent::text(format!(
+                        "{} perk tier unlocked (level {tier_level}) — see ",
+                        skill.display_name()
+                    ))
+                    .color_named(branch_color(skill.branch())),
+                )
+                .add_child(
+                    TextComponent::text(detail_cmd.clone())
+                        .color_named(NamedColor::Aqua)
+                        .underlined()
+                        .click_event(ClickEvent::SuggestCommand {
+                            command: detail_cmd.into(),
+                        }),
+                );
+            player.send_system_message(&message).await;
+        }
     }
 
     let current_tick = state.current_tick();
