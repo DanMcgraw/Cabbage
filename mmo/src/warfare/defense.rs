@@ -13,13 +13,31 @@ use std::sync::Arc;
 
 use super::super::{
     MmoState,
-    progression::{self, XpSource, earns_xp, find_player_by_uuid},
+    perks::eligibility::perk_tier,
+    progression::{self, XpSource, earns_xp, find_player_by_uuid, perk_level},
     skills::SkillId,
 };
+use super::config::{AcrobaticsConfig, DefenseConfig};
 
 /// The shared skill track for fall damage: acrobatics and empty-hand combat
 /// both feed Athletics since the six-skill consolidation.
 pub(crate) const FALL_SKILL: SkillId = SkillId::Athletics;
+
+/// Athletics roll reduction: the per-level multiplier clamped by the cap,
+/// which gains a step per perk tier.
+fn roll_reduction(acrobatics: &AcrobaticsConfig, level: u32) -> f64 {
+    (acrobatics.roll_reduction_per_level * f64::from(level)).min(
+        acrobatics.roll_reduction_cap
+            + acrobatics.roll_reduction_cap_per_tier * f64::from(perk_tier(level)),
+    )
+}
+
+/// Defense resilience reduction: the per-level multiplier clamped by the
+/// cap, which gains a step per perk tier.
+fn resilience_reduction(defense: &DefenseConfig, level: u32) -> f64 {
+    (defense.reduction_per_level * f64::from(level))
+        .min(defense.reduction_cap + defense.reduction_cap_per_tier * f64::from(perk_tier(level)))
+}
 
 /// Award damage-taken XP and apply bounded reductions when a player is hurt.
 pub async fn handle_entity_damage(
@@ -84,29 +102,53 @@ pub async fn handle_entity_damage(
 
     // Bounded reductions: Athletics roll first, then Defense resilience.
     if is_fall {
-        let level = player_level(state, &player, FALL_SKILL).await;
-        let reduction = (warfare.acrobatics.roll_reduction_per_level * level as f64)
-            .min(warfare.acrobatics.roll_reduction_cap);
+        let level = perk_level(state, player_uuid, FALL_SKILL).await;
+        let reduction = roll_reduction(&warfare.acrobatics, level);
         event.final_damage *= 1.0 - reduction as f32;
     }
-    let level = player_level(state, &player, SkillId::Defense).await;
-    let reduction =
-        (warfare.defense.reduction_per_level * level as f64).min(warfare.defense.reduction_cap);
+    let level = perk_level(state, player_uuid, SkillId::Defense).await;
+    let reduction = resilience_reduction(&warfare.defense, level);
     if reduction > 0.0 {
         event.final_damage *= 1.0 - reduction as f32;
     }
 }
 
-async fn player_level(
-    state: &MmoState,
-    player: &Arc<pumpkin::entity::player::Player>,
-    skill: SkillId,
-) -> u32 {
-    let curve = state.curve(skill);
-    state
-        .db()
-        .get_skill(player.gameprofile.id, skill)
-        .await
-        .map(|data| curve.level_for_xp(data.xp).0)
-        .unwrap_or(1)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roll_reduction_tier_zero_matches_pre_tier_value() {
+        let acrobatics = AcrobaticsConfig::default();
+        // Below the cap the per-level reduction applies unchanged.
+        assert!((roll_reduction(&acrobatics, 5) - 0.01).abs() < f64::EPSILON);
+        // The old 0.25 cap still clamps at tier 0 (steep per-level value so
+        // the cap is reached below level 10).
+        let mut steep = acrobatics.clone();
+        steep.roll_reduction_per_level = 0.1;
+        assert!((roll_reduction(&steep, 9) - 0.25).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn roll_reduction_tier_four_raises_the_cap() {
+        let acrobatics = AcrobaticsConfig::default();
+        // 0.002*300 = 0.6 → 0.25 + 0.05*4 = 0.45.
+        assert!((roll_reduction(&acrobatics, 300) - 0.45).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn resilience_reduction_tier_zero_matches_pre_tier_value() {
+        let defense = DefenseConfig::default();
+        assert!((resilience_reduction(&defense, 5) - 0.0075).abs() < f64::EPSILON);
+        let mut steep = defense.clone();
+        steep.reduction_per_level = 0.1;
+        assert!((resilience_reduction(&steep, 9) - 0.15).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn resilience_reduction_tier_four_raises_the_cap() {
+        let defense = DefenseConfig::default();
+        // 0.0015*200 = 0.3 → 0.15 + 0.025*4 = 0.25.
+        assert!((resilience_reduction(&defense, 200) - 0.25).abs() < f64::EPSILON);
+    }
 }

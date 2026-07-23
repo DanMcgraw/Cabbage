@@ -19,11 +19,33 @@ use std::sync::Arc;
 
 use super::super::{
     MmoState,
-    progression::{self, XpSource, earns_xp},
+    perks::eligibility::perk_tier,
+    progression::{self, XpSource, earns_xp, perk_level},
     skills::SkillId,
 };
+use super::config::SorceryConfig;
 
 const SORCERY_COOLDOWN_KEY: &str = "sorcery.cast";
+
+/// Maximum mana: the base pool plus a step per perk tier.
+fn mana_max(sorcery: &SorceryConfig, level: u32) -> f64 {
+    sorcery.mana_max + sorcery.mana_max_per_tier * f64::from(perk_tier(level))
+}
+
+/// Healing-bolt health restored: the base heal plus a step per perk tier.
+fn spell_heal(sorcery: &SorceryConfig, level: u32) -> f32 {
+    sorcery.spell_heal + sorcery.spell_heal_per_tier * perk_tier(level) as f32
+}
+
+/// Cast cooldown in ticks: reduced by a step per perk tier, saturating at
+/// zero.
+fn spell_cooldown_ticks(sorcery: &SorceryConfig, level: u32) -> u32 {
+    sorcery.spell_cooldown_ticks.saturating_sub(
+        sorcery
+            .spell_cooldown_reduction_per_tier
+            .saturating_mul(perk_tier(level)),
+    )
+}
 
 /// Cast the healing bolt when a player right-clicks with the staff item.
 pub async fn handle_player_interact(state: &MmoState, event: &PlayerInteractEvent) {
@@ -54,16 +76,18 @@ pub async fn handle_player_interact(state: &MmoState, event: &PlayerInteractEven
 
     let player_uuid = player.gameprofile.id;
     let current_tick = state.current_tick();
+    let level = perk_level(state, player_uuid, SkillId::Sorcery).await;
+    let mana_max = mana_max(sorcery, level);
     let mana = state.warfare().current_mana(
         player_uuid,
         current_tick,
-        sorcery.mana_max,
+        mana_max,
         sorcery.mana_regen_per_tick,
     );
     if mana < sorcery.spell_mana_cost {
         player
             .show_title(
-                &TextComponent::text(format!("Not enough mana ({mana:.0}/{})", sorcery.mana_max))
+                &TextComponent::text(format!("Not enough mana ({mana:.0}/{mana_max})"))
                     .color_named(NamedColor::Red),
                 &pumpkin::entity::player::TitleMode::ActionBar,
             )
@@ -75,7 +99,7 @@ pub async fn handle_player_interact(state: &MmoState, event: &PlayerInteractEven
         player_uuid,
         SORCERY_COOLDOWN_KEY,
         current_tick,
-        sorcery.spell_cooldown_ticks,
+        spell_cooldown_ticks(sorcery, level),
     ) {
         return;
     }
@@ -84,7 +108,7 @@ pub async fn handle_player_interact(state: &MmoState, event: &PlayerInteractEven
         .warfare()
         .set_mana(player_uuid, mana - sorcery.spell_mana_cost, current_tick);
 
-    cast_healing_bolt(player, sorcery.spell_heal).await;
+    cast_healing_bolt(player, spell_heal(sorcery, level)).await;
     progression::award_xp(
         state,
         player,
@@ -109,4 +133,40 @@ async fn cast_healing_bolt(player: &Arc<Player>, heal_amount: f32) {
         20,
         Particle::Heart,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mana_max_adds_a_step_per_tier() {
+        let sorcery = SorceryConfig::default();
+        // Tier 0 matches the pre-tier pool.
+        assert!((mana_max(&sorcery, 1) - 100.0).abs() < f64::EPSILON);
+        // Tier 4 (level 100): 100 + 10*4 = 140.
+        assert!((mana_max(&sorcery, 100) - 140.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn spell_heal_adds_a_step_per_tier() {
+        let sorcery = SorceryConfig::default();
+        // Tier 0 matches the pre-tier heal.
+        assert!((spell_heal(&sorcery, 1) - 4.0).abs() < f32::EPSILON);
+        // Tier 4 (level 100): 4 + 1*4 = 8.
+        assert!((spell_heal(&sorcery, 100) - 8.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn spell_cooldown_drops_a_step_per_tier_and_saturates() {
+        let sorcery = SorceryConfig::default();
+        // Tier 0 matches the pre-tier cooldown.
+        assert_eq!(spell_cooldown_ticks(&sorcery, 1), 100);
+        // Tier 4 (level 100): 100 - 10*4 = 60.
+        assert_eq!(spell_cooldown_ticks(&sorcery, 100), 60);
+        // The reduction saturates at zero instead of wrapping.
+        let mut short = sorcery.clone();
+        short.spell_cooldown_ticks = 30;
+        assert_eq!(spell_cooldown_ticks(&short, 100), 0);
+    }
 }

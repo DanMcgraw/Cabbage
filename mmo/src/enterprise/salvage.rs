@@ -14,15 +14,24 @@ use rand::RngExt;
 
 use super::super::{
     MmoState,
-    progression::{self, XpSource, earns_xp},
+    perks::eligibility::perk_tier,
+    progression::{self, XpSource, earns_xp, perk_level},
     skills::SkillId,
 };
+use super::config::SalvageConfig;
 
 /// The shared skill track this activity awards and gates on: salvage and
 /// repair both feed Maintenance since the six-skill consolidation.
 pub(crate) const SKILL: SkillId = SkillId::Maintenance;
 
 const SALVAGE_COOLDOWN_KEY: &str = "salvage.bonus";
+
+/// Salvage experience bonus fraction: the per-level fraction clamped by the
+/// cap, which gains a step per perk tier.
+fn xp_bonus_fraction(salvage: &SalvageConfig, level: u32) -> f64 {
+    (salvage.xp_bonus_per_level * f64::from(level))
+        .min(salvage.xp_bonus_cap + salvage.xp_bonus_cap_per_tier * f64::from(perk_tier(level)))
+}
 
 /// Preview the Maintenance (salvage activity) experience bonus in the
 /// grindstone prepare event.
@@ -45,8 +54,8 @@ pub async fn handle_grindstone(state: &MmoState, event: &mut GrindstoneEvent) {
         return;
     }
 
-    let level = player_level(state, &event.player).await;
-    let bonus_fraction = (salvage.xp_bonus_per_level * level as f64).min(salvage.xp_bonus_cap);
+    let level = perk_level(state, player_uuid, SKILL).await;
+    let bonus_fraction = xp_bonus_fraction(salvage, level);
     if bonus_fraction <= 0.0 || event.experience <= 0 {
         return;
     }
@@ -118,16 +127,6 @@ fn recovery_material<'a>(
         .map(|(_, item)| item.as_str())
 }
 
-async fn player_level(state: &MmoState, player: &pumpkin::entity::player::Player) -> u32 {
-    let curve = state.curve(SKILL);
-    state
-        .db()
-        .get_skill(player.gameprofile.id, SKILL)
-        .await
-        .map(|data| curve.level_for_xp(data.xp).0)
-        .unwrap_or(1)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,5 +145,24 @@ mod tests {
         let stick = pumpkin_data::item::Item::from_registry_key("stick").unwrap();
         let stack = ItemStack::new(1, stick);
         assert_eq!(recovery_material(&stack, &materials), None);
+    }
+
+    #[test]
+    fn xp_bonus_fraction_tier_zero_matches_pre_tier_value() {
+        let salvage = SalvageConfig::default();
+        // Below the cap the per-level fraction applies unchanged.
+        assert!((xp_bonus_fraction(&salvage, 5) - 0.01).abs() < f64::EPSILON);
+        // The old 0.25 cap still clamps at tier 0 (steep per-level value so
+        // the cap is reached below level 10).
+        let mut steep = salvage.clone();
+        steep.xp_bonus_per_level = 0.1;
+        assert!((xp_bonus_fraction(&steep, 9) - 0.25).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn xp_bonus_fraction_tier_four_raises_the_cap() {
+        let salvage = SalvageConfig::default();
+        // 0.002*300 = 0.6 → 0.25 + 0.05*4 = 0.45.
+        assert!((xp_bonus_fraction(&salvage, 300) - 0.45).abs() < f64::EPSILON);
     }
 }

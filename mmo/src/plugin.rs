@@ -16,6 +16,7 @@ use pumpkin::plugin::{
         },
         entity::{
             entity_breed::EntityBreedCompleteEvent, entity_damage::EntityDamageEvent,
+            entity_damage_by_entity::EntityDamageByEntityEvent,
             entity_feed::EntityFeedCompleteEvent,
             entity_product::AnimalProductCollectCompleteEvent,
             entity_shoot_bow::EntityShootBowEvent, entity_tame::EntityTameEvent,
@@ -148,6 +149,9 @@ async fn register_events(context: &Arc<Context>, state: &Arc<MmoState>) {
         .await;
     context
         .register_event::<EntityDamageEvent, _>(state.clone(), EventPriority::Normal, true)
+        .await;
+    context
+        .register_event::<EntityDamageByEntityEvent, _>(state.clone(), EventPriority::Normal, true)
         .await;
     context
         .register_event::<AnvilPrepareEvent, _>(state.clone(), EventPriority::Normal, true)
