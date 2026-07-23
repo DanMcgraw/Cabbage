@@ -149,6 +149,13 @@ pub(crate) async fn try_batch_break(
         return None;
     }
 
+    // Yield execution micro-task to allow Pumpkin's FinishedDigging handler to finish
+    // sending sequence acknowledgement and block state sync to the player client BEFORE
+    // extra batch blocks break. This prevents candidate block changes/item pickups from
+    // breaking the client's digging prediction sequence machine (which causes fast tool
+    // animation loops and blocks inventory opening).
+    tokio::task::yield_now().await;
+
     let mut broken_count = 0usize;
     for position in candidates {
         let is_tool_valid = {
