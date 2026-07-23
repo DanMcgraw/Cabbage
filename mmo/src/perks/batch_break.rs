@@ -85,20 +85,22 @@ pub(crate) async fn try_batch_break(
 ) -> Option<usize> {
     let config = state.config();
     if !config.perks.enabled {
+        log::info!("[VeinMiner Debug] Batch break cancelled: perks disabled in config");
         return None;
     }
     let max_blocks = max_blocks.min(config.perks.batch_break_max_blocks) as usize;
     if max_blocks == 0 {
+        log::info!("[VeinMiner Debug] Batch break cancelled: max_blocks is 0");
         return None;
     }
 
     let player_uuid = player.gameprofile.id;
     let current_tick = state.current_tick();
-    if state
+    let remaining_cd = state
         .perk_cooldowns()
-        .remaining_ticks(player_uuid, cooldown_key, current_tick)
-        > 0
-    {
+        .remaining_ticks(player_uuid, cooldown_key, current_tick);
+    if remaining_cd > 0 {
+        log::info!("[VeinMiner Debug] Batch break on cooldown for {player_uuid}: {remaining_cd} ticks left");
         return None;
     }
 
@@ -109,6 +111,7 @@ pub(crate) async fn try_batch_break(
         let held = player.inventory().held_item();
         let stack = held.lock().await;
         if stack.is_empty() || stack.item_count == 0 {
+            log::info!("[VeinMiner Debug] Batch break cancelled: held stack is empty");
             return None;
         }
         if !stack.is_damageable() || stack.is_unbreakable() {
@@ -117,6 +120,7 @@ pub(crate) async fn try_batch_break(
             let max_damage = stack.get_max_damage().unwrap_or(0);
             let current_damage = stack.get_damage();
             if current_damage >= max_damage {
+                log::info!("[VeinMiner Debug] Batch break cancelled: tool already broken ({current_damage}/{max_damage})");
                 return None;
             }
             (max_damage - current_damage) as usize
@@ -127,16 +131,24 @@ pub(crate) async fn try_batch_break(
     // extra batch candidates are capped to remaining_durability - 1.
     let max_extra_blocks = max_extra_blocks.saturating_sub(1);
     if max_extra_blocks == 0 {
+        log::info!("[VeinMiner Debug] Batch break cancelled: max_extra_blocks is 0 (only 1 durability left)");
         return None;
     }
 
     let mut candidates = collect_batch_candidates(origin, max_blocks, is_candidate);
     if candidates.is_empty() {
+        log::info!("[VeinMiner Debug] No candidates found around origin {origin:?}");
         return None;
     }
     if candidates.len() > max_extra_blocks {
+        log::info!("[VeinMiner Debug] Truncating {} candidates to max_extra_blocks {}", candidates.len(), max_extra_blocks);
         candidates.truncate(max_extra_blocks);
     }
+
+    log::info!(
+        "[VeinMiner Debug] Starting batch break for {player_uuid} at origin {origin:?} with {} candidate(s)",
+        candidates.len()
+    );
 
     // Charge the cooldown before breaking: this is the recursion guard (see
     // the doc comment above).
@@ -146,6 +158,7 @@ pub(crate) async fn try_batch_break(
         current_tick,
         config.perks.batch_break_cooldown_ticks,
     ) {
+        log::info!("[VeinMiner Debug] Failed to activate cooldown for {cooldown_key}");
         return None;
     }
 
@@ -162,7 +175,7 @@ pub(crate) async fn try_batch_break(
     let day_time = world.level_info.load().day_time as u64;
     let server = world.server.upgrade()?;
 
-    for position in candidates {
+    for (idx, position) in candidates.iter().enumerate() {
         let is_tool_valid = {
             let held = player.inventory().held_item();
             let stack = held.lock().await;
@@ -171,19 +184,15 @@ pub(crate) async fn try_batch_break(
                 && (stack.get_damage() < stack.get_max_damage().unwrap_or(i32::MAX))
         };
         if !is_tool_valid {
+            log::info!("[VeinMiner Debug] Tool became invalid before candidate #{}", idx);
             break;
         }
 
-        let (broken_block, broken_block_state) = world.get_block_and_state_id(&position);
+        let (broken_block, broken_block_state) = world.get_block_and_state_id(position);
 
-        // Break block in world with SKIP_DROPS to avoid spawning individual item entities
-        // per candidate block. Spawning N item entities within a single tick causes per-entity
-        // collision triggers, which send N full CSetContainerContent (46-slot inventory)
-        // packets to the client in sub-millisecond bursts, flooding the Netty connection and
-        // kicking the player for a Network Error.
         if world
             .break_block(
-                &position,
+                position,
                 Some(player.clone()),
                 pumpkin_world::world::BlockFlags::SKIP_DROPS
                     | pumpkin_world::world::BlockFlags::NOTIFY_NEIGHBORS,
@@ -192,6 +201,7 @@ pub(crate) async fn try_batch_break(
             .is_some()
         {
             broken_count += 1;
+            log::info!("[VeinMiner Debug] Candidate #{idx} at {position:?} broken successfully ({})", broken_block.name);
 
             if !is_creative {
                 let tool = {
@@ -226,7 +236,7 @@ pub(crate) async fn try_batch_break(
                     pumpkin::plugin::api::events::block::block_drop_item::BlockDropItemEvent::new(
                         player.clone(),
                         broken_block,
-                        position,
+                        *position,
                         raw_items,
                     );
 
@@ -247,8 +257,12 @@ pub(crate) async fn try_batch_break(
                     }
                 }
             }
+        } else {
+            log::info!("[VeinMiner Debug] Candidate #{idx} at {position:?} break_block returned None");
         }
     }
+
+    log::info!("[VeinMiner Debug] Batch break loop completed. Total candidates broken: {broken_count}");
 
     if broken_count == 0 {
         return None;
@@ -273,13 +287,13 @@ pub(crate) async fn try_batch_break(
         }
     }
 
-    // Drop consolidated item stacks at the origin block position.
+    log::info!("[VeinMiner Debug] Dropping {} merged item stack(s) at origin {origin:?}", merged_drops.len());
     for stack in merged_drops {
         world.drop_stack(&origin, stack).await;
     }
 
-    // Spawn a single consolidated XP orb for candidate experience if any was earned.
     if total_experience_orbs > 0 {
+        log::info!("[VeinMiner Debug] Spawning single XP orb with {total_experience_orbs} exp at origin {origin:?}");
         pumpkin::entity::experience_orb::ExperienceOrbEntity::spawn(
             world,
             origin.to_f64(),
@@ -288,18 +302,14 @@ pub(crate) async fn try_batch_break(
         .await;
     }
 
-    // Apply tool durability damage in-memory for extra candidate blocks.
-    // We intentionally avoid calling `player.damage_held_item` here because `damage_held_item`
-    // enqueues an immediate `CSetPlayerInventory` packet to the client. Sending a mainhand slot
-    // packet mid-sequence causes the Minecraft client to reset its digging animation state and
-    // spam pickaxe swings. By updating the stack in-memory here, Pumpkin's `FinishedDigging`
-    // handler will apply the final 1 durability for the origin block and send a SINGLE
-    // `CSetPlayerInventory` packet when the entire digging action completes.
     if !is_creative {
         let held = player.inventory().held_item();
         let mut stack = held.lock().await;
         if stack.is_damageable() && !stack.is_unbreakable() {
+            let before = stack.get_damage();
             let _ = stack.damage_item(broken_count as i32);
+            let after = stack.get_damage();
+            log::info!("[VeinMiner Debug] Applied in-memory durability damage: {before} -> {after} (broken_count={broken_count})");
         }
     }
 
