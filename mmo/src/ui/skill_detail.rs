@@ -21,7 +21,7 @@ use pumpkin_util::text::{TextComponent, click::ClickEvent, color::NamedColor};
 use super::{
     super::{
         config::{LevelCurve, MmoConfig},
-        perks::eligibility::PERK_TIER_LEVELS,
+        perks::eligibility::{PERK_TIER_LEVELS, perk_tier},
         progression::{PlayerSkillSnapshot, PlayerSnapshot},
         skills::SkillId,
     },
@@ -60,6 +60,9 @@ pub(crate) enum LiveEffect {
     SalvageBonus,
     MaterialRecovery,
     OfferDiscount,
+    ArcheryDamage,
+    ToolCare,
+    PotionMastery,
 }
 
 impl LiveEffect {
@@ -91,6 +94,9 @@ impl LiveEffect {
         LiveEffect::SalvageBonus,
         LiveEffect::MaterialRecovery,
         LiveEffect::OfferDiscount,
+        LiveEffect::ArcheryDamage,
+        LiveEffect::ToolCare,
+        LiveEffect::PotionMastery,
     ];
 
     /// Concise unlock name shown in the progression row.
@@ -121,6 +127,9 @@ impl LiveEffect {
             LiveEffect::SalvageBonus => "Salvage bonus",
             LiveEffect::MaterialRecovery => "Material recovery",
             LiveEffect::OfferDiscount => "Offer discount",
+            LiveEffect::ArcheryDamage => "Arrow damage",
+            LiveEffect::ToolCare => "Tool care",
+            LiveEffect::PotionMastery => "Potion mastery",
         }
     }
 
@@ -480,6 +489,50 @@ impl LiveEffect {
                     off_reason: "offer discount is 0 in config",
                 }
             }
+            LiveEffect::ArcheryDamage => {
+                let archery = &config.warfare.archery;
+                let cap = (archery.damage_bonus_cap
+                    + archery.damage_cap_per_tier * f64::from(perk_tier(level)))
+                .min(config.perks.max_damage_multiplier);
+                let bonus = (archery.damage_bonus_per_level * f64::from(level)).min(cap);
+                let mult = 1.0 + bonus;
+                EffectRender {
+                    switch_on: archery.damage_enabled && mult > 1.0,
+                    detail: format!(
+                        "{} projectile damage multiplier at your level (cap x{})",
+                        decimal(mult),
+                        decimal(1.0 + cap)
+                    ),
+                    off_reason: "archery damage is off or multiplier is 1.0",
+                }
+            }
+            LiveEffect::ToolCare => {
+                let repair = &config.enterprise.repair;
+                let cap = config.perks.max_proc_chance;
+                let chance = (repair.tool_care_chance
+                    + repair.tool_care_chance_per_tier * f64::from(perk_tier(level)))
+                .min(cap);
+                EffectRender {
+                    switch_on: repair.tool_care_enabled && chance > 0.0,
+                    detail: format!(
+                        "{} chance to refund 1 durability on your held tool when breaking blocks",
+                        percent(chance)
+                    ),
+                    off_reason: "tool_care_enabled is off in config",
+                }
+            }
+            LiveEffect::PotionMastery => {
+                let alchemy = &config.enterprise.alchemy;
+                let heal = alchemy.heal_base + alchemy.heal_per_tier * perk_tier(level) as f32;
+                EffectRender {
+                    switch_on: alchemy.heal_enabled && heal > 0.0,
+                    detail: format!(
+                        "restores +{} bonus HP when consuming any potion",
+                        decimal(f64::from(heal))
+                    ),
+                    off_reason: "heal_enabled is off in config",
+                }
+            }
         }
     }
 }
@@ -557,7 +610,7 @@ pub(crate) fn catalog_entry(skill: SkillId) -> CatalogEntry {
         SkillId::Archery => CatalogEntry {
             xp_sources: "bow and crossbow kills, plus small XP per projectile hit",
             merged_note: None,
-            effects: &[],
+            effects: &[LiveEffect::ArcheryDamage],
         },
         SkillId::Athletics => CatalogEntry {
             xp_sources: "unarmed combat (empty-hand kills) and acrobatics (fall damage taken)",
@@ -590,12 +643,13 @@ pub(crate) fn catalog_entry(skill: SkillId) -> CatalogEntry {
                 LiveEffect::RepairDiscount,
                 LiveEffect::SalvageBonus,
                 LiveEffect::MaterialRecovery,
+                LiveEffect::ToolCare,
             ],
         },
         SkillId::Alchemy => CatalogEntry {
             xp_sources: "consuming configured potions",
             merged_note: None,
-            effects: &[],
+            effects: &[LiveEffect::PotionMastery],
         },
         SkillId::Enchanting => CatalogEntry {
             xp_sources: "completing enchants (scaled by the level cost)",
@@ -621,6 +675,9 @@ pub(crate) fn catalog_entry(skill: SkillId) -> CatalogEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RowState {
     Active,
+    Unlocked,
+    Next,
+    Locked,
     Disabled,
     Planned,
 }
@@ -629,6 +686,9 @@ impl RowState {
     fn label(self) -> &'static str {
         match self {
             RowState::Active => "Active from level 1",
+            RowState::Unlocked => "Unlocked",
+            RowState::Next => "Next milestone",
+            RowState::Locked => "Locked",
             RowState::Disabled => "Disabled",
             RowState::Planned => "Planned",
         }
@@ -637,6 +697,9 @@ impl RowState {
     fn color(self) -> NamedColor {
         match self {
             RowState::Active => NamedColor::Green,
+            RowState::Unlocked => NamedColor::Green,
+            RowState::Next => NamedColor::Gold,
+            RowState::Locked => NamedColor::DarkGray,
             RowState::Disabled => NamedColor::Red,
             RowState::Planned => NamedColor::Aqua,
         }
@@ -653,8 +716,8 @@ struct ProgressionRow {
 }
 
 /// The skill's progression rows in unlock-level order: live effects (level
-/// 1) first, then the shared planned milestone slots built from the
-/// `perks::eligibility` constants so the levels are never duplicated here.
+/// 1) first, then the shared milestone tier rows built from
+/// `PERK_TIER_LEVELS`.
 fn progression_rows(skill: SkillId, config: &MmoConfig, level: u32) -> Vec<ProgressionRow> {
     let entry = catalog_entry(skill);
     let module_on = config.enabled;
@@ -685,17 +748,160 @@ fn progression_rows(skill: SkillId, config: &MmoConfig, level: u32) -> Vec<Progr
             detail,
         });
     }
-    // Perk tiers land in a later phase; until then the four tier levels stay
-    // visibly `Planned` placeholder rows built from `PERK_TIER_LEVELS`.
     for tier_level in PERK_TIER_LEVELS {
-        rows.push(ProgressionRow {
-            level: tier_level,
-            name: "Perk tier slot",
-            state: RowState::Planned,
-            detail: "planned for a future update; nothing unlocks here yet".to_string(),
-        });
+        rows.push(milestone_row(skill, tier_level, config, level));
     }
     rows
+}
+
+fn milestone_row(
+    skill: SkillId,
+    tier_level: u32,
+    config: &MmoConfig,
+    level: u32,
+) -> ProgressionRow {
+    let name = match tier_level {
+        10 => "Perk Tier I",
+        25 => "Perk Tier II",
+        50 => "Perk Tier III",
+        100 => "Perk Tier IV",
+        _ => "Perk Tier",
+    };
+
+    let module_on = config.enabled;
+    let skill_on = skill_enabled(config, skill);
+    let perks_on = config.perks.enabled;
+
+    let (state, detail) = if !module_on {
+        (RowState::Disabled, "the MMO module is disabled".to_string())
+    } else if !skill_on {
+        (RowState::Disabled, "this skill is disabled".to_string())
+    } else if !perks_on {
+        (
+            RowState::Disabled,
+            "the global perks switch is off".to_string(),
+        )
+    } else if skill == SkillId::Commerce {
+        (
+            RowState::Planned,
+            "planned for a future update; trading perks remain dormant".to_string(),
+        )
+    } else {
+        let st = if level >= tier_level {
+            RowState::Unlocked
+        } else {
+            let next_unreached = PERK_TIER_LEVELS
+                .iter()
+                .copied()
+                .find(|t| level < *t)
+                .unwrap_or(100);
+            if tier_level == next_unreached {
+                RowState::Next
+            } else {
+                RowState::Locked
+            }
+        };
+        (st, milestone_detail(skill, tier_level))
+    };
+
+    ProgressionRow {
+        level: tier_level,
+        name,
+        state,
+        detail,
+    }
+}
+
+fn milestone_detail(skill: SkillId, tier_level: u32) -> String {
+    match (skill, tier_level) {
+        (SkillId::Cultivation, 10) => "Harvest bonus +2%, quality yield +2%, consumable heal +0.5 HP".to_string(),
+        (SkillId::Cultivation, 25) => "Harvest bonus +4%, quality yield +4%, consumable heal +1.0 HP".to_string(),
+        (SkillId::Cultivation, 50) => "Harvest bonus +6%, quality yield +6%, consumable heal +1.5 HP".to_string(),
+        (SkillId::Cultivation, 100) => "Harvest bonus +8%, quality yield +8%, consumable heal +2.0 HP".to_string(),
+
+        (SkillId::Woodcutting, 10) => "Timber max felled logs 32→40; Heartwood +1% chance, +5 XP".to_string(),
+        (SkillId::Woodcutting, 25) => "Timber max felled logs 32→48; Heartwood +2% chance, +10 XP".to_string(),
+        (SkillId::Woodcutting, 50) => "Timber max felled logs 32→56; Heartwood +3% chance, +15 XP".to_string(),
+        (SkillId::Woodcutting, 100) => "Timber max felled logs 32→64; Heartwood +4% chance, +20 XP".to_string(),
+
+        (SkillId::Mining, 10) => "Prospector +1% chance cap; Vein Miner max blocks 16→20".to_string(),
+        (SkillId::Mining, 25) => "Prospector +2% chance cap; Vein Miner max blocks 16→24".to_string(),
+        (SkillId::Mining, 50) => "Prospector +3% chance cap; Vein Miner max blocks 16→28".to_string(),
+        (SkillId::Mining, 100) => "Prospector +4% chance cap & bonus drops 2 items; Vein Miner max blocks 16→32".to_string(),
+
+        (SkillId::Excavation, 10) => "Earthmover max blocks 16→20; Archaeology +1% loot chance cap".to_string(),
+        (SkillId::Excavation, 25) => "Earthmover max blocks 16→24; Archaeology +2% loot chance cap".to_string(),
+        (SkillId::Excavation, 50) => "Earthmover max blocks 16→28; Archaeology +3% loot chance cap".to_string(),
+        (SkillId::Excavation, 100) => "Earthmover max blocks 16→32; Archaeology +4% loot chance cap".to_string(),
+
+        (SkillId::Fishing, 10) => "Reel +1 bonus vanilla XP on catch".to_string(),
+        (SkillId::Fishing, 25) => "Reel +2 bonus vanilla XP on catch".to_string(),
+        (SkillId::Fishing, 50) => "Reel +3 bonus vanilla XP on catch".to_string(),
+        (SkillId::Fishing, 100) => "Reel +4 bonus vanilla XP on catch".to_string(),
+
+        (SkillId::AnimalHandling, 10) => "Newborn traits +2% trait roll chance".to_string(),
+        (SkillId::AnimalHandling, 25) => "Newborn traits +4% trait roll chance".to_string(),
+        (SkillId::AnimalHandling, 50) => "Newborn traits +6% trait roll chance & 2nd distinct trait roll unlocked".to_string(),
+        (SkillId::AnimalHandling, 100) => "Newborn traits +8% trait roll chance & 2nd distinct trait roll".to_string(),
+
+        (SkillId::Blades, 10) => "Riposte +5% counter damage multiplier, −20 ticks cooldown".to_string(),
+        (SkillId::Blades, 25) => "Riposte +10% counter damage multiplier, −40 ticks cooldown".to_string(),
+        (SkillId::Blades, 50) => "Riposte +15% counter damage multiplier, −60 ticks cooldown".to_string(),
+        (SkillId::Blades, 100) => "Riposte +20% counter damage multiplier, −80 ticks cooldown".to_string(),
+
+        (SkillId::Axes, 10) => "Axe damage cap +5% (0.60→0.65)".to_string(),
+        (SkillId::Axes, 25) => "Axe damage cap +10% (0.60→0.70)".to_string(),
+        (SkillId::Axes, 50) => "Axe damage cap +15% (0.60→0.75)".to_string(),
+        (SkillId::Axes, 100) => "Axe damage cap +20% (0.60→0.80)".to_string(),
+
+        (SkillId::Archery, 10) => "Arrow damage cap +5% (0.50→0.55)".to_string(),
+        (SkillId::Archery, 25) => "Arrow damage cap +10% (0.50→0.60)".to_string(),
+        (SkillId::Archery, 50) => "Arrow damage cap +15% (0.50→0.65)".to_string(),
+        (SkillId::Archery, 100) => "Arrow damage cap +20% (0.50→0.70)".to_string(),
+
+        (SkillId::Athletics, 10) => "Unarmed knockback cap +5%, roll fall reduction cap +5%".to_string(),
+        (SkillId::Athletics, 25) => "Unarmed knockback cap +10%, roll fall reduction cap +10%".to_string(),
+        (SkillId::Athletics, 50) => "Unarmed knockback cap +15%, roll fall reduction cap +15%".to_string(),
+        (SkillId::Athletics, 100) => "Unarmed knockback cap +20%, roll fall reduction cap +20%".to_string(),
+
+        (SkillId::Defense, 10) => "Resilience damage reduction cap +2.5% (0.150→0.175)".to_string(),
+        (SkillId::Defense, 25) => "Resilience damage reduction cap +5.0% (0.150→0.200)".to_string(),
+        (SkillId::Defense, 50) => "Resilience damage reduction cap +7.5% (0.150→0.225)".to_string(),
+        (SkillId::Defense, 100) => "Resilience damage reduction cap +10.0% (0.150→0.250)".to_string(),
+
+        (SkillId::Sorcery, 10) => "Healing bolt +1.0 HP, max mana +10, cast cooldown −10 ticks".to_string(),
+        (SkillId::Sorcery, 25) => "Healing bolt +2.0 HP, max mana +20, cast cooldown −20 ticks".to_string(),
+        (SkillId::Sorcery, 50) => "Healing bolt +3.0 HP, max mana +30, cast cooldown −30 ticks".to_string(),
+        (SkillId::Sorcery, 100) => "Healing bolt +4.0 HP, max mana +40, cast cooldown −40 ticks".to_string(),
+
+        (SkillId::Smithing, 10) => "Crafting & smelting XP multiplier +5%".to_string(),
+        (SkillId::Smithing, 25) => "Crafting & smelting XP multiplier +10%".to_string(),
+        (SkillId::Smithing, 50) => "Crafting & smelting XP multiplier +15%".to_string(),
+        (SkillId::Smithing, 100) => "Crafting & smelting XP multiplier +20%".to_string(),
+
+        (SkillId::Maintenance, 10) => "Tool Care +2.5% chance; Repair discount cap +1; Salvage XP cap +5%".to_string(),
+        (SkillId::Maintenance, 25) => "Tool Care +5.0% chance; Repair discount cap +2; Salvage XP cap +10%".to_string(),
+        (SkillId::Maintenance, 50) => "Tool Care +7.5% chance; Repair discount cap +3; Salvage XP cap +15%".to_string(),
+        (SkillId::Maintenance, 100) => "Tool Care +10.0% chance; Repair discount cap +4; Salvage XP cap +20%".to_string(),
+
+        (SkillId::Alchemy, 10) => "Potion Mastery +0.5 HP restored on potion consumption".to_string(),
+        (SkillId::Alchemy, 25) => "Potion Mastery +1.0 HP restored on potion consumption".to_string(),
+        (SkillId::Alchemy, 50) => "Potion Mastery +1.5 HP restored on potion consumption".to_string(),
+        (SkillId::Alchemy, 100) => "Potion Mastery +2.0 HP restored on potion consumption".to_string(),
+
+        (SkillId::Enchanting, 10) => "Offer discount cap +1 level; Enchant XP cap +25".to_string(),
+        (SkillId::Enchanting, 25) => "Offer discount cap +2 levels; Enchant XP cap +50".to_string(),
+        (SkillId::Enchanting, 50) => "Offer discount cap +3 levels; Enchant XP cap +75".to_string(),
+        (SkillId::Enchanting, 100) => "Offer discount cap +4 levels; Enchant XP cap +100".to_string(),
+
+        (SkillId::Tinkering, 10) => "Redstone mechanism crafting XP multiplier +5%".to_string(),
+        (SkillId::Tinkering, 25) => "Redstone mechanism crafting XP multiplier +10%".to_string(),
+        (SkillId::Tinkering, 50) => "Redstone mechanism crafting XP multiplier +15%".to_string(),
+        (SkillId::Tinkering, 100) => "Redstone mechanism crafting XP multiplier +20%".to_string(),
+
+        (SkillId::Commerce, _) => "planned for a future update; trading perks remain dormant".to_string(),
+        _ => "perk tier upgrade".to_string(),
+    }
 }
 
 /// Format a fraction as a percentage with enough precision to stay
@@ -1030,7 +1236,7 @@ mod tests {
         let rows = progression_rows(SkillId::Mining, &config, 1);
         let milestone_levels: Vec<u32> = rows
             .iter()
-            .filter(|row| row.state == RowState::Planned)
+            .filter(|row| row.level > 1)
             .map(|row| row.level)
             .collect();
         let expected = PERK_TIER_LEVELS.to_vec();
@@ -1044,23 +1250,29 @@ mod tests {
     }
 
     #[test]
-    fn milestones_stay_planned_below_at_and_above_their_level() {
+    fn milestone_states_reflect_player_level() {
         let config = MmoConfig::default();
-        let milestones = PERK_TIER_LEVELS.iter().copied();
-        for milestone in milestones {
-            for level in [milestone - 1, milestone, milestone + 1] {
-                let rows = progression_rows(SkillId::Mining, &config, level);
-                let row = rows
-                    .iter()
-                    .find(|row| row.level == milestone)
-                    .expect("milestone row must exist");
-                assert_eq!(
-                    row.state,
-                    RowState::Planned,
-                    "milestone {milestone} at player level {level} must stay visibly planned"
-                );
-            }
-        }
+        // At level 1 (below L10): Tier 1 (L10) is Next, T2/T3/T4 are Locked.
+        let rows = progression_rows(SkillId::Mining, &config, 1);
+        let t1 = rows.iter().find(|r| r.level == 10).unwrap();
+        let t2 = rows.iter().find(|r| r.level == 25).unwrap();
+        assert_eq!(t1.state, RowState::Next);
+        assert_eq!(t2.state, RowState::Locked);
+
+        // At level 25: T1 and T2 are Unlocked, T3 is Next, T4 is Locked.
+        let rows = progression_rows(SkillId::Mining, &config, 25);
+        let t1 = rows.iter().find(|r| r.level == 10).unwrap();
+        let t2 = rows.iter().find(|r| r.level == 25).unwrap();
+        let t3 = rows.iter().find(|r| r.level == 50).unwrap();
+        let t4 = rows.iter().find(|r| r.level == 100).unwrap();
+        assert_eq!(t1.state, RowState::Unlocked);
+        assert_eq!(t2.state, RowState::Unlocked);
+        assert_eq!(t3.state, RowState::Next);
+        assert_eq!(t4.state, RowState::Locked);
+
+        // Commerce milestones stay visibly Planned.
+        let rows = progression_rows(SkillId::Commerce, &config, 100);
+        assert!(rows.iter().all(|r| r.state == RowState::Planned));
     }
 
     #[test]
@@ -1071,7 +1283,7 @@ mod tests {
         let snapshot = snapshot_at_level(SkillId::Mining, 10);
 
         let rows = progression_rows(SkillId::Mining, &config, 10);
-        for row in rows.iter().filter(|row| row.level == 1) {
+        for row in &rows {
             assert_eq!(
                 row.state,
                 RowState::Disabled,
@@ -1080,13 +1292,6 @@ mod tests {
             );
             assert!(row.detail.contains("module"), "{}", row.detail);
         }
-        // Milestones stay Planned; live rows are labelled, never omitted.
-        assert_eq!(
-            rows.iter()
-                .filter(|row| row.state == RowState::Planned)
-                .count(),
-            4
-        );
 
         let text = join_text(&skill_detail_lines(
             SkillId::Mining,
@@ -1362,7 +1567,8 @@ mod tests {
                 )
             );
             let second = skill_detail_lines(skill, &snapshot, &curve, &config, 2);
-            assert_eq!(second.len(), 3, "{skill} page 2: heading + 1 row + footer");
+            let expected_second_len = if skill == SkillId::Maintenance { 4 } else { 3 };
+            assert_eq!(second.len(), expected_second_len, "{skill} page 2: heading + rows + footer");
             assert!(
                 second[0].clone().get_text().contains("(page 2/2)"),
                 "{skill} page 2 heading"
