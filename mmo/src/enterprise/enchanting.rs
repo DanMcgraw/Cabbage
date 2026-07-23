@@ -27,9 +27,11 @@ fn offer_discount(enchanting: &EnchantingConfig, level: u32) -> f64 {
 
 /// Enchant XP cap: the base cap plus a step per perk tier.
 fn enchant_xp_cap(enchanting: &EnchantingConfig, level: u32) -> u64 {
-    enchanting
-        .xp_cap
-        .saturating_add(enchanting.xp_cap_per_tier.saturating_mul(u64::from(perk_tier(level))))
+    enchanting.xp_cap.saturating_add(
+        enchanting
+            .xp_cap_per_tier
+            .saturating_mul(u64::from(perk_tier(level))),
+    )
 }
 
 /// Discount the offer's level requirement in the generate preview.

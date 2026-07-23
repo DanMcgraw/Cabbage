@@ -33,44 +33,48 @@ tuned per server.
   their serialized per-skill values (e.g. `max_level: 99`); config v2
   migrates retired pair curves deterministically (see the migration guide).
 
+## Milestone Tier Scaling (Levels 10, 25, 50, 100)
+
+Perk strength scales dynamically with **perk tiers** `T = perk_tier(level) ∈ [0, 4]` (unlocked at levels 10, 25, 50, 100). All tier multipliers are configurable in RON.
+
 ## Frontier
 
-| Skill | XP sources (defaults) | Perks (defaults) |
+| Skill | XP sources (defaults) | Perks & Tier Scaling (defaults) |
 |---|---|---|
-| Mining | ore breaks from the `xp_rewards.blocks` table in `mmo.rewards.ron` (coal 8 → ancient debris 150) | Prospector (5% + 0.2%/level, cap 35%, +1 approved ore drop; no bonus skill XP), Vein Miner (sneak+break, ≤16 blocks) |
-| Woodcutting | natural logs 6–8 | Heartwood (2%: bonus log + 25 XP), Timber (sneak+break, ≤32 blocks) |
-| Cultivation | mature harvests 10–14 (agriculture); plants 2–6, consumables 3–25 (herbalism) | Harvest bonus (10% +1 item), fertilizer (bone meal): deterministic roll, guaranteed bonus + 10 XP; Quality yield (8% +1 item), consumable healing (+1.0 health) |
-| Excavation | diggable blocks 4–8 | Archaeology loot (3–8% per table), Earthmover (sneak+break, ≤16 blocks) |
-| Fishing | catches 5–60, default 10 | Reel (+2 vanilla XP), treasure replacement (off) |
-| AnimalHandling | breeding 15–40, default 15; products 8–10 (husbandry); tames 30–50, default 30; pet feeding 4 (taming) | Newborn trait roll (15%, bounded by global proc cap; configured trait list) |
+| Mining | ore breaks from `mmo.rewards.ron` (coal 8 → debris 150) | Prospector (+1% chance cap/tier; T=4 capstone: bonus drops 2 items), Vein Miner (+4 max blocks/tier: 16→32) |
+| Woodcutting | natural logs 6–8 | Heartwood (+1% chance/tier, +5 XP/tier), Timber (+8 max blocks/tier: 32→64) |
+| Cultivation | mature harvests 10–14; plants 2–6, plant foods 3–25 | Harvest bonus (+2% chance/tier), Quality yield (+2% chance/tier), Consumable healing (+0.5 HP/tier) |
+| Excavation | diggable blocks 4–8 | Earthmover (+4 max blocks/tier: 16→32), Archaeology loot (+1% chance cap/tier) |
+| Fishing | catches 5–60, default 10 | Reel (+1 bonus vanilla XP/tier), Treasure replacement (off) |
+| AnimalHandling | breeding 15–40; products 8–10; tames 30–50; pet feed 4 | Newborn trait roll (+2% chance/tier; T≥3 unlocks 2nd distinct trait roll) |
 
 Player-placed blocks never earn XP (shared provenance denylist). Batch perks
-are capped by `perks.batch_break_max_blocks` (16) and Pumpkin's hard 128, and
+are capped by `perks.batch_break_max_blocks` and Pumpkin's hard 128, and
 share `perks.batch_break_cooldown_ticks` (100).
 
 ## Warfare
 
-| Skill | XP sources (defaults) | Perks (defaults) |
+| Skill | XP sources (defaults) | Perks & Tier Scaling (defaults) |
 |---|---|---|
-| Blades | kills from `xp_rewards.mobs` in `mmo.rewards.ron` (attributed by weapon snapshot) | Damage +0.4%/level (cap 50%), Riposte (+25% within 60 ticks of taking damage, 200-tick cooldown) |
-| Axes | kills | Damage +0.5%/level (cap 60%) |
-| Archery | kills; +4 XP per projectile hit | — |
-| Athletics | empty-hand kills (unarmed); 3 XP per fall-damage point, cap 60/fall (acrobatics) | Damage +0.3%/level (cap 40%), knockback +0.4%/level (cap 50%); Roll: −0.2%/level fall damage (cap 25%) |
-| Defense | 2 XP per damage point taken (cap 40/hit) | Resilience: −0.15%/level incoming damage (cap 15%) |
-| Sorcery | 15 XP per cast | Healing bolt: 25 mana, 100-tick cooldown, heals 4.0; mana 100 max, 0.05/tick regen |
+| Blades | kills from `mmo.rewards.ron` (sword snapshot) | Damage +0.4%/level, Riposte (+5% bonus/tier: 25%→45%, cooldown −20t/tier: 200t→120t) |
+| Axes | kills | Damage +0.5%/level (+5% cap/tier: 0.60→0.80) |
+| Archery | kills; +4 XP per projectile hit | Arrow damage +0.4%/level (+5% cap/tier: x1.50→x1.70) |
+| Athletics | empty-hand kills; 3 XP per fall HP (cap 60/fall) | Unarmed damage +0.3%/level, Knockback +0.4%/level (+5% cap/tier: 0.50→0.70); Roll: −0.2%/level fall damage (+5% cap/tier: 0.25→0.45) |
+| Defense | 2 XP per damage point taken (cap 40/hit) | Resilience: −0.15%/level incoming damage (+2.5% cap/tier: 0.15→0.25) |
+| Sorcery | 15 XP per cast | Healing bolt: 25 mana, heals 4.0 (+1 HP/tier: 4→8), max mana 100 (+10/tier: 100→140), cooldown 100t (−10t/tier: 100t→60t) |
 
 All damage perks are clamped by `perks.max_damage_multiplier` (2.0× base) and
 proc chances by `perks.max_proc_chance` (35%).
 
 ## Enterprise
 
-| Skill | XP sources (defaults) | Perks (defaults) |
+| Skill | XP sources (defaults) | Perks & Tier Scaling (defaults) |
 |---|---|---|
-| Smithing | crafts 8–110, furnace extraction 1–40 (default 2) | Anvil outputs carry creator/provenance item data |
-| Maintenance | 20 XP per anvil take (repair); 15 XP per grindstone take (salvage) | Repair discount −0.05 cost/level (cap 10), 100-tick cooldown; salvage +0.2% experience/level (cap 25%), recovery roll 10% |
-| Alchemy | potions 10–14, default 8 | — |
-| Enchanting | 5 XP per level of cost (cap 100) | −0.02 offer requirement/level (cap 5) |
-| Tinkering | mechanism crafts 4–18 | — |
+| Smithing | crafts 8–110, furnace extraction 1–40 (default 2) | Craft & smelt XP multiplier +5%/tier; Anvil outputs carry creator/provenance item data |
+| Maintenance | 20 XP per anvil take; 15 XP per grindstone take | Tool Care (5% base + 2.5%/tier durability refund); Repair discount (+1 level cap/tier); Salvage (+5% XP cap/tier, 10% recovery roll) |
+| Alchemy | potions 10–14, default 8 | Potion Mastery (+0.5 HP/tier bonus heal on potion consume) |
+| Enchanting | 5 XP per level of cost (cap 100) | Offer discount (+1 level cap/tier); Enchant XP cap (+25/tier: 100→200) |
+| Tinkering | mechanism crafts 4–18 | Craft XP multiplier +5%/tier |
 | Commerce | **disabled** (trading: no trade transaction; charisma: no economy/NPC hook) | reputation ledger only |
 
 ## Progression bounds

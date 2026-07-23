@@ -82,29 +82,37 @@ through `Context::break_blocks` (max 128 blocks, deduplicated, protection-
 and durability-aware); the cooldown is charged before the transaction so the
 events fired per broken block cannot re-trigger the perk recursively.
 
+### Milestone Tiers (Levels 10, 25, 50, 100)
+
+All 18 skills feature **perk tiers** at milestone levels 10, 25, 50, and 100 (`perk_tier(level) = 0..=4`).
+Milestone tier step-ups scale batch limits (e.g. Timber 32→64, Vein Miner 16→32), raise caps (e.g. Axes damage cap 0.60→0.80, Defense resilience 0.15→0.25), boost proc chances and XP bonuses, and unlock capstone effects (such as Prospector 2-item drops at L100 and AnimalHandling 2nd distinct trait roll at L50+). Crossing a tier emits a chat announcement linked to `/mmo skill <skill>`.
+
 | Perk | Skill | Activation | Effect |
 |---|---|---|---|
-| Prospector | Mining | passive | Chance (level-scaled, capped) to add one item copied from an eligible ore's normal drop list. Never grants bonus Mining XP. |
-| Vein Miner | Mining | sneak + break ore | Breaks the connected ore vein in one bounded transaction. |
-| Heartwood | Woodcutting | passive | Chance (capped) of one bonus log + bonus XP on natural log breaks. |
-| Timber | Woodcutting | sneak + break natural log | Fells connected logs of the same type, bounded. |
-| Harvest bonus | Cultivation | passive | Chance (capped) of one bonus crop item on mature harvests; fertilized crops (bone meal) get a deterministic roll and bonus XP. |
-| Reel | Fishing | passive | Extra vanilla experience on a successful catch. |
+| Prospector | Mining | passive | Chance (level-scaled, capped) for one bonus ore drop; Tier 4 (L100) drops 2 items. Never grants bonus Mining XP. |
+| Vein Miner | Mining | sneak + break ore | Breaks connected ore vein (16 base → 32 at L100 blocks). |
+| Heartwood | Woodcutting | passive | Chance (capped) of one bonus log + bonus XP on natural log breaks (tier scaled). |
+| Timber | Woodcutting | sneak + break natural log | Fells connected logs of the same type (32 base → 64 at L100 blocks). |
+| Harvest bonus | Cultivation | passive | Chance (capped) of one bonus crop item on mature harvests (tier scaled). |
+| Reel | Fishing | passive | Extra vanilla experience on a successful catch (+1 XP/tier). |
 | Treasure replacement | Fishing | passive | Configured caught items are swapped for their mapped replacement (off by default). |
-| Quality yield | Cultivation | passive | Chance (capped) of one bonus item on natural plant breaks. |
-| Consumable healing | Cultivation | passive | Configured plant foods restore bonus health (bounded). |
-| Earthmover | Excavation | sneak + break diggable block | Excavates connected blocks of the same type, bounded. |
-| Archaeology loot | Excavation | passive | Chance (capped) of a configured bonus item on diggable breaks. |
-| Skill damage | Blades / Axes / Athletics | passive | Level-scaled attack damage bonus, capped per skill and by the global damage cap. |
-| Riposte | Blades | passive (cooldown) | Bonus damage when striking shortly after taking damage. |
-| Knockback | Athletics | passive | Level-scaled knockback bonus, capped. |
-| Resilience | Defense | passive | Level-scaled incoming-damage reduction, capped. |
-| Roll | Athletics | passive | Level-scaled fall-damage reduction, capped. |
-| Healing bolt | Sorcery | right-click staff (mana + cooldown) | Restores bounded health; costs mana. |
-| Repair discount | Maintenance | anvil (prepare preview) | Level-cost reduction while off cooldown; cooldown charged on take. |
-| Salvage bonus | Maintenance | grindstone (prepare preview) | Bonus disenchant experience; cooldown charged on take. |
+| Quality yield | Cultivation | passive | Chance (capped) of one bonus item on natural plant breaks (+2%/tier). |
+| Consumable healing | Cultivation | passive | Configured plant foods restore bonus health (+0.5 HP/tier). |
+| Earthmover | Excavation | sneak + break diggable block | Excavates connected blocks of the same type (16 base → 32 at L100 blocks). |
+| Archaeology loot | Excavation | passive | Chance (capped) of a configured bonus item on diggable breaks (+1%/tier). |
+| Arrow damage | Archery | passive | Level-scaled projectile damage bonus, capped per tier (x1.50 base → x1.70 at L100). |
+| Skill damage | Blades / Axes / Athletics | passive | Level-scaled attack damage bonus, capped per skill and by the global damage cap (tier raised caps). |
+| Riposte | Blades | passive (cooldown) | Bonus damage when striking shortly after taking damage (+5%/tier, cooldown −20t/tier). |
+| Knockback | Athletics | passive | Level-scaled knockback bonus, capped (+5%/tier cap). |
+| Resilience | Defense | passive | Level-scaled incoming-damage reduction, capped (+2.5%/tier cap). |
+| Roll | Athletics | passive | Level-scaled fall-damage reduction, capped (+5%/tier cap). |
+| Healing bolt | Sorcery | right-click staff (mana + cooldown) | Restores health (+1 HP/tier), max mana (+10/tier), cooldown (−10t/tier); costs mana. |
+| Tool Care | Maintenance | passive | Chance (5% base + 2.5%/tier) to refund 1 durability on held tool on block break. |
+| Repair discount | Maintenance | anvil (prepare preview) | Level-cost reduction while off cooldown; cap +1 level/tier. |
+| Salvage bonus | Maintenance | grindstone (prepare preview) | Bonus disenchant experience; cap +5%/tier. |
 | Material recovery | Maintenance | grindstone take | Chance (capped) of one tool-tier material item. |
-| Offer discount | Enchanting | enchanting table (offer preview) | Level-requirement reduction, capped per level. |
+| Potion Mastery | Alchemy | passive | Bonus health restored on consuming any potion (0.5 base + 0.5 HP/tier). |
+| Offer discount | Enchanting | enchanting table (offer preview) | Level-requirement reduction (cap +1 level/tier). |
 | Anvil marking | Smithing | anvil output | Adds creator/provenance item data; vanilla result preserved. |
 
 Warfare XP attribution: melee weapons are classified from the attack event's

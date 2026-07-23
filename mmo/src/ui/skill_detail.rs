@@ -814,25 +814,58 @@ fn milestone_row(
 
 fn milestone_detail(skill: SkillId, tier_level: u32) -> String {
     match (skill, tier_level) {
-        (SkillId::Cultivation, 10) => "Harvest bonus +2%, quality yield +2%, consumable heal +0.5 HP".to_string(),
-        (SkillId::Cultivation, 25) => "Harvest bonus +4%, quality yield +4%, consumable heal +1.0 HP".to_string(),
-        (SkillId::Cultivation, 50) => "Harvest bonus +6%, quality yield +6%, consumable heal +1.5 HP".to_string(),
-        (SkillId::Cultivation, 100) => "Harvest bonus +8%, quality yield +8%, consumable heal +2.0 HP".to_string(),
+        (SkillId::Cultivation, 10) => {
+            "Harvest bonus +2%, quality yield +2%, consumable heal +0.5 HP".to_string()
+        }
+        (SkillId::Cultivation, 25) => {
+            "Harvest bonus +4%, quality yield +4%, consumable heal +1.0 HP".to_string()
+        }
+        (SkillId::Cultivation, 50) => {
+            "Harvest bonus +6%, quality yield +6%, consumable heal +1.5 HP".to_string()
+        }
+        (SkillId::Cultivation, 100) => {
+            "Harvest bonus +8%, quality yield +8%, consumable heal +2.0 HP".to_string()
+        }
 
-        (SkillId::Woodcutting, 10) => "Timber max felled logs 32→40; Heartwood +1% chance, +5 XP".to_string(),
-        (SkillId::Woodcutting, 25) => "Timber max felled logs 32→48; Heartwood +2% chance, +10 XP".to_string(),
-        (SkillId::Woodcutting, 50) => "Timber max felled logs 32→56; Heartwood +3% chance, +15 XP".to_string(),
-        (SkillId::Woodcutting, 100) => "Timber max felled logs 32→64; Heartwood +4% chance, +20 XP".to_string(),
+        (SkillId::Woodcutting, 10) => {
+            "Timber max felled logs 32→40; Heartwood +1% chance, +5 XP".to_string()
+        }
+        (SkillId::Woodcutting, 25) => {
+            "Timber max felled logs 32→48; Heartwood +2% chance, +10 XP".to_string()
+        }
+        (SkillId::Woodcutting, 50) => {
+            "Timber max felled logs 32→56; Heartwood +3% chance, +15 XP".to_string()
+        }
+        (SkillId::Woodcutting, 100) => {
+            "Timber max felled logs 32→64; Heartwood +4% chance, +20 XP".to_string()
+        }
 
-        (SkillId::Mining, 10) => "Prospector +1% chance cap; Vein Miner max blocks 16→20".to_string(),
-        (SkillId::Mining, 25) => "Prospector +2% chance cap; Vein Miner max blocks 16→24".to_string(),
-        (SkillId::Mining, 50) => "Prospector +3% chance cap; Vein Miner max blocks 16→28".to_string(),
-        (SkillId::Mining, 100) => "Prospector +4% chance cap & bonus drops 2 items; Vein Miner max blocks 16→32".to_string(),
+        (SkillId::Mining, 10) => {
+            "Prospector +1% chance cap; Vein Miner max blocks 16→20".to_string()
+        }
+        (SkillId::Mining, 25) => {
+            "Prospector +2% chance cap; Vein Miner max blocks 16→24".to_string()
+        }
+        (SkillId::Mining, 50) => {
+            "Prospector +3% chance cap; Vein Miner max blocks 16→28".to_string()
+        }
+        (SkillId::Mining, 100) => {
+            "Prospector +4% chance cap & bonus drops 2 items; Vein Miner max blocks 16→32"
+                .to_string()
+        }
 
-        (SkillId::Excavation, 10) => "Earthmover max blocks 16→20; Archaeology +1% loot chance cap".to_string(),
-        (SkillId::Excavation, 25) => "Earthmover max blocks 16→24; Archaeology +2% loot chance cap".to_string(),
-        (SkillId::Excavation, 50) => "Earthmover max blocks 16→28; Archaeology +3% loot chance cap".to_string(),
-        (SkillId::Excavation, 100) => "Earthmover max blocks 16→32; Archaeology +4% loot chance cap".to_string(),
+        (SkillId::Excavation, 10) => {
+            "Earthmover max blocks 16→20; Archaeology +1% loot chance cap".to_string()
+        }
+        (SkillId::Excavation, 25) => {
+            "Earthmover max blocks 16→24; Archaeology +2% loot chance cap".to_string()
+        }
+        (SkillId::Excavation, 50) => {
+            "Earthmover max blocks 16→28; Archaeology +3% loot chance cap".to_string()
+        }
+        (SkillId::Excavation, 100) => {
+            "Earthmover max blocks 16→32; Archaeology +4% loot chance cap".to_string()
+        }
 
         (SkillId::Fishing, 10) => "Reel +1 bonus vanilla XP on catch".to_string(),
         (SkillId::Fishing, 25) => "Reel +2 bonus vanilla XP on catch".to_string(),
@@ -841,13 +874,25 @@ fn milestone_detail(skill: SkillId, tier_level: u32) -> String {
 
         (SkillId::AnimalHandling, 10) => "Newborn traits +2% trait roll chance".to_string(),
         (SkillId::AnimalHandling, 25) => "Newborn traits +4% trait roll chance".to_string(),
-        (SkillId::AnimalHandling, 50) => "Newborn traits +6% trait roll chance & 2nd distinct trait roll unlocked".to_string(),
-        (SkillId::AnimalHandling, 100) => "Newborn traits +8% trait roll chance & 2nd distinct trait roll".to_string(),
+        (SkillId::AnimalHandling, 50) => {
+            "Newborn traits +6% trait roll chance & 2nd distinct trait roll unlocked".to_string()
+        }
+        (SkillId::AnimalHandling, 100) => {
+            "Newborn traits +8% trait roll chance & 2nd distinct trait roll".to_string()
+        }
 
-        (SkillId::Blades, 10) => "Riposte +5% counter damage multiplier, −20 ticks cooldown".to_string(),
-        (SkillId::Blades, 25) => "Riposte +10% counter damage multiplier, −40 ticks cooldown".to_string(),
-        (SkillId::Blades, 50) => "Riposte +15% counter damage multiplier, −60 ticks cooldown".to_string(),
-        (SkillId::Blades, 100) => "Riposte +20% counter damage multiplier, −80 ticks cooldown".to_string(),
+        (SkillId::Blades, 10) => {
+            "Riposte +5% counter damage multiplier, −20 ticks cooldown".to_string()
+        }
+        (SkillId::Blades, 25) => {
+            "Riposte +10% counter damage multiplier, −40 ticks cooldown".to_string()
+        }
+        (SkillId::Blades, 50) => {
+            "Riposte +15% counter damage multiplier, −60 ticks cooldown".to_string()
+        }
+        (SkillId::Blades, 100) => {
+            "Riposte +20% counter damage multiplier, −80 ticks cooldown".to_string()
+        }
 
         (SkillId::Axes, 10) => "Axe damage cap +5% (0.60→0.65)".to_string(),
         (SkillId::Axes, 25) => "Axe damage cap +10% (0.60→0.70)".to_string(),
@@ -859,47 +904,85 @@ fn milestone_detail(skill: SkillId, tier_level: u32) -> String {
         (SkillId::Archery, 50) => "Arrow damage cap +15% (0.50→0.65)".to_string(),
         (SkillId::Archery, 100) => "Arrow damage cap +20% (0.50→0.70)".to_string(),
 
-        (SkillId::Athletics, 10) => "Unarmed knockback cap +5%, roll fall reduction cap +5%".to_string(),
-        (SkillId::Athletics, 25) => "Unarmed knockback cap +10%, roll fall reduction cap +10%".to_string(),
-        (SkillId::Athletics, 50) => "Unarmed knockback cap +15%, roll fall reduction cap +15%".to_string(),
-        (SkillId::Athletics, 100) => "Unarmed knockback cap +20%, roll fall reduction cap +20%".to_string(),
+        (SkillId::Athletics, 10) => {
+            "Unarmed knockback cap +5%, roll fall reduction cap +5%".to_string()
+        }
+        (SkillId::Athletics, 25) => {
+            "Unarmed knockback cap +10%, roll fall reduction cap +10%".to_string()
+        }
+        (SkillId::Athletics, 50) => {
+            "Unarmed knockback cap +15%, roll fall reduction cap +15%".to_string()
+        }
+        (SkillId::Athletics, 100) => {
+            "Unarmed knockback cap +20%, roll fall reduction cap +20%".to_string()
+        }
 
         (SkillId::Defense, 10) => "Resilience damage reduction cap +2.5% (0.150→0.175)".to_string(),
         (SkillId::Defense, 25) => "Resilience damage reduction cap +5.0% (0.150→0.200)".to_string(),
         (SkillId::Defense, 50) => "Resilience damage reduction cap +7.5% (0.150→0.225)".to_string(),
-        (SkillId::Defense, 100) => "Resilience damage reduction cap +10.0% (0.150→0.250)".to_string(),
+        (SkillId::Defense, 100) => {
+            "Resilience damage reduction cap +10.0% (0.150→0.250)".to_string()
+        }
 
-        (SkillId::Sorcery, 10) => "Healing bolt +1.0 HP, max mana +10, cast cooldown −10 ticks".to_string(),
-        (SkillId::Sorcery, 25) => "Healing bolt +2.0 HP, max mana +20, cast cooldown −20 ticks".to_string(),
-        (SkillId::Sorcery, 50) => "Healing bolt +3.0 HP, max mana +30, cast cooldown −30 ticks".to_string(),
-        (SkillId::Sorcery, 100) => "Healing bolt +4.0 HP, max mana +40, cast cooldown −40 ticks".to_string(),
+        (SkillId::Sorcery, 10) => {
+            "Healing bolt +1.0 HP, max mana +10, cast cooldown −10 ticks".to_string()
+        }
+        (SkillId::Sorcery, 25) => {
+            "Healing bolt +2.0 HP, max mana +20, cast cooldown −20 ticks".to_string()
+        }
+        (SkillId::Sorcery, 50) => {
+            "Healing bolt +3.0 HP, max mana +30, cast cooldown −30 ticks".to_string()
+        }
+        (SkillId::Sorcery, 100) => {
+            "Healing bolt +4.0 HP, max mana +40, cast cooldown −40 ticks".to_string()
+        }
 
         (SkillId::Smithing, 10) => "Crafting & smelting XP multiplier +5%".to_string(),
         (SkillId::Smithing, 25) => "Crafting & smelting XP multiplier +10%".to_string(),
         (SkillId::Smithing, 50) => "Crafting & smelting XP multiplier +15%".to_string(),
         (SkillId::Smithing, 100) => "Crafting & smelting XP multiplier +20%".to_string(),
 
-        (SkillId::Maintenance, 10) => "Tool Care +2.5% chance; Repair discount cap +1; Salvage XP cap +5%".to_string(),
-        (SkillId::Maintenance, 25) => "Tool Care +5.0% chance; Repair discount cap +2; Salvage XP cap +10%".to_string(),
-        (SkillId::Maintenance, 50) => "Tool Care +7.5% chance; Repair discount cap +3; Salvage XP cap +15%".to_string(),
-        (SkillId::Maintenance, 100) => "Tool Care +10.0% chance; Repair discount cap +4; Salvage XP cap +20%".to_string(),
+        (SkillId::Maintenance, 10) => {
+            "Tool Care +2.5% chance; Repair discount cap +1; Salvage XP cap +5%".to_string()
+        }
+        (SkillId::Maintenance, 25) => {
+            "Tool Care +5.0% chance; Repair discount cap +2; Salvage XP cap +10%".to_string()
+        }
+        (SkillId::Maintenance, 50) => {
+            "Tool Care +7.5% chance; Repair discount cap +3; Salvage XP cap +15%".to_string()
+        }
+        (SkillId::Maintenance, 100) => {
+            "Tool Care +10.0% chance; Repair discount cap +4; Salvage XP cap +20%".to_string()
+        }
 
-        (SkillId::Alchemy, 10) => "Potion Mastery +0.5 HP restored on potion consumption".to_string(),
-        (SkillId::Alchemy, 25) => "Potion Mastery +1.0 HP restored on potion consumption".to_string(),
-        (SkillId::Alchemy, 50) => "Potion Mastery +1.5 HP restored on potion consumption".to_string(),
-        (SkillId::Alchemy, 100) => "Potion Mastery +2.0 HP restored on potion consumption".to_string(),
+        (SkillId::Alchemy, 10) => {
+            "Potion Mastery +0.5 HP restored on potion consumption".to_string()
+        }
+        (SkillId::Alchemy, 25) => {
+            "Potion Mastery +1.0 HP restored on potion consumption".to_string()
+        }
+        (SkillId::Alchemy, 50) => {
+            "Potion Mastery +1.5 HP restored on potion consumption".to_string()
+        }
+        (SkillId::Alchemy, 100) => {
+            "Potion Mastery +2.0 HP restored on potion consumption".to_string()
+        }
 
         (SkillId::Enchanting, 10) => "Offer discount cap +1 level; Enchant XP cap +25".to_string(),
         (SkillId::Enchanting, 25) => "Offer discount cap +2 levels; Enchant XP cap +50".to_string(),
         (SkillId::Enchanting, 50) => "Offer discount cap +3 levels; Enchant XP cap +75".to_string(),
-        (SkillId::Enchanting, 100) => "Offer discount cap +4 levels; Enchant XP cap +100".to_string(),
+        (SkillId::Enchanting, 100) => {
+            "Offer discount cap +4 levels; Enchant XP cap +100".to_string()
+        }
 
         (SkillId::Tinkering, 10) => "Redstone mechanism crafting XP multiplier +5%".to_string(),
         (SkillId::Tinkering, 25) => "Redstone mechanism crafting XP multiplier +10%".to_string(),
         (SkillId::Tinkering, 50) => "Redstone mechanism crafting XP multiplier +15%".to_string(),
         (SkillId::Tinkering, 100) => "Redstone mechanism crafting XP multiplier +20%".to_string(),
 
-        (SkillId::Commerce, _) => "planned for a future update; trading perks remain dormant".to_string(),
+        (SkillId::Commerce, _) => {
+            "planned for a future update; trading perks remain dormant".to_string()
+        }
         _ => "perk tier upgrade".to_string(),
     }
 }
@@ -1568,7 +1651,11 @@ mod tests {
             );
             let second = skill_detail_lines(skill, &snapshot, &curve, &config, 2);
             let expected_second_len = if skill == SkillId::Maintenance { 4 } else { 3 };
-            assert_eq!(second.len(), expected_second_len, "{skill} page 2: heading + rows + footer");
+            assert_eq!(
+                second.len(),
+                expected_second_len,
+                "{skill} page 2: heading + rows + footer"
+            );
             assert!(
                 second[0].clone().get_text().contains("(page 2/2)"),
                 "{skill} page 2 heading"
