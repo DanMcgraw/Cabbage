@@ -149,29 +149,46 @@ pub(crate) async fn try_batch_break(
         return None;
     }
 
-    let broken = state
-        .context()
-        .break_blocks(world.clone(), player.clone(), candidates)
-        .await
-        .ok()?;
-    if broken.is_empty() {
+    let mut broken_count = 0usize;
+    for position in candidates {
+        let is_tool_valid = {
+            let held = player.inventory().held_item();
+            let stack = held.lock().await;
+            !stack.is_empty()
+                && stack.item_count > 0
+                && (stack.get_damage() < stack.get_max_damage().unwrap_or(i32::MAX))
+        };
+        if !is_tool_valid {
+            break;
+        }
+
+        if world
+            .break_block(
+                &position,
+                Some(player.clone()),
+                pumpkin_world::world::BlockFlags::NOTIFY_ALL,
+            )
+            .await
+            .is_some()
+        {
+            broken_count += 1;
+        }
+    }
+
+    if broken_count == 0 {
         return None;
     }
 
-    // Resync the player's hand slot once after the batch break transaction finishes.
-    // Pumpkin's break_blocks calls apply_tool_damage_for_block_break per candidate,
-    // which enqueues per-block slot updates. Resyncing the final held stack guarantees
-    // the client stays fully synchronized and prevents item render animation flicker or
-    // client interaction desync.
-    let selected_slot = player.inventory().get_selected_slot() as usize;
-    let final_stack = player.inventory().held_item().lock().await.clone();
-    player.sync_hand_slot(selected_slot, final_stack).await;
+    // Apply tool durability damage ONCE for all extra blocks broken in the batch transaction,
+    // rather than per-block inside Pumpkin's break_blocks helper loop. This prevents sending
+    // N CSetPlayerInventory slot packets in a single tick stream, eliminating tool rendering
+    // animation flicker and client interaction desync.
+    player.damage_held_item(broken_count as i32).await;
 
     state.audit(&format!(
-        "batch break: {cooldown_key} broke {} block(s) for {player_uuid}",
-        broken.len()
+        "batch break: {cooldown_key} broke {broken_count} block(s) for {player_uuid}",
     ));
-    Some(broken.len())
+    Some(broken_count)
 }
 
 #[cfg(test)]
