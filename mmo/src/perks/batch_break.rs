@@ -157,6 +157,16 @@ pub(crate) async fn try_batch_break(
     if broken.is_empty() {
         return None;
     }
+
+    // Resync the player's hand slot once after the batch break transaction finishes.
+    // Pumpkin's break_blocks calls apply_tool_damage_for_block_break per candidate,
+    // which enqueues per-block slot updates. Resyncing the final held stack guarantees
+    // the client stays fully synchronized and prevents item render animation flicker or
+    // client interaction desync.
+    let selected_slot = player.inventory().get_selected_slot() as usize;
+    let final_stack = player.inventory().held_item().lock().await.clone();
+    player.sync_hand_slot(selected_slot, final_stack).await;
+
     state.audit(&format!(
         "batch break: {cooldown_key} broke {} block(s) for {player_uuid}",
         broken.len()
