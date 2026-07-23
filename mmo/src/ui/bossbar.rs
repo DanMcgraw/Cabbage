@@ -19,6 +19,7 @@ const BOSSBAR_DURATION_TICKS: i32 = 100; // 5 seconds at 20 TPS
 struct BossbarEntry {
     uuid: Uuid,
     expiry_tick: i32,
+    last_sent_tick: i32,
 }
 
 /// Tracks transient skill-progress bossbars per player.
@@ -54,11 +55,15 @@ impl BossbarState {
         current_tick: i32,
     ) {
         let key = (player.gameprofile.id, skill);
-        let (uuid, is_new) = {
+        let (uuid, is_new, should_send) = {
             let mut active = self.active.lock().unwrap();
             if let Some(entry) = active.get_mut(&key) {
                 entry.expiry_tick = current_tick + BOSSBAR_DURATION_TICKS;
-                (entry.uuid, false)
+                let should_send = entry.last_sent_tick != current_tick;
+                if should_send {
+                    entry.last_sent_tick = current_tick;
+                }
+                (entry.uuid, false, should_send)
             } else {
                 let uuid = Uuid::new_v4();
                 active.insert(
@@ -66,11 +71,16 @@ impl BossbarState {
                     BossbarEntry {
                         uuid,
                         expiry_tick: current_tick + BOSSBAR_DURATION_TICKS,
+                        last_sent_tick: current_tick,
                     },
                 );
-                (uuid, true)
+                (uuid, true, true)
             }
         };
+
+        if !should_send {
+            return;
+        }
 
         let health = if xp_for_next == 0 {
             1.0
