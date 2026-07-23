@@ -102,9 +102,40 @@ pub(crate) async fn try_batch_break(
         return None;
     }
 
-    let candidates = collect_batch_candidates(origin, max_blocks, is_candidate);
+    // Durability safety check: ensure player is holding a valid tool and cap
+    // candidates so the tool never breaks mid-batch (which causes drop loss,
+    // empty-hand breaks, tool animation spam, and client interaction freeze).
+    let max_extra_blocks = {
+        let held = player.inventory().held_item();
+        let stack = held.lock().await;
+        if stack.is_empty() || stack.item_count == 0 {
+            return None;
+        }
+        if !stack.is_damageable() || stack.is_unbreakable() {
+            usize::MAX
+        } else {
+            let max_damage = stack.get_max_damage().unwrap_or(0);
+            let current_damage = stack.get_damage();
+            if current_damage >= max_damage {
+                return None;
+            }
+            (max_damage - current_damage) as usize
+        }
+    };
+
+    // The origin block break will consume 1 durability when finished, so
+    // extra batch candidates are capped to remaining_durability - 1.
+    let max_extra_blocks = max_extra_blocks.saturating_sub(1);
+    if max_extra_blocks == 0 {
+        return None;
+    }
+
+    let mut candidates = collect_batch_candidates(origin, max_blocks, is_candidate);
     if candidates.is_empty() {
         return None;
+    }
+    if candidates.len() > max_extra_blocks {
+        candidates.truncate(max_extra_blocks);
     }
 
     // Charge the cooldown before breaking: this is the recursion guard (see
