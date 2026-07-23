@@ -54,14 +54,22 @@ impl BossbarState {
         current_tick: i32,
     ) {
         let key = (player.gameprofile.id, skill);
-        let uuid = {
+        let (uuid, is_new) = {
             let mut active = self.active.lock().unwrap();
-            let entry = active.entry(key).or_insert_with(|| BossbarEntry {
-                uuid: Uuid::new_v4(),
-                expiry_tick: current_tick + BOSSBAR_DURATION_TICKS,
-            });
-            entry.expiry_tick = current_tick + BOSSBAR_DURATION_TICKS;
-            entry.uuid
+            if let Some(entry) = active.get_mut(&key) {
+                entry.expiry_tick = current_tick + BOSSBAR_DURATION_TICKS;
+                (entry.uuid, false)
+            } else {
+                let uuid = Uuid::new_v4();
+                active.insert(
+                    key,
+                    BossbarEntry {
+                        uuid,
+                        expiry_tick: current_tick + BOSSBAR_DURATION_TICKS,
+                    },
+                );
+                (uuid, true)
+            }
         };
 
         let health = if xp_for_next == 0 {
@@ -73,16 +81,20 @@ impl BossbarState {
         let title = skill_title(skill, level, xp_into_level, xp_for_next);
         let color = skill_color(skill);
 
-        let bossbar = Bossbar {
-            uuid,
-            title,
-            health,
-            color,
-            division: BossbarDivisions::NoDivision,
-            flags: BossbarFlags::empty(),
-        };
-
-        player.send_bossbar(&bossbar).await;
+        if is_new {
+            let bossbar = Bossbar {
+                uuid,
+                title,
+                health,
+                color,
+                division: BossbarDivisions::NoDivision,
+                flags: BossbarFlags::empty(),
+            };
+            player.send_bossbar(&bossbar).await;
+        } else {
+            player.update_bossbar_title(&uuid, title).await;
+            player.update_bossbar_health(&uuid, health).await;
+        }
     }
 
     /// Remove any bossbars whose display duration has expired.
