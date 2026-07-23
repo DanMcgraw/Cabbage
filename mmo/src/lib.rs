@@ -78,9 +78,14 @@ use ui::BossbarState;
 const CONFIG_FILE: &str = "config.ron";
 const LEGACY_CONFIG_FILE: &str = "config.json";
 const MMO_CONFIG_FILE: &str = "mmo.ron";
-const MMO_SUBFOLDER: &str = "mmo";
-const REWARDS_CONFIG_FILE: &str = "rewards.ron";
-const ORE_REVEAL_CONFIG_FILE: &str = "ore_reveal.ron";
+const REWARDS_CONFIG_FILE: &str = "mmo.rewards.ron";
+const ORE_REVEAL_CONFIG_FILE: &str = "mmo.ores.ron";
+/// Short-lived `mmo/` subfolder layout, superseded by the flat `mmo.*.ron`
+/// files above. Subfolder files are still read (adopted) when the flat file
+/// is missing and are never modified or deleted.
+const LEGACY_MMO_SUBFOLDER: &str = "mmo";
+const LEGACY_REWARDS_CONFIG_FILE: &str = "rewards.ron";
+const LEGACY_ORE_REVEAL_CONFIG_FILE: &str = "ore_reveal.ron";
 
 /// Shared state for the MMO levelling module.
 pub struct MmoState {
@@ -137,7 +142,7 @@ impl MmoState {
         if legacy_rewards.is_some() {
             db.drop_legacy_xp_reward_tables().await?;
             if migrate_legacy_rewards {
-                log::info!("[Cabbage MMO] migrated XP rewards from SQLite to mmo/rewards.ron");
+                log::info!("[Cabbage MMO] migrated XP rewards from SQLite to mmo.rewards.ron");
             } else {
                 log::info!("[Cabbage MMO] removed obsolete SQLite XP reward tables");
             }
@@ -402,17 +407,26 @@ struct LoadedMmoConfig {
 /// - `MmoConfig`: `mmo.ron`; otherwise the `mmo` section of a legacy unified
 ///   `config.ron` (or `config.json`, which carries no MMO data and therefore
 ///   yields defaults); otherwise defaults.
-/// - `xp_rewards`: `mmo/rewards.ron`; otherwise whatever the `MmoConfig`
+/// - `xp_rewards`: `mmo.rewards.ron`; otherwise the superseded
+///   `mmo/rewards.ron` subfolder file; otherwise whatever the `MmoConfig`
 ///   source carried inline (old unified files embed it); otherwise defaults.
-/// - `ore_reveal`: `mmo/ore_reveal.ron`; otherwise the source's inline
+/// - `ore_reveal`: `mmo.ores.ron`; otherwise the superseded
+///   `mmo/ore_reveal.ron` subfolder file; otherwise the source's inline
 ///   value; otherwise defaults.
 ///
 /// Once the split files exist, a stale `mmo:` section in `config.ron` is
-/// ignored forever; the legacy unified file is never modified.
+/// ignored forever; the legacy unified file and the superseded subfolder
+/// files are never modified.
 fn load_mmo_config(data_folder: &PathBuf) -> Result<LoadedMmoConfig, String> {
     let mmo_path = data_folder.join(MMO_CONFIG_FILE);
-    let rewards_path = data_folder.join(MMO_SUBFOLDER).join(REWARDS_CONFIG_FILE);
-    let ore_reveal_path = data_folder.join(MMO_SUBFOLDER).join(ORE_REVEAL_CONFIG_FILE);
+    let rewards_path = data_folder.join(REWARDS_CONFIG_FILE);
+    let ore_reveal_path = data_folder.join(ORE_REVEAL_CONFIG_FILE);
+    let legacy_rewards_path = data_folder
+        .join(LEGACY_MMO_SUBFOLDER)
+        .join(LEGACY_REWARDS_CONFIG_FILE);
+    let legacy_ore_reveal_path = data_folder
+        .join(LEGACY_MMO_SUBFOLDER)
+        .join(LEGACY_ORE_REVEAL_CONFIG_FILE);
 
     let mut config = if let Ok(contents) = fs::read_to_string(&mmo_path) {
         ron::from_str::<MmoConfig>(&contents)
@@ -421,13 +435,17 @@ fn load_mmo_config(data_folder: &PathBuf) -> Result<LoadedMmoConfig, String> {
         load_plugin_config(data_folder)?.mmo.unwrap_or_default()
     };
 
-    if let Ok(contents) = fs::read_to_string(&rewards_path) {
+    if let Ok(contents) =
+        fs::read_to_string(&rewards_path).or_else(|_| fs::read_to_string(&legacy_rewards_path))
+    {
         config.xp_rewards = ron::from_str::<XpRewardsConfig>(&contents)
-            .map_err(|e| format!("failed to parse {MMO_SUBFOLDER}/{REWARDS_CONFIG_FILE}: {e}"))?;
+            .map_err(|e| format!("failed to parse rewards config ({REWARDS_CONFIG_FILE}): {e}"))?;
     }
-    if let Ok(contents) = fs::read_to_string(&ore_reveal_path) {
+    if let Ok(contents) = fs::read_to_string(&ore_reveal_path)
+        .or_else(|_| fs::read_to_string(&legacy_ore_reveal_path))
+    {
         config.ore_reveal = ron::from_str::<OreRevealConfig>(&contents).map_err(|e| {
-            format!("failed to parse {MMO_SUBFOLDER}/{ORE_REVEAL_CONFIG_FILE}: {e}")
+            format!("failed to parse ore reveal config ({ORE_REVEAL_CONFIG_FILE}): {e}")
         })?;
     }
 
@@ -468,16 +486,17 @@ fn save_plugin_config(data_folder: &PathBuf, config: &PluginConfig) -> Result<()
     write_ron_pretty(&ron_path, config)
 }
 
-/// Write the split MMO config files (`mmo.ron`, `mmo/rewards.ron`,
-/// `mmo/ore_reveal.ron`). Called on first load whenever any of them was
-/// missing or the config was upgraded/migrated.
+/// Write the split MMO config files (`mmo.ron`, `mmo.rewards.ron`,
+/// `mmo.ores.ron`), all flat inside the data folder. Called on first load
+/// whenever any of them was missing or the config was upgraded/migrated.
 fn save_mmo_config_files(data_folder: &Path, config: &MmoConfig) -> Result<(), String> {
-    let mmo_folder = data_folder.join(MMO_SUBFOLDER);
-    fs::create_dir_all(&mmo_folder)
-        .map_err(|e| format!("failed to create {MMO_SUBFOLDER} config folder: {e}"))?;
+    fs::create_dir_all(data_folder).map_err(|e| format!("failed to create data folder: {e}"))?;
     write_ron_pretty(&data_folder.join(MMO_CONFIG_FILE), config)?;
-    write_ron_pretty(&mmo_folder.join(REWARDS_CONFIG_FILE), &config.xp_rewards)?;
-    write_ron_pretty(&mmo_folder.join(ORE_REVEAL_CONFIG_FILE), &config.ore_reveal)
+    write_ron_pretty(&data_folder.join(REWARDS_CONFIG_FILE), &config.xp_rewards)?;
+    write_ron_pretty(
+        &data_folder.join(ORE_REVEAL_CONFIG_FILE),
+        &config.ore_reveal,
+    )
 }
 
 fn write_ron_pretty<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), String> {
@@ -1135,19 +1154,16 @@ mod tests {
             legacy
         );
 
-        // mmo/rewards.ron carries the adopted XP tables.
-        let rewards: XpRewardsConfig = ron::from_str(
-            &fs::read_to_string(folder.join(MMO_SUBFOLDER).join(REWARDS_CONFIG_FILE)).unwrap(),
-        )
-        .unwrap();
+        // mmo.rewards.ron carries the adopted XP tables.
+        let rewards: XpRewardsConfig =
+            ron::from_str(&fs::read_to_string(folder.join(REWARDS_CONFIG_FILE)).unwrap()).unwrap();
         assert_eq!(rewards.mobs.get("zombie"), Some(&99));
         assert_eq!(rewards.blocks.get("coal_ore"), Some(&42));
 
-        // mmo/ore_reveal.ron carries the adopted ore reveal section.
-        let ore_reveal: OreRevealConfig = ron::from_str(
-            &fs::read_to_string(folder.join(MMO_SUBFOLDER).join(ORE_REVEAL_CONFIG_FILE)).unwrap(),
-        )
-        .unwrap();
+        // mmo.ores.ron carries the adopted ore reveal section.
+        let ore_reveal: OreRevealConfig =
+            ron::from_str(&fs::read_to_string(folder.join(ORE_REVEAL_CONFIG_FILE)).unwrap())
+                .unwrap();
         assert!(!ore_reveal.enabled);
 
         // mmo.ron carries the v2-upgraded config without the split sections.
@@ -1183,14 +1199,12 @@ mod tests {
              skills:{},disabled_world_features:[],reward_config_version:1)",
         )
         .unwrap();
-        let mmo_folder = folder.join(MMO_SUBFOLDER);
-        fs::create_dir_all(&mmo_folder).unwrap();
         fs::write(
-            mmo_folder.join(REWARDS_CONFIG_FILE),
+            folder.join(REWARDS_CONFIG_FILE),
             "(mobs:{\"zombie\":7},blocks:{\"coal_ore\":3})",
         )
         .unwrap();
-        fs::write(mmo_folder.join(ORE_REVEAL_CONFIG_FILE), "(enabled:false)").unwrap();
+        fs::write(folder.join(ORE_REVEAL_CONFIG_FILE), "(enabled:false)").unwrap();
 
         let loaded = load_mmo_config(&folder).unwrap();
         assert!(!loaded.split_files_missing);
@@ -1207,6 +1221,55 @@ mod tests {
     }
 
     #[test]
+    fn legacy_subfolder_files_are_adopted() {
+        let folder = test_config_folder();
+        save_mmo_config_files(&folder, &MmoConfig::default()).unwrap();
+        // The superseded mmo/ subfolder layout still supplies values when the
+        // flat files are missing; the subfolder files stay untouched.
+        let legacy_folder = folder.join(LEGACY_MMO_SUBFOLDER);
+        fs::create_dir_all(&legacy_folder).unwrap();
+        let legacy_rewards = "(mobs:{\"zombie\":11},blocks:{\"coal_ore\":13})";
+        fs::write(
+            legacy_folder.join(LEGACY_REWARDS_CONFIG_FILE),
+            legacy_rewards,
+        )
+        .unwrap();
+        fs::write(
+            legacy_folder.join(LEGACY_ORE_REVEAL_CONFIG_FILE),
+            "(enabled:false)",
+        )
+        .unwrap();
+
+        // Remove the flat rewards/ore files so only the subfolder copies
+        // remain.
+        fs::remove_file(folder.join(REWARDS_CONFIG_FILE)).unwrap();
+        fs::remove_file(folder.join(ORE_REVEAL_CONFIG_FILE)).unwrap();
+
+        let loaded = load_mmo_config(&folder).unwrap();
+        // The flat files are missing, so the caller saves them back.
+        assert!(loaded.split_files_missing);
+        assert_eq!(loaded.config.xp_rewards.mobs.get("zombie"), Some(&11));
+        assert_eq!(loaded.config.xp_rewards.blocks.get("coal_ore"), Some(&13));
+        assert!(!loaded.config.ore_reveal.enabled);
+        // The legacy subfolder files are left untouched.
+        assert_eq!(
+            fs::read_to_string(legacy_folder.join(LEGACY_REWARDS_CONFIG_FILE)).unwrap(),
+            legacy_rewards
+        );
+
+        // Flat files win over the legacy subfolder once they exist.
+        fs::write(
+            folder.join(REWARDS_CONFIG_FILE),
+            "(mobs:{\"zombie\":22},blocks:{\"coal_ore\":24})",
+        )
+        .unwrap();
+        let loaded = load_mmo_config(&folder).unwrap();
+        assert_eq!(loaded.config.xp_rewards.mobs.get("zombie"), Some(&22));
+
+        cleanup_config_folder(&folder);
+    }
+
+    #[test]
     fn fresh_folder_loads_defaults_and_saves_split_files() {
         let folder = test_config_folder();
 
@@ -1217,18 +1280,8 @@ mod tests {
         save_mmo_config_files(&folder, &config).unwrap();
 
         assert!(folder.join(MMO_CONFIG_FILE).exists());
-        assert!(
-            folder
-                .join(MMO_SUBFOLDER)
-                .join(REWARDS_CONFIG_FILE)
-                .exists()
-        );
-        assert!(
-            folder
-                .join(MMO_SUBFOLDER)
-                .join(ORE_REVEAL_CONFIG_FILE)
-                .exists()
-        );
+        assert!(folder.join(REWARDS_CONFIG_FILE).exists());
+        assert!(folder.join(ORE_REVEAL_CONFIG_FILE).exists());
         // The MMO module never creates config.ron; Core owns it.
         assert!(!folder.join(CONFIG_FILE).exists());
 
@@ -1237,15 +1290,12 @@ mod tests {
             ron::from_str(&fs::read_to_string(folder.join(MMO_CONFIG_FILE)).unwrap()).unwrap();
         assert_eq!(mmo.config_version, CURRENT_CONFIG_VERSION);
         assert_eq!(mmo.skills.len(), SkillId::ALL.len());
-        let rewards: XpRewardsConfig = ron::from_str(
-            &fs::read_to_string(folder.join(MMO_SUBFOLDER).join(REWARDS_CONFIG_FILE)).unwrap(),
-        )
-        .unwrap();
+        let rewards: XpRewardsConfig =
+            ron::from_str(&fs::read_to_string(folder.join(REWARDS_CONFIG_FILE)).unwrap()).unwrap();
         assert_eq!(rewards, XpRewardsConfig::default());
-        let ore_reveal: OreRevealConfig = ron::from_str(
-            &fs::read_to_string(folder.join(MMO_SUBFOLDER).join(ORE_REVEAL_CONFIG_FILE)).unwrap(),
-        )
-        .unwrap();
+        let ore_reveal: OreRevealConfig =
+            ron::from_str(&fs::read_to_string(folder.join(ORE_REVEAL_CONFIG_FILE)).unwrap())
+                .unwrap();
         assert_eq!(ore_reveal, OreRevealConfig::default());
 
         cleanup_config_folder(&folder);
@@ -1262,12 +1312,10 @@ mod tests {
         // reward_config_version stays in mmo.ron.
         assert!(mmo_text.contains("reward_config_version"));
 
-        let rewards_text =
-            fs::read_to_string(folder.join(MMO_SUBFOLDER).join(REWARDS_CONFIG_FILE)).unwrap();
+        let rewards_text = fs::read_to_string(folder.join(REWARDS_CONFIG_FILE)).unwrap();
         assert!(rewards_text.contains("mobs"));
         assert!(rewards_text.contains("blocks"));
-        let ore_reveal_text =
-            fs::read_to_string(folder.join(MMO_SUBFOLDER).join(ORE_REVEAL_CONFIG_FILE)).unwrap();
+        let ore_reveal_text = fs::read_to_string(folder.join(ORE_REVEAL_CONFIG_FILE)).unwrap();
         assert!(ore_reveal_text.contains("enabled"));
         assert!(ore_reveal_text.contains("ores"));
 
@@ -1279,13 +1327,9 @@ mod tests {
         let folder = test_config_folder();
         save_mmo_config_files(&folder, &MmoConfig::default()).unwrap();
 
-        // An admin edits mmo/rewards.ron; the reload path (load_mmo_config)
+        // An admin edits mmo.rewards.ron; the reload path (load_mmo_config)
         // picks the edit up.
-        fs::write(
-            folder.join(MMO_SUBFOLDER).join(REWARDS_CONFIG_FILE),
-            "(mobs:{\"zombie\":55})",
-        )
-        .unwrap();
+        fs::write(folder.join(REWARDS_CONFIG_FILE), "(mobs:{\"zombie\":55})").unwrap();
         let loaded = load_mmo_config(&folder).unwrap();
         assert!(!loaded.split_files_missing);
         assert_eq!(loaded.config.xp_rewards.mobs.get("zombie"), Some(&55));

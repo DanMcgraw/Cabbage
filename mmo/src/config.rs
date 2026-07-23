@@ -24,8 +24,8 @@ pub const CURRENT_CONFIG_VERSION: u32 = 2;
 ///
 /// Core owns this file (`config.ron`) and only ever writes the two core
 /// switches. The `mmo` section exists only so legacy unified files still
-/// parse; the MMO module's canonical home is `mmo.ron`, `mmo/rewards.ron`,
-/// and `mmo/ore_reveal.ron`, so a missing section deserializes to `None`
+/// parse; the MMO module's canonical home is `mmo.ron`, `mmo.rewards.ron`,
+/// and `mmo.ores.ron`, so a missing section deserializes to `None`
 /// and `None` is never written back.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PluginConfig {
@@ -196,7 +196,7 @@ pub struct MmoConfig {
     pub disabled_world_features: Vec<String>,
     /// Rules for revealing ore veins after natural stone is mined. Still
     /// parsed from legacy unified files, but never serialized into
-    /// `mmo.ron`; the canonical home is `mmo/ore_reveal.ron`.
+    /// `mmo.ron`; the canonical home is `mmo.ores.ron`.
     #[serde(default, skip_serializing)]
     pub ore_reveal: OreRevealConfig,
     /// Schema version for one-time migration of reward values from SQLite.
@@ -204,7 +204,7 @@ pub struct MmoConfig {
     pub reward_config_version: u32,
     /// Static XP rewards, kept in RON so all balance settings reload
     /// together. Still parsed from legacy unified files, but never
-    /// serialized into `mmo.ron`; the canonical home is `mmo/rewards.ron`.
+    /// serialized into `mmo.ron`; the canonical home is `mmo.rewards.ron`.
     #[serde(default, skip_serializing)]
     pub xp_rewards: XpRewardsConfig,
     /// Progression bounds applied by the central XP award path.

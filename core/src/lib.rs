@@ -125,7 +125,7 @@ fn migrate_split_data_folder(data_folder: &Path) {
     // If the MMO config was just adopted, retain the newer Core switches
     // too. The two switch lines are replaced in place so every other
     // section — including the inline `mmo` block the MMO module splits out
-    // into `mmo.ron`, `mmo/rewards.ron`, and `mmo/ore_reveal.ron` on load —
+    // into `mmo.ron`, `mmo.rewards.ron`, and `mmo.ores.ron` on load —
     // survives untouched.
     if config_was_missing
         && let (Ok(unified), Ok(core)) = (

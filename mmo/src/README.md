@@ -261,7 +261,7 @@ CREATE TABLE legacy_combat_xp (
   migrates it.
 
 Mob and block XP rewards are static balance configuration and live in
-`mmo/rewards.ron`. When upgrading, Cabbage migrates any customized `mob_xp`
+`mmo.rewards.ron`. When upgrading, Cabbage migrates any customized `mob_xp`
 and `ore_xp` rows into RON once, then drops those obsolete SQLite tables.
 
 ## Configuration
@@ -276,9 +276,9 @@ data folder (`plugins/Cabbage/`); Core separately owns `config.ron` for the
   MMO config schema (currently 2); older files gain safe defaults for
   missing sections and are saved back on upgrade. Unknown skill names in
   the `skills` map (e.g. the retired `Combat`) are skipped with a warning.
-- `mmo/rewards.ron` — the `XpRewardsConfig`: the static mob and block XP
+- `mmo.rewards.ron` — the `XpRewardsConfig`: the static mob and block XP
   tables (`mobs`, `blocks`). This is the home of all kill/mining XP values.
-- `mmo/ore_reveal.ron` — the `OreRevealConfig`: ore-vein reveal rules.
+- `mmo.ores.ron` — the `OreRevealConfig`: ore-vein reveal rules.
 
 Migration from a unified `config.ron`: on first load the `mmo:` section is
 copied out into the three files above (inline `xp_rewards` and `ore_reveal`
@@ -353,13 +353,13 @@ configure event sources, not levels.
     reward_config_version: 1,
 )
 
-// mmo/rewards.ron — static mob and block XP tables
+// mmo.rewards.ron — static mob and block XP tables
 (
     mobs: { "zombie": 12, /* ... */ },
     blocks: { "coal_ore": 8, /* ... */ },
 )
 
-// mmo/ore_reveal.ron — ore-vein reveal rules (see ore_reveal/ defaults)
+// mmo.ores.ron — ore-vein reveal rules (see ore_reveal/ defaults)
 (
     enabled: true,
     // host_blocks, shape, ores, biome_multipliers
@@ -384,8 +384,8 @@ proc chances, curve parameters) are clamped on load via `MmoConfig::sanitized`.
   XP sources, live perk effects, and planned milestone unlocks (players).
 - `/mmo help [page]` — compact, paginated command list.
 - `/mmo top <skill>` — top players for any of the 18 canonical skills.
-- `/mmo reload` — reload the MMO config files (`mmo.ron`, `mmo/rewards.ron`,
-  `mmo/ore_reveal.ron`) and rebuild curves (admin).
+- `/mmo reload` — reload the MMO config files (`mmo.ron`, `mmo.rewards.ron`,
+  `mmo.ores.ron`) and rebuild curves (admin).
 - `/mmo setxp <player> <skill> <xp>` — set a player's skill XP (admin).
 - `/mmo migrate status` — legacy Combat XP preservation status (admin).
 - `/mmo migrate combat <skill>` — move preserved Combat XP to a skill (admin).

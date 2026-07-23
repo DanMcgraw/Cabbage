@@ -3,8 +3,8 @@
 This document is the published default balance profile for the three-branch
 skill model, plus the migration guide for server owners upgrading from the
 two-skill (`Mining`/`Combat`) era. Everything below is a *default*; every
-value lives in RON (`mmo.ron`, with XP rewards in `mmo/rewards.ron` and ore
-reveal in `mmo/ore_reveal.ron`, all under `plugins/Cabbage/`) and can be
+value lives in RON (`mmo.ron`, with XP rewards in `mmo.rewards.ron` and ore
+reveal in `mmo.ores.ron`, all under `plugins/Cabbage/`) and can be
 tuned per server.
 
 ## Skill model
@@ -37,7 +37,7 @@ tuned per server.
 
 | Skill | XP sources (defaults) | Perks (defaults) |
 |---|---|---|
-| Mining | ore breaks from the `xp_rewards.blocks` table in `mmo/rewards.ron` (coal 8 → ancient debris 150) | Prospector (5% + 0.2%/level, cap 35%, +1 approved ore drop; no bonus skill XP), Vein Miner (sneak+break, ≤16 blocks) |
+| Mining | ore breaks from the `xp_rewards.blocks` table in `mmo.rewards.ron` (coal 8 → ancient debris 150) | Prospector (5% + 0.2%/level, cap 35%, +1 approved ore drop; no bonus skill XP), Vein Miner (sneak+break, ≤16 blocks) |
 | Woodcutting | natural logs 6–8 | Heartwood (2%: bonus log + 25 XP), Timber (sneak+break, ≤32 blocks) |
 | Cultivation | mature harvests 10–14 (agriculture); plants 2–6, consumables 3–25 (herbalism) | Harvest bonus (10% +1 item), fertilizer (bone meal): deterministic roll, guaranteed bonus + 10 XP; Quality yield (8% +1 item), consumable healing (+1.0 health) |
 | Excavation | diggable blocks 4–8 | Archaeology loot (3–8% per table), Earthmover (sneak+break, ≤16 blocks) |
@@ -52,7 +52,7 @@ share `perks.batch_break_cooldown_ticks` (100).
 
 | Skill | XP sources (defaults) | Perks (defaults) |
 |---|---|---|
-| Blades | kills from `xp_rewards.mobs` in `mmo/rewards.ron` (attributed by weapon snapshot) | Damage +0.4%/level (cap 50%), Riposte (+25% within 60 ticks of taking damage, 200-tick cooldown) |
+| Blades | kills from `xp_rewards.mobs` in `mmo.rewards.ron` (attributed by weapon snapshot) | Damage +0.4%/level (cap 50%), Riposte (+25% within 60 ticks of taking damage, 200-tick cooldown) |
 | Axes | kills | Damage +0.5%/level (cap 60%) |
 | Archery | kills; +4 XP per projectile hit | — |
 | Athletics | empty-hand kills (unarmed); 3 XP per fall-damage point, cap 60/fall (acrobatics) | Damage +0.3%/level (cap 40%), knockback +0.4%/level (cap 50%); Roll: −0.2%/level fall damage (cap 25%) |
@@ -91,7 +91,7 @@ proc chances by `perks.max_proc_chance` (35%).
 ## Migration guide (two-skill → three-branch)
 
 1. **Backup** `plugins/Cabbage/mmo.db` and the RON config files
-   (`config.ron`, `mmo.ron`, `mmo/rewards.ron`, `mmo/ore_reveal.ron`)
+   (`config.ron`, `mmo.ron`, `mmo.rewards.ron`, `mmo.ores.ron`)
    before upgrading. Files from the former `plugins/Cabbage.Mmo/` split
    layout are copied into this unified folder on first load when missing.
 2. On first load, Cabbage upgrades automatically and idempotently:
@@ -101,7 +101,7 @@ proc chances by `perks.max_proc_chance` (35%).
    - The MMO config gains the new sections with safe defaults; your
      serialized skill curves are preserved; the unknown `Combat` entry is
      dropped with a log warning. (A legacy unified `config.ron` is first
-     copied out to `mmo.ron`/`mmo/rewards.ron`/`mmo/ore_reveal.ron`; the
+     copied out to `mmo.ron`/`mmo.rewards.ron`/`mmo.ores.ron`; the
      old file is left untouched.)
 3. **Choose a Combat destination** (or don't — the XP stays preserved
    indefinitely):
@@ -116,7 +116,7 @@ proc chances by `perks.max_proc_chance` (35%).
 ## Migration guide (23 skills → 18 skills)
 
 1. **Backup** `plugins/Cabbage/mmo.db` and the RON config files
-   (`config.ron`, `mmo.ron`, `mmo/rewards.ron`, `mmo/ore_reveal.ron`)
+   (`config.ron`, `mmo.ron`, `mmo.rewards.ron`, `mmo.ores.ron`)
    before upgrading.
 2. On first load, Cabbage upgrades automatically and idempotently:
    - SQLite schema v2 consolidates each retired pair's `player_skills` rows

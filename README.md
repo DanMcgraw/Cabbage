@@ -26,7 +26,7 @@ Pumpkin server continues to enable its `wasm-plugins` feature by default.
 ### Data and permission compatibility
 
 * **Permissions use one namespace.** Use `Cabbage:command.cabbage`, `Cabbage:command.clear_drops`, `Cabbage:command.metrics`, `Cabbage:command.events`, `Cabbage:command.mmo`, and `Cabbage:command.mmo.admin`. The base MMO permission defaults to allow for normal players.
-* **Data uses one folder.** `config.ron` (core switches), the MMO config files `mmo.ron`, `mmo/rewards.ron`, and `mmo/ore_reveal.ron`, plus `mmo.db`, `mmo-audit.log`, and `output.log` live in `plugins/Cabbage/`. On first load, missing files are copied from the former `Cabbage.Core` and `Cabbage.Mmo` folders; those source folders are left untouched as backups.
+* **Data uses one folder.** `config.ron` (core switches), the MMO config files `mmo.ron`, `mmo.rewards.ron`, and `mmo.ores.ron`, plus `mmo.db`, `mmo-audit.log`, and `output.log` live in `plugins/Cabbage/`. On first load, missing files are copied from the former `Cabbage.Core` and `Cabbage.Mmo` folders; those source folders are left untouched as backups.
 
 ---
 
@@ -60,7 +60,7 @@ Designed from the ground up to prevent TPS drops under entity load:
   * Toggles event diagnostic logging to chat and `output.log` in the Cabbage data folder.
 
 ### 4. Configuration & Tuning Options
-Core owns `config.ron` in `plugins/Cabbage/`: its `metrics_log` and `mob_ai` switches control the utility and AI modules. The MMO balance profile is split across `mmo.ron` (skills, progression, perks, branch sections), `mmo/rewards.ron` (mob and block XP tables), and `mmo/ore_reveal.ron` (ore-reveal rules). Upgrading from a unified `config.ron` copies the old `mmo:` section out into those files on first load; the old file is left untouched and its stale section is ignored from then on. Exposed parameters balance detail vs. performance:
+Core owns `config.ron` in `plugins/Cabbage/`: its `metrics_log` and `mob_ai` switches control the utility and AI modules. The MMO balance profile is split across `mmo.ron` (skills, progression, perks, branch sections), `mmo.rewards.ron` (mob and block XP tables), and `mmo.ores.ron` (ore-reveal rules). Upgrading from a unified `config.ron` copies the old `mmo:` section out into those files on first load; the old file is left untouched and its stale section is ignored from then on. Exposed parameters balance detail vs. performance:
 * **Tick Intervals**: Adjust the AI update rate and pathfinder recalculation cooldowns.
 * **Pathfinding Search Bounds**: Configure constraints like max jump height (`MAX_PATH_HEIGHT_DIFFERENCE`) and search space volume limit (`MAX_PATH_GRID_VOLUME`).
 * **Entity Radius & Range**: Limit how far mobs can search for targets and when they clear out-of-range path caches.

@@ -32,8 +32,8 @@ fn default_true() -> bool {
 /// Core-only switches written to `config.ron` on a fresh install. The file
 /// is otherwise read and round-tripped as `cabbage_mmo::PluginConfig` so a
 /// legacy unified `mmo:` section survives `/metrics log` toggles; the MMO
-/// module's own settings live in `mmo.ron`, `mmo/rewards.ron`, and
-/// `mmo/ore_reveal.ron`.
+/// module's own settings live in `mmo.ron`, `mmo.rewards.ron`, and
+/// `mmo.ores.ron`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct CoreConfig {
     #[serde(default)]
