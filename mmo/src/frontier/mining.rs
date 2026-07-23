@@ -145,40 +145,23 @@ pub async fn handle_block_break(state: &MmoState, event: &BlockBreakEvent) {
     let Some(player) = event.player.as_ref() else {
         return;
     };
-    let is_sneaking = player.get_entity().is_sneaking();
-    let earns = earns_xp(player);
-    if event.cancelled || !is_sneaking || !earns {
-        log::info!(
-            "[VeinMiner Debug] handle_block_break skipped for {}: cancelled={}, is_sneaking={}, earns_xp={}",
-            event.block.name,
-            event.cancelled,
-            is_sneaking,
-            earns
-        );
+    if event.cancelled || !player.get_entity().is_sneaking() || !earns_xp(player) {
         return;
     }
     let config = state.config();
     let perk = &config.frontier.mining;
     if !perk.vein_miner_enabled || !config.perks.enabled {
-        log::info!(
-            "[VeinMiner Debug] handle_block_break skipped: vein_miner_enabled={}, global_perks_enabled={}",
-            perk.vein_miner_enabled,
-            config.perks.enabled
-        );
         return;
     }
-    let has_reward = state.block_xp_reward(event.block.name).is_some();
-    if !has_reward {
-        log::info!("[VeinMiner Debug] handle_block_break skipped: {} has no XP reward", event.block.name);
+    if state.block_xp_reward(event.block.name).is_none() {
         return;
     }
 
     let world = player.get_entity().world.load_full();
-    let is_tracked_provenance = state
+    if state
         .provenance()
-        .contains(&ProvenanceKey::new(&world, event.block_position));
-    if is_tracked_provenance {
-        log::info!("[VeinMiner Debug] handle_block_break skipped: {} at {:?} is player-placed (provenance)", event.block.name, event.block_position);
+        .contains(&ProvenanceKey::new(&world, event.block_position))
+    {
         return;
     }
 
@@ -186,13 +169,7 @@ pub async fn handle_block_break(state: &MmoState, event: &BlockBreakEvent) {
     let target = event.block;
     let provenance = state.provenance();
     let closure_world = world.clone();
-    log::info!(
-        "[VeinMiner Debug] handle_block_break triggering try_batch_break for {} (level {}, max blocks {})",
-        event.block.name,
-        level,
-        vein_miner_max_blocks(perk, level)
-    );
-    batch_break::try_batch_break(
+    batch_break::queue_batch_break(
         state,
         &world,
         player,

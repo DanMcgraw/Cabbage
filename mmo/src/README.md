@@ -77,10 +77,13 @@ Perk effects are gated by the global `perks` config (`enabled` kill switch,
 batch caps, proc-chance caps) and per-activity knobs in the branch config
 sections. Every gate reads the merged skill's shared level (e.g. both the
 crop harvest bonus and the herbal quality yield gate on Cultivation).
-Cooldowns are tick-based and in-memory. Multi-break perks always go
-through `Context::break_blocks` (max 128 blocks, deduplicated, protection-
-and durability-aware); the cooldown is charged before the transaction so the
-events fired per broken block cannot re-trigger the perk recursively.
+Cooldowns are tick-based and in-memory. Multi-break perks collect a bounded,
+deduplicated request during the origin break, commit it only after Pumpkin
+emits `BlockBrokenEvent`, and execute it on a later quiet server tick. Drops
+and experience are consolidated, durability is charged once, and the held
+slot is synchronized on a later tick while the player is not actively mining.
+The cooldown is charged before queuing so per-block events cannot re-trigger
+the perk recursively.
 
 ### Milestone Tiers (Levels 10, 25, 50, 100)
 

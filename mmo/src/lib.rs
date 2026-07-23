@@ -99,6 +99,7 @@ pub struct MmoState {
     ore_reveal_state: ore_reveal::OreRevealState,
     provenance: ProvenanceTracker,
     perk_cooldowns: CooldownTracker,
+    batch_break_state: perks::batch_break::BatchBreakState,
     perk_previews: Mutex<HashMap<(PluginTransactionId, &'static str), i32>>,
     warfare_state: warfare::WarfareState,
     audit_log: audit::AuditLog,
@@ -191,6 +192,7 @@ impl MmoState {
             ore_reveal_state,
             provenance: ProvenanceTracker::new(non_natural),
             perk_cooldowns: CooldownTracker::new(),
+            batch_break_state: perks::batch_break::BatchBreakState::new(),
             perk_previews: Mutex::new(HashMap::new()),
             warfare_state: warfare::WarfareState::new(),
             audit_log,
@@ -218,6 +220,9 @@ impl MmoState {
 
     pub fn set_active(&self, active: bool) {
         self.active.store(active, Ordering::Relaxed);
+        if !active {
+            self.batch_break_state.clear();
+        }
     }
 
     pub fn config(&self) -> MmoConfig {
@@ -265,6 +270,10 @@ impl MmoState {
     #[allow(dead_code)] // consumed by perk handlers landing in Phases 1-3
     pub(crate) fn perk_cooldowns(&self) -> &CooldownTracker {
         &self.perk_cooldowns
+    }
+
+    pub(crate) fn batch_breaks(&self) -> &perks::batch_break::BatchBreakState {
+        &self.batch_break_state
     }
 
     pub(crate) fn mark_perk_preview(&self, transaction: PluginTransactionId, perk: &'static str) {
@@ -673,6 +682,14 @@ impl EventHandler<BlockBrokenEvent> for MmoState {
             frontier::agriculture::handle_block_broken(self, event).await;
             frontier::herbalism::handle_block_broken(self, event, was_non_natural).await;
             frontier::excavation::handle_block_broken(self, event, was_non_natural).await;
+            if let Some(player) = event.player.as_ref() {
+                self.batch_break_state.mark_origin_broken(
+                    &event.world,
+                    player.gameprofile.id,
+                    event.block_position,
+                    self.current_tick(),
+                );
+            }
         })
     }
 }
@@ -1021,6 +1038,11 @@ impl EventHandler<ServerTickStartEvent> for MmoState {
                 return;
             }
             self.last_tick.store(event.tick, Ordering::Relaxed);
+            if self.is_enabled() {
+                perks::batch_break::process_pending(self, event.tick).await;
+            } else {
+                self.batch_break_state.clear();
+            }
             self.bossbar_state.cleanup_expired(server, event.tick).await;
             if event.tick.rem_euclid(20) == 0 {
                 ore_reveal::provenance::flush_provenance(&self.provenance, &self.db);

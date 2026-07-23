@@ -1,17 +1,37 @@
 //! Shared batch-break helper for Timber, Vein Miner, and Earthmover.
 //!
-//! All multi-break perks must go through `Context::break_blocks` (bounded,
-//! deduplicated, protection- and durability-aware). The flow is: gate on the
-//! global perk switch and the perk's cooldown, collect connected candidates,
-//! break them in one transaction, and only then charge the cooldown — the
-//! documented cost is paid once per completed action, never per attempt.
+//! Candidate discovery happens during the origin `BlockBreakEvent`, but the
+//! extra blocks are not changed there. The request is committed by the
+//! origin's `BlockBrokenEvent` and executed on a later server tick while the
+//! player is not actively mining. This keeps Java's digging sequence,
+//! origin-block acknowledgement, and predicted held-tool update out of the
+//! server-side batch operation.
 
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{HashSet, VecDeque},
+    sync::{Arc, Mutex, Weak, atomic::Ordering},
+};
 
-use pumpkin::{entity::player::Player, world::World};
+use pumpkin::{
+    entity::{EntityBase, player::Player},
+    world::World,
+};
+use pumpkin_data::{
+    Block, BlockStateId, block_state::BlockState, data_component_impl::ToolImpl,
+    item_stack::ItemStack,
+};
 use pumpkin_util::math::{position::BlockPos, vector3::Vector3};
+use pumpkin_world::inventory::Inventory;
+use uuid::Uuid;
 
 use crate::MmoState;
+
+/// Do not retain an uncommitted or continually-busy action indefinitely.
+const MAX_PENDING_AGE_TICKS: i32 = 40;
+/// Bound work shared by all players in one server tick.
+const MAX_BATCHES_PER_TICK: usize = 4;
+/// Bound quiet slot synchronizations in one server tick.
+const MAX_SLOT_SYNCS_PER_TICK: usize = 16;
 
 /// Collect connected candidate positions for a batch break via BFS over the
 /// 26-neighborhood, bounded to `max_blocks` unique positions. `origin` is
@@ -60,21 +80,173 @@ pub(crate) fn collect_batch_candidates(
     result
 }
 
-/// Try to perform a batch break from `origin`.
+struct PendingBatchBreak {
+    world: Arc<World>,
+    player: Weak<Player>,
+    player_uuid: Uuid,
+    origin: BlockPos,
+    target: &'static Block,
+    candidates: Vec<(BlockPos, BlockStateId)>,
+    selected_slot: u8,
+    tool_item_id: u16,
+    damage_per_block: i32,
+    cooldown_key: &'static str,
+    queued_at_tick: i32,
+    ready_at_tick: Option<i32>,
+}
+
+struct PendingSlotSync {
+    player: Weak<Player>,
+    player_uuid: Uuid,
+    slot: u8,
+    queued_at_tick: i32,
+    ready_at_tick: i32,
+}
+
+/// Short-lived queues that move server-authored batch work out of the
+/// originating Java digging packet's call stack.
+pub(crate) struct BatchBreakState {
+    pending: Mutex<VecDeque<PendingBatchBreak>>,
+    slot_syncs: Mutex<VecDeque<PendingSlotSync>>,
+}
+
+impl BatchBreakState {
+    pub(crate) fn new() -> Self {
+        Self {
+            pending: Mutex::new(VecDeque::new()),
+            slot_syncs: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    fn schedule(&self, action: PendingBatchBreak) {
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.push_back(action);
+        }
+    }
+
+    /// Commit the request only after Pumpkin confirms that the player broke
+    /// the origin block. Execution begins no earlier than the following tick,
+    /// after the origin event path has had a chance to return to Java packet
+    /// processing.
+    pub(crate) fn mark_origin_broken(
+        &self,
+        world: &Arc<World>,
+        player_uuid: Uuid,
+        origin: BlockPos,
+        current_tick: i32,
+    ) {
+        let Ok(mut pending) = self.pending.lock() else {
+            return;
+        };
+        if let Some(action) = pending.iter_mut().find(|action| {
+            action.player_uuid == player_uuid
+                && action.origin == origin
+                && Arc::ptr_eq(&action.world, world)
+        }) {
+            action.ready_at_tick = Some(current_tick.saturating_add(1));
+        }
+    }
+
+    fn take_ready(&self, current_tick: i32) -> Vec<PendingBatchBreak> {
+        let Ok(mut pending) = self.pending.lock() else {
+            return Vec::new();
+        };
+        let mut ready = Vec::new();
+        let queued = pending.len();
+        for _ in 0..queued {
+            let Some(action) = pending.pop_front() else {
+                break;
+            };
+            if is_expired(action.queued_at_tick, current_tick) {
+                continue;
+            }
+            if ready.len() < MAX_BATCHES_PER_TICK
+                && action
+                    .ready_at_tick
+                    .is_some_and(|ready_at| current_tick >= ready_at)
+            {
+                ready.push(action);
+            } else {
+                pending.push_back(action);
+            }
+        }
+        ready
+    }
+
+    fn defer(&self, action: PendingBatchBreak) {
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.push_back(action);
+        }
+    }
+
+    fn schedule_slot_sync(&self, player: &Arc<Player>, slot: u8, current_tick: i32) {
+        let player_uuid = player.gameprofile.id;
+        let Ok(mut syncs) = self.slot_syncs.lock() else {
+            return;
+        };
+        // Only the newest authoritative snapshot for a slot matters.
+        syncs.retain(|sync| sync.player_uuid != player_uuid || sync.slot != slot);
+        syncs.push_back(PendingSlotSync {
+            player: Arc::downgrade(player),
+            player_uuid,
+            slot,
+            queued_at_tick: current_tick,
+            ready_at_tick: current_tick.saturating_add(1),
+        });
+    }
+
+    fn take_ready_slot_syncs(&self, current_tick: i32) -> Vec<PendingSlotSync> {
+        let Ok(mut syncs) = self.slot_syncs.lock() else {
+            return Vec::new();
+        };
+        let mut ready = Vec::new();
+        let queued = syncs.len();
+        for _ in 0..queued {
+            let Some(sync) = syncs.pop_front() else {
+                break;
+            };
+            if is_expired(sync.queued_at_tick, current_tick) {
+                continue;
+            }
+            if ready.len() < MAX_SLOT_SYNCS_PER_TICK && current_tick >= sync.ready_at_tick {
+                ready.push(sync);
+            } else {
+                syncs.push_back(sync);
+            }
+        }
+        ready
+    }
+
+    fn defer_slot_sync(&self, sync: PendingSlotSync) {
+        if let Ok(mut syncs) = self.slot_syncs.lock() {
+            syncs.push_back(sync);
+        }
+    }
+
+    pub(crate) fn clear(&self) {
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.clear();
+        }
+        if let Ok(mut syncs) = self.slot_syncs.lock() {
+            syncs.clear();
+        }
+    }
+}
+
+fn is_expired(queued_at_tick: i32, current_tick: i32) -> bool {
+    current_tick.saturating_sub(queued_at_tick) > MAX_PENDING_AGE_TICKS
+}
+
+/// Queue a batch break from `origin`.
 ///
-/// Returns the number of extra blocks broken, or `None` when the perk did
-/// not fire (global perk switch off, on cooldown, no candidates, or the
-/// transaction failed). `max_blocks` is additionally clamped by the global
-/// batch cap.
+/// Returns the number of extra blocks scheduled, or `None` when the perk did
+/// not fire (global perk switch off, on cooldown, no candidates, or no usable
+/// held tool). `max_blocks` is additionally clamped by the global batch cap.
 ///
-/// The cooldown is charged after candidates are found but *before* the
-/// transaction runs: `Context::break_blocks` fires a fresh `BlockBreakEvent`
-/// per broken block, and the active cooldown is what stops those events from
-/// re-triggering the perk recursively. In the rare case the transaction then
-/// breaks nothing, the cooldown is still consumed — acceptable, since the
-/// documented cost is charged once per action, and it guarantees the
-/// recursion guard can never be bypassed.
-pub(crate) async fn try_batch_break(
+/// The cooldown is charged before the request is queued. It remains the
+/// recursion guard when the deferred operation fires a fresh
+/// `BlockBreakEvent` for each candidate.
+pub(crate) async fn queue_batch_break(
     state: &MmoState,
     world: &Arc<World>,
     player: &Arc<Player>,
@@ -85,112 +257,205 @@ pub(crate) async fn try_batch_break(
 ) -> Option<usize> {
     let config = state.config();
     if !config.perks.enabled {
-        log::info!("[VeinMiner Debug] Batch break cancelled: perks disabled in config");
         return None;
     }
     let max_blocks = max_blocks.min(config.perks.batch_break_max_blocks) as usize;
     if max_blocks == 0 {
-        log::info!("[VeinMiner Debug] Batch break cancelled: max_blocks is 0");
         return None;
     }
 
     let player_uuid = player.gameprofile.id;
     let current_tick = state.current_tick();
-    let remaining_cd = state
+    let target = world.get_block(&origin);
+    if state
         .perk_cooldowns()
-        .remaining_ticks(player_uuid, cooldown_key, current_tick);
-    if remaining_cd > 0 {
-        log::info!("[VeinMiner Debug] Batch break on cooldown for {player_uuid}: {remaining_cd} ticks left");
+        .remaining_ticks(player_uuid, cooldown_key, current_tick)
+        > 0
+    {
         return None;
     }
 
-    // Durability safety check: ensure player is holding a valid tool and cap
-    // candidates so the tool never breaks mid-batch (which causes drop loss,
-    // empty-hand breaks, tool animation spam, and client interaction freeze).
-    let max_extra_blocks = {
+    // Capture the originating slot and item. The deferred action is discarded
+    // if the player changes either before it starts.
+    let (selected_slot, tool_item_id, damage_per_block, max_extra_blocks) = {
+        let selected_slot = player.inventory().get_selected_slot();
         let held = player.inventory().held_item();
         let stack = held.lock().await;
         if stack.is_empty() || stack.item_count == 0 {
-            log::info!("[VeinMiner Debug] Batch break cancelled: held stack is empty");
             return None;
         }
-        if !stack.is_damageable() || stack.is_unbreakable() {
-            usize::MAX
-        } else {
-            let max_damage = stack.get_max_damage().unwrap_or(0);
-            let current_damage = stack.get_damage();
-            if current_damage >= max_damage {
-                log::info!("[VeinMiner Debug] Batch break cancelled: tool already broken ({current_damage}/{max_damage})");
-                return None;
-            }
-            (max_damage - current_damage) as usize
-        }
+        let damage_per_block = stack.get_data_component::<ToolImpl>().map_or(0, |tool| {
+            i32::try_from(tool.damage_per_block).unwrap_or(i32::MAX)
+        });
+        let remaining_blocks =
+            if !stack.is_damageable() || stack.is_unbreakable() || damage_per_block <= 0 {
+                usize::MAX
+            } else {
+                let max_damage = stack.get_max_damage().unwrap_or(0);
+                let remaining_damage = max_damage.saturating_sub(stack.get_damage());
+                usize::try_from(remaining_damage / damage_per_block).unwrap_or(0)
+            };
+        (
+            selected_slot,
+            stack.item.id,
+            damage_per_block,
+            remaining_blocks.saturating_sub(1),
+        )
     };
-
-    // The origin block break will consume 1 durability when finished, so
-    // extra batch candidates are capped to remaining_durability - 1.
-    let max_extra_blocks = max_extra_blocks.saturating_sub(1);
     if max_extra_blocks == 0 {
-        log::info!("[VeinMiner Debug] Batch break cancelled: max_extra_blocks is 0 (only 1 durability left)");
         return None;
     }
 
-    let mut candidates = collect_batch_candidates(origin, max_blocks, is_candidate);
+    let mut candidates = collect_batch_candidates(origin, max_blocks, is_candidate)
+        .into_iter()
+        .filter_map(|position| {
+            world
+                .get_block_state_id_if_loaded(&position)
+                .map(|state_id| (position, state_id))
+        })
+        .collect::<Vec<_>>();
+    candidates.truncate(max_extra_blocks);
     if candidates.is_empty() {
-        log::info!("[VeinMiner Debug] No candidates found around origin {origin:?}");
         return None;
     }
-    if candidates.len() > max_extra_blocks {
-        log::info!("[VeinMiner Debug] Truncating {} candidates to max_extra_blocks {}", candidates.len(), max_extra_blocks);
-        candidates.truncate(max_extra_blocks);
-    }
 
-    log::info!(
-        "[VeinMiner Debug] Starting batch break for {player_uuid} at origin {origin:?} with {} candidate(s)",
-        candidates.len()
-    );
-
-    // Charge the cooldown before breaking: this is the recursion guard (see
-    // the doc comment above).
     if !state.perk_cooldowns().try_activate(
         player_uuid,
         cooldown_key,
         current_tick,
         config.perks.batch_break_cooldown_ticks,
     ) {
-        log::info!("[VeinMiner Debug] Failed to activate cooldown for {cooldown_key}");
         return None;
     }
 
-    let mut broken_count = 0usize;
-    let mut collected_drops: Vec<pumpkin_data::item_stack::ItemStack> = Vec::new();
-    let mut total_experience_orbs: u32 = 0;
+    let scheduled = candidates.len();
+    state.batch_breaks().schedule(PendingBatchBreak {
+        world: world.clone(),
+        player: Arc::downgrade(player),
+        player_uuid,
+        origin,
+        target,
+        candidates,
+        selected_slot,
+        tool_item_id,
+        damage_per_block,
+        cooldown_key,
+        queued_at_tick: current_tick,
+        ready_at_tick: None,
+    });
+    Some(scheduled)
+}
+
+/// Execute committed actions and quiet inventory synchronizations for this
+/// server tick.
+pub(crate) async fn process_pending(state: &MmoState, current_tick: i32) {
+    for sync in state.batch_breaks().take_ready_slot_syncs(current_tick) {
+        let Some(player) = sync.player.upgrade() else {
+            continue;
+        };
+        if !player.has_client_loaded() {
+            continue;
+        }
+        if player.mining.load(Ordering::Relaxed) {
+            state.batch_breaks().defer_slot_sync(sync);
+            continue;
+        }
+        let stack = player.inventory().get_stack(sync.slot as usize).await;
+        let stack = stack.lock().await.clone();
+        player.sync_hand_slot(sync.slot as usize, stack).await;
+    }
+
+    for action in state.batch_breaks().take_ready(current_tick) {
+        let Some(player) = action.player.upgrade() else {
+            continue;
+        };
+        if !player.has_client_loaded() {
+            continue;
+        }
+        if player.mining.load(Ordering::Relaxed) {
+            state.batch_breaks().defer(action);
+            continue;
+        }
+        let player_world = player.get_entity().world.load_full();
+        if !Arc::ptr_eq(&action.world, &player_world)
+            || player.inventory().get_selected_slot() != action.selected_slot
+        {
+            continue;
+        }
+        let held = player.inventory().held_item();
+        if held.lock().await.item.id != action.tool_item_id {
+            continue;
+        }
+        // A matching origin here means the committed break was superseded or
+        // rolled back. Never remove the connected blocks in that case.
+        if action.world.get_block(&action.origin) == action.target {
+            continue;
+        }
+        execute_batch(state, action, &player, current_tick).await;
+    }
+}
+
+async fn execute_batch(
+    state: &MmoState,
+    mut action: PendingBatchBreak,
+    player: &Arc<Player>,
+    current_tick: i32,
+) {
+    // Re-cap against durability after Pumpkin has charged the origin block.
+    if action.damage_per_block > 0 {
+        let held = player.inventory().held_item();
+        let stack = held.lock().await;
+        if stack.is_damageable() && !stack.is_unbreakable() {
+            let remaining_damage = stack
+                .get_max_damage()
+                .unwrap_or(0)
+                .saturating_sub(stack.get_damage());
+            let remaining_blocks =
+                usize::try_from(remaining_damage / action.damage_per_block).unwrap_or(0);
+            action.candidates.truncate(remaining_blocks);
+        }
+    }
+    if action.candidates.is_empty() {
+        return;
+    }
 
     let is_creative = player.gamemode.load() == pumpkin_util::GameMode::Creative;
     let luck = player
         .living_entity
         .get_attribute_value(&pumpkin_data::attributes::Attributes::LUCK) as f32;
-    let is_raining = world.is_raining().await;
-    let is_thundering = world.is_thundering().await;
-    let day_time = world.level_info.load().day_time as u64;
-    let server = world.server.upgrade()?;
+    let is_raining = action.world.is_raining().await;
+    let is_thundering = action.world.is_thundering().await;
+    let day_time = action.world.level_info.load().day_time as u64;
+    let Some(server) = action.world.server.upgrade() else {
+        return;
+    };
 
-    for (idx, position) in candidates.iter().enumerate() {
-        let is_tool_valid = {
-            let held = player.inventory().held_item();
-            let stack = held.lock().await;
-            !stack.is_empty()
-                && stack.item_count > 0
-                && (stack.get_damage() < stack.get_max_damage().unwrap_or(i32::MAX))
-        };
-        if !is_tool_valid {
-            log::info!("[VeinMiner Debug] Tool became invalid before candidate #{}", idx);
+    let mut broken_count = 0usize;
+    let mut collected_drops: Vec<ItemStack> = Vec::new();
+    let mut total_experience_orbs: u32 = 0;
+
+    for (position, expected_state_id) in &action.candidates {
+        if player.mining.load(Ordering::Relaxed)
+            || player.inventory().get_selected_slot() != action.selected_slot
+        {
+            break;
+        }
+        let held = player.inventory().held_item();
+        let stack = held.lock().await;
+        let tool_matches =
+            !stack.is_empty() && stack.item_count > 0 && stack.item.id == action.tool_item_id;
+        drop(stack);
+        if !tool_matches {
             break;
         }
 
-        let (broken_block, broken_block_state) = world.get_block_and_state_id(position);
+        let (broken_block, broken_block_state) = action.world.get_block_and_state_id(position);
+        if broken_block != action.target || broken_block_state != *expected_state_id {
+            continue;
+        }
 
-        if world
+        if action
+            .world
             .break_block(
                 position,
                 Some(player.clone()),
@@ -198,125 +463,137 @@ pub(crate) async fn try_batch_break(
                     | pumpkin_world::world::BlockFlags::NOTIFY_NEIGHBORS,
             )
             .await
-            .is_some()
+            .is_none()
         {
-            broken_count += 1;
-            log::info!("[VeinMiner Debug] Candidate #{idx} at {position:?} broken successfully ({})", broken_block.name);
-
-            if !is_creative {
-                let tool = {
-                    let hand_stack = player
-                        .inventory
-                        .get_stack_in_hand(pumpkin_util::Hand::Right)
-                        .await;
-                    let guard = hand_stack.lock().await;
-                    (guard.item_count > 0).then(|| guard.clone())
-                };
-
-                let params = pumpkin::world::loot::LootContextParameters {
-                    block_state: Some(pumpkin_data::block_state::BlockState::from_id(
-                        broken_block_state,
-                    )),
-                    luck,
-                    position: Some(pumpkin_util::math::vector3::Vector3::new(
-                        position.0.x as f64,
-                        position.0.y as f64,
-                        position.0.z as f64,
-                    )),
-                    world_time: day_time,
-                    tool,
-                    is_raining: Some(is_raining),
-                    is_thundering: Some(is_thundering),
-                    ..Default::default()
-                };
-
-                let raw_items = pumpkin::block::get_loot_items(broken_block, params);
-
-                let drop_event =
-                    pumpkin::plugin::api::events::block::block_drop_item::BlockDropItemEvent::new(
-                        player.clone(),
-                        broken_block,
-                        *position,
-                        raw_items,
-                    );
-
-                let drop_event = server.plugin_manager.fire(drop_event).await;
-
-                if !drop_event.cancelled {
-                    collected_drops.extend(drop_event.items);
-                    if let Some(experience) = &broken_block.experience {
-                        let mut random = pumpkin_util::random::RandomGenerator::Xoroshiro(
-                            pumpkin_util::random::xoroshiro128::Xoroshiro::from_seed(
-                                pumpkin_util::random::get_seed(),
-                            ),
-                        );
-                        let amount = experience.experience.get(&mut random);
-                        if amount > 0 {
-                            total_experience_orbs += amount as u32;
-                        }
-                    }
-                }
-            }
-        } else {
-            log::info!("[VeinMiner Debug] Candidate #{idx} at {position:?} break_block returned None");
-        }
-    }
-
-    log::info!("[VeinMiner Debug] Batch break loop completed. Total candidates broken: {broken_count}");
-
-    if broken_count == 0 {
-        return None;
-    }
-
-    // Merge identical item stacks in collected_drops so they drop as clean, consolidated stacks.
-    let mut merged_drops: Vec<pumpkin_data::item_stack::ItemStack> = Vec::new();
-    for stack in collected_drops {
-        if stack.is_empty() {
             continue;
         }
-        let mut added = false;
-        for existing in &mut merged_drops {
-            if existing.are_items_and_components_equal(&stack) {
-                existing.increment(stack.item_count);
-                added = true;
-                break;
+        broken_count += 1;
+
+        if is_creative {
+            continue;
+        }
+        let tool = {
+            let held = player.inventory().held_item();
+            let stack = held.lock().await;
+            (stack.item_count > 0).then(|| stack.clone())
+        };
+        let params = pumpkin::world::loot::LootContextParameters {
+            block_state: Some(BlockState::from_id(broken_block_state)),
+            luck,
+            position: Some(Vector3::new(
+                f64::from(position.0.x),
+                f64::from(position.0.y),
+                f64::from(position.0.z),
+            )),
+            world_time: day_time,
+            tool,
+            is_raining: Some(is_raining),
+            is_thundering: Some(is_thundering),
+            ..Default::default()
+        };
+        let raw_items = pumpkin::block::get_loot_items(broken_block, params);
+        let drop_event =
+            pumpkin::plugin::api::events::block::block_drop_item::BlockDropItemEvent::new(
+                player.clone(),
+                broken_block,
+                *position,
+                raw_items,
+            );
+        let drop_event = server.plugin_manager.fire(drop_event).await;
+        if drop_event.cancelled {
+            continue;
+        }
+        collected_drops.extend(drop_event.items);
+        if let Some(experience) = &broken_block.experience {
+            let mut random = pumpkin_util::random::RandomGenerator::Xoroshiro(
+                pumpkin_util::random::xoroshiro128::Xoroshiro::from_seed(
+                    pumpkin_util::random::get_seed(),
+                ),
+            );
+            let amount = experience.experience.get(&mut random);
+            if amount > 0 {
+                total_experience_orbs = total_experience_orbs.saturating_add(amount as u32);
             }
         }
-        if !added {
-            merged_drops.push(stack);
-        }
     }
 
-    log::info!("[VeinMiner Debug] Dropping {} merged item stack(s) at origin {origin:?}", merged_drops.len());
-    for stack in merged_drops {
-        world.drop_stack(&origin, stack).await;
+    if broken_count == 0 {
+        return;
     }
 
+    for stack in merge_drops(collected_drops) {
+        action.world.drop_stack(&action.origin, stack).await;
+    }
     if total_experience_orbs > 0 {
-        log::info!("[VeinMiner Debug] Spawning single XP orb with {total_experience_orbs} exp at origin {origin:?}");
         pumpkin::entity::experience_orb::ExperienceOrbEntity::spawn(
-            world,
-            origin.to_f64(),
+            &action.world,
+            action.origin.to_f64(),
             total_experience_orbs,
         )
         .await;
     }
 
-    if !is_creative {
-        let held = player.inventory().held_item();
-        let mut stack = held.lock().await;
-        if stack.is_damageable() && !stack.is_unbreakable() {
-            let before = stack.get_damage();
-            let _ = stack.damage_item(broken_count as i32);
-            let after = stack.get_damage();
-            log::info!("[VeinMiner Debug] Applied in-memory durability damage: {before} -> {after} (broken_count={broken_count})");
+    if !is_creative && action.damage_per_block > 0 {
+        let still_holding_tool = player.inventory().get_selected_slot() == action.selected_slot
+            && player.inventory().held_item().lock().await.item.id == action.tool_item_id;
+        if still_holding_tool {
+            let damage = i32::try_from(broken_count)
+                .unwrap_or(i32::MAX)
+                .saturating_mul(action.damage_per_block);
+            let before_count = player.inventory().held_item().lock().await.item_count;
+            if player.damage_held_item(damage).await {
+                let final_stack = player.inventory().held_item().lock().await.clone();
+                // A broken stack is already synchronized by Pumpkin. Normal
+                // durability changes are sent once on a later quiet tick.
+                if !final_stack.is_empty() && final_stack.item_count == before_count {
+                    state.batch_breaks().schedule_slot_sync(
+                        player,
+                        action.selected_slot,
+                        current_tick,
+                    );
+                }
+            }
+        } else {
+            log::warn!(
+                "[Cabbage MMO] skipped deferred durability for {} because the held tool changed",
+                action.player_uuid
+            );
         }
     }
 
     state.audit(&format!(
-        "batch break: {cooldown_key} broke {broken_count} block(s) for {player_uuid}",
+        "batch break: {} broke {broken_count} block(s) for {}",
+        action.cooldown_key, action.player_uuid
     ));
-    Some(broken_count)
+}
+
+fn merge_drops(drops: Vec<ItemStack>) -> Vec<ItemStack> {
+    let mut merged = Vec::<ItemStack>::new();
+    for mut stack in drops {
+        if stack.is_empty() {
+            continue;
+        }
+        while stack.item_count > 0 {
+            if let Some(existing) = merged.iter_mut().find(|existing| {
+                existing.are_items_and_components_equal(&stack)
+                    && existing.item_count < existing.get_max_stack_size()
+            }) {
+                let moved = stack
+                    .item_count
+                    .min(existing.get_max_stack_size() - existing.item_count);
+                existing.increment(moved);
+                stack.decrement(moved);
+                continue;
+            }
+
+            let moved = stack.item_count.min(stack.get_max_stack_size());
+            let mut split = stack.clone();
+            split.item_count = moved;
+            merged.push(split);
+            stack.decrement(moved);
+        }
+    }
+    merged
 }
 
 #[cfg(test)]
@@ -359,5 +636,34 @@ mod tests {
     fn zero_cap_collects_nothing() {
         let result = collect_batch_candidates(pos(0, 0, 0), 0, |_| true);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn pending_actions_expire_after_bounded_wait() {
+        assert!(!is_expired(100, 140));
+        assert!(is_expired(100, 141));
+    }
+
+    #[test]
+    fn identical_drops_are_consolidated() {
+        let drops = vec![
+            ItemStack::new(2, &pumpkin_data::item::Item::COBBLESTONE),
+            ItemStack::new(3, &pumpkin_data::item::Item::COBBLESTONE),
+        ];
+        let merged = merge_drops(drops);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].item_count, 5);
+    }
+
+    #[test]
+    fn consolidated_drops_respect_the_item_stack_limit() {
+        let drops = vec![
+            ItemStack::new(40, &pumpkin_data::item::Item::COBBLESTONE),
+            ItemStack::new(40, &pumpkin_data::item::Item::COBBLESTONE),
+        ];
+        let merged = merge_drops(drops);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].item_count, 64);
+        assert_eq!(merged[1].item_count, 16);
     }
 }

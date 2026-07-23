@@ -119,7 +119,7 @@ pub async fn handle_block_break(state: &MmoState, event: &BlockBreakEvent) {
     let target = event.block;
     let provenance = state.provenance();
     let closure_world = world.clone();
-    batch_break::try_batch_break(
+    batch_break::queue_batch_break(
         state,
         &world,
         player,
