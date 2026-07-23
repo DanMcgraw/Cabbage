@@ -526,6 +526,7 @@ fn default_disabled_world_features() -> Vec<String> {
         "ore_iron_small".to_string(),
         "ore_gold".to_string(),
         "ore_gold_lower".to_string(),
+        "ore_gold_extra".to_string(),
         "ore_redstone".to_string(),
         "ore_redstone_lower".to_string(),
         "ore_diamond".to_string(),

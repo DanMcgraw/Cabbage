@@ -521,9 +521,13 @@ fn handle_feature_generate(state: &MmoState, event: &mut FeatureGenerateEvent) {
 
 fn should_disable_world_feature(config: &MmoConfig, feature_name: &str) -> bool {
     // Existing config files already contain a serialized blacklist, so adding
-    // emerald to the default alone would not migrate them. Keep emerald tied
-    // to the reveal system even for those existing installations.
-    (config.ore_reveal.enabled && feature_name == "ore_emerald")
+    // entries to the default alone would not migrate them. Keep these features
+    // tied to the reveal system even for those existing installations:
+    // `ore_emerald` (added after the blacklist first shipped) and
+    // `ore_gold_extra` (badlands gold, never part of the default blacklist,
+    // while the reveal system has always modelled badlands gold itself).
+    (config.ore_reveal.enabled
+        && (feature_name == "ore_emerald" || feature_name == "ore_gold_extra"))
         || config
             .disabled_world_features
             .iter()
@@ -1020,6 +1024,28 @@ mod tests {
         config.disabled_world_features.clear();
         config.ore_reveal.enabled = false;
         assert!(!should_disable_world_feature(&config, "ore_emerald"));
+    }
+
+    #[test]
+    fn badlands_gold_worldgen_is_disabled_for_existing_configs() {
+        // Configs written before `ore_gold_extra` joined the default
+        // blacklist still serialize a list without it.
+        let mut config = MmoConfig::default();
+        config
+            .disabled_world_features
+            .retain(|name| name != "ore_gold_extra");
+        assert!(should_disable_world_feature(&config, "ore_gold_extra"));
+        assert!(!should_disable_world_feature(&config, "ore_gold_nether"));
+    }
+
+    #[test]
+    fn badlands_gold_worldgen_can_follow_reveal_disable_switch() {
+        let mut config = MmoConfig::default();
+        config
+            .disabled_world_features
+            .retain(|name| name != "ore_gold_extra");
+        config.ore_reveal.enabled = false;
+        assert!(!should_disable_world_feature(&config, "ore_gold_extra"));
     }
 
     #[test]
