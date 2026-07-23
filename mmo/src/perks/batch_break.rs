@@ -157,6 +157,17 @@ pub(crate) async fn try_batch_break(
     tokio::task::yield_now().await;
 
     let mut broken_count = 0usize;
+    let mut collected_drops: Vec<pumpkin_data::item_stack::ItemStack> = Vec::new();
+
+    let is_creative = player.gamemode.load() == pumpkin_util::GameMode::Creative;
+    let luck = player
+        .living_entity
+        .get_attribute_value(&pumpkin_data::attributes::Attributes::LUCK) as f32;
+    let is_raining = world.is_raining().await;
+    let is_thundering = world.is_thundering().await;
+    let day_time = world.level_info.load().day_time as u64;
+    let server = world.server.upgrade()?;
+
     for position in candidates {
         let is_tool_valid = {
             let held = player.inventory().held_item();
@@ -169,16 +180,69 @@ pub(crate) async fn try_batch_break(
             break;
         }
 
+        let (broken_block, broken_block_state) = world.get_block_and_state_id(&position);
+
+        // Break block in world with SKIP_DROPS to avoid spawning individual item entities
+        // per candidate block. Spawning N item entities within a single tick causes per-entity
+        // collision triggers, which send N full CSetContainerContent (46-slot inventory)
+        // packets to the client in sub-millisecond bursts, flooding the Netty connection and
+        // kicking the player for a Network Error.
         if world
             .break_block(
                 &position,
                 Some(player.clone()),
-                pumpkin_world::world::BlockFlags::NOTIFY_ALL,
+                pumpkin_world::world::BlockFlags::SKIP_DROPS
+                    | pumpkin_world::world::BlockFlags::NOTIFY_NEIGHBORS,
             )
             .await
             .is_some()
         {
             broken_count += 1;
+
+            if !is_creative {
+                let tool = {
+                    let hand_stack = player
+                        .inventory
+                        .get_stack_in_hand(pumpkin_util::Hand::Right)
+                        .await;
+                    let guard = hand_stack.lock().await;
+                    (guard.item_count > 0).then(|| guard.clone())
+                };
+
+                let params = pumpkin::world::loot::LootContextParameters {
+                    block_state: Some(pumpkin_data::block_state::BlockState::from_id(
+                        broken_block_state,
+                    )),
+                    luck,
+                    position: Some(pumpkin_util::math::vector3::Vector3::new(
+                        position.0.x as f64,
+                        position.0.y as f64,
+                        position.0.z as f64,
+                    )),
+                    world_time: day_time,
+                    tool,
+                    is_raining: Some(is_raining),
+                    is_thundering: Some(is_thundering),
+                    ..Default::default()
+                };
+
+                let raw_items = pumpkin::block::get_loot_items(broken_block, params);
+
+                let drop_event =
+                    pumpkin::plugin::api::events::block::block_drop_item::BlockDropItemEvent::new(
+                        player.clone(),
+                        broken_block,
+                        position,
+                        raw_items,
+                    );
+
+                let drop_event = server.plugin_manager.fire(drop_event).await;
+
+                if !drop_event.cancelled {
+                    collected_drops.extend(drop_event.items);
+                    pumpkin::block::drop_experience(world, broken_block, &position).await;
+                }
+            }
         }
     }
 
@@ -186,10 +250,31 @@ pub(crate) async fn try_batch_break(
         return None;
     }
 
-    // Apply tool durability damage ONCE for all extra blocks broken in the batch transaction,
-    // rather than per-block inside Pumpkin's break_blocks helper loop. This prevents sending
-    // N CSetPlayerInventory slot packets in a single tick stream, eliminating tool rendering
-    // animation flicker and client interaction desync.
+    // Merge identical item stacks in collected_drops so they drop as clean, consolidated stacks.
+    let mut merged_drops: Vec<pumpkin_data::item_stack::ItemStack> = Vec::new();
+    for stack in collected_drops {
+        if stack.is_empty() {
+            continue;
+        }
+        let mut added = false;
+        for existing in &mut merged_drops {
+            if existing.are_items_and_components_equal(&stack) {
+                existing.increment(stack.item_count);
+                added = true;
+                break;
+            }
+        }
+        if !added {
+            merged_drops.push(stack);
+        }
+    }
+
+    // Drop consolidated item stacks at the origin block position.
+    for stack in merged_drops {
+        world.drop_stack(&origin, stack).await;
+    }
+
+    // Apply tool durability damage ONCE for all extra blocks broken in the batch transaction.
     player.damage_held_item(broken_count as i32).await;
 
     state.audit(&format!(
