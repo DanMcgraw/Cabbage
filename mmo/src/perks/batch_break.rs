@@ -149,15 +149,9 @@ pub(crate) async fn try_batch_break(
         return None;
     }
 
-    // Yield execution micro-task to allow Pumpkin's FinishedDigging handler to finish
-    // sending sequence acknowledgement and block state sync to the player client BEFORE
-    // extra batch blocks break. This prevents candidate block changes/item pickups from
-    // breaking the client's digging prediction sequence machine (which causes fast tool
-    // animation loops and blocks inventory opening).
-    tokio::task::yield_now().await;
-
     let mut broken_count = 0usize;
     let mut collected_drops: Vec<pumpkin_data::item_stack::ItemStack> = Vec::new();
+    let mut total_experience_orbs: u32 = 0;
 
     let is_creative = player.gamemode.load() == pumpkin_util::GameMode::Creative;
     let luck = player
@@ -240,7 +234,17 @@ pub(crate) async fn try_batch_break(
 
                 if !drop_event.cancelled {
                     collected_drops.extend(drop_event.items);
-                    pumpkin::block::drop_experience(world, broken_block, &position).await;
+                    if let Some(experience) = &broken_block.experience {
+                        let mut random = pumpkin_util::random::RandomGenerator::Xoroshiro(
+                            pumpkin_util::random::xoroshiro128::Xoroshiro::from_seed(
+                                pumpkin_util::random::get_seed(),
+                            ),
+                        );
+                        let amount = experience.experience.get(&mut random);
+                        if amount > 0 {
+                            total_experience_orbs += amount as u32;
+                        }
+                    }
                 }
             }
         }
@@ -274,8 +278,30 @@ pub(crate) async fn try_batch_break(
         world.drop_stack(&origin, stack).await;
     }
 
-    // Apply tool durability damage ONCE for all extra blocks broken in the batch transaction.
-    player.damage_held_item(broken_count as i32).await;
+    // Spawn a single consolidated XP orb for candidate experience if any was earned.
+    if total_experience_orbs > 0 {
+        pumpkin::entity::experience_orb::ExperienceOrbEntity::spawn(
+            world,
+            origin.to_f64(),
+            total_experience_orbs,
+        )
+        .await;
+    }
+
+    // Apply tool durability damage in-memory for extra candidate blocks.
+    // We intentionally avoid calling `player.damage_held_item` here because `damage_held_item`
+    // enqueues an immediate `CSetPlayerInventory` packet to the client. Sending a mainhand slot
+    // packet mid-sequence causes the Minecraft client to reset its digging animation state and
+    // spam pickaxe swings. By updating the stack in-memory here, Pumpkin's `FinishedDigging`
+    // handler will apply the final 1 durability for the origin block and send a SINGLE
+    // `CSetPlayerInventory` packet when the entire digging action completes.
+    if !is_creative {
+        let held = player.inventory().held_item();
+        let mut stack = held.lock().await;
+        if stack.is_damageable() && !stack.is_unbreakable() {
+            let _ = stack.damage_item(broken_count as i32);
+        }
+    }
 
     state.audit(&format!(
         "batch break: {cooldown_key} broke {broken_count} block(s) for {player_uuid}",
