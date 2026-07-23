@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -20,9 +20,61 @@ use pumpkin_util::{
     permission::PermissionLvl,
     text::{TextComponent, color::NamedColor},
 };
+use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, ProcessesToUpdate, System, get_current_pid};
 
 use crate::drops::SavedPumpData;
+
+fn default_true() -> bool {
+    true
+}
+
+/// Core-only switches written to `config.ron` on a fresh install. The file
+/// is otherwise read and round-tripped as `cabbage_mmo::PluginConfig` so a
+/// legacy unified `mmo:` section survives `/metrics log` toggles; the MMO
+/// module's own settings live in `mmo.ron`, `mmo/rewards.ron`, and
+/// `mmo/ore_reveal.ron`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct CoreConfig {
+    #[serde(default)]
+    metrics_log: bool,
+    #[serde(default = "default_true")]
+    mob_ai: bool,
+}
+
+impl Default for CoreConfig {
+    fn default() -> Self {
+        Self {
+            metrics_log: false,
+            mob_ai: true,
+        }
+    }
+}
+
+/// Write a Core-only `config.ron` (fresh install). Failures are logged and
+/// otherwise ignored: the in-memory defaults still apply for this run.
+fn write_core_config(path: &Path, config: &CoreConfig) {
+    if let Some(parent) = path.parent()
+        && let Err(error) = fs::create_dir_all(parent)
+    {
+        println!(
+            "[Cabbage] Failed to create config folder {}: {error}",
+            parent.display()
+        );
+        return;
+    }
+
+    let Ok(contents) = ron::ser::to_string_pretty(config, ron::ser::PrettyConfig::default()) else {
+        return;
+    };
+
+    if let Err(error) = fs::write(path, contents) {
+        println!(
+            "[Cabbage] Failed to write config {}: {error}",
+            path.display()
+        );
+    }
+}
 
 pub(crate) struct MetricsReporterState {
     sys: Arc<Mutex<System>>,
@@ -254,7 +306,16 @@ impl MetricsReporterState {
             Ok(contents) => {
                 ron::from_str::<cabbage_mmo::PluginConfig>(&contents).unwrap_or_default()
             }
-            Err(_) => cabbage_mmo::PluginConfig::default(),
+            Err(_) => {
+                // Fresh install: Core owns `config.ron` and seeds it with
+                // just the core switches. When a legacy `config.json` is
+                // still waiting to be adopted, leave the file creation to
+                // the MMO module so the json switches survive.
+                if !data_folder.join("config.json").exists() {
+                    write_core_config(&path, &CoreConfig::default());
+                }
+                cabbage_mmo::PluginConfig::default()
+            }
         };
 
         self.metrics_log.store(config.metrics_log, Ordering::SeqCst);
@@ -267,10 +328,6 @@ impl MetricsReporterState {
         if let Ok(mut config_path) = self.config_path.lock() {
             *config_path = Some(path);
         }
-
-        // The MMO module creates the complete unified config when it is
-        // missing. Avoid writing a Core-only shape before that module gets a
-        // chance to migrate a legacy config.json.
     }
 
     pub(crate) fn toggle_metrics_log(&self) -> bool {
@@ -444,11 +501,26 @@ impl EventHandler<ServerTickStartEvent> for MetricsReporterState {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    fn test_config_folder() -> PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!("cabbage_core_config_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&path);
+        path
+    }
+
+    fn cleanup(folder: &PathBuf) {
+        let _ = std::fs::remove_dir_all(folder);
+    }
+
     #[test]
     fn unified_plugin_config_preserves_mmo_settings() {
         let mut original = cabbage_mmo::PluginConfig::default();
         original.metrics_log = true;
         original.mob_ai = false;
+        original.mmo = Some(cabbage_mmo::MmoConfig::default());
         original.mmo.as_mut().unwrap().enabled = false;
         let serialized = ron::to_string(&original).unwrap();
         let config: cabbage_mmo::PluginConfig = ron::from_str(&serialized).unwrap();
@@ -461,5 +533,92 @@ mod tests {
     fn missing_fields_fall_back_to_defaults() {
         let config: cabbage_mmo::PluginConfig = ron::from_str("()").unwrap();
         assert_eq!(config, cabbage_mmo::PluginConfig::default());
+    }
+
+    #[test]
+    fn plugin_config_without_mmo_section_serializes_core_only() {
+        let config = cabbage_mmo::PluginConfig::default();
+        assert_eq!(config.mmo, None);
+        let serialized = ron::to_string(&config).unwrap();
+        assert!(!serialized.contains("mmo:"));
+    }
+
+    #[test]
+    fn fresh_install_creates_core_only_config() {
+        let folder = test_config_folder();
+        let state = MetricsReporterState::new();
+        state.load_config(folder.clone());
+
+        let text = std::fs::read_to_string(folder.join("config.ron")).unwrap();
+        assert!(!text.contains("mmo:"));
+        let config: cabbage_mmo::PluginConfig = ron::from_str(&text).unwrap();
+        assert!(!config.metrics_log);
+        assert!(config.mob_ai);
+        assert_eq!(config.mmo, None);
+        // The in-memory switches follow the written defaults.
+        assert!(!state.metrics_log.load(Ordering::SeqCst));
+
+        cleanup(&folder);
+    }
+
+    #[test]
+    fn legacy_config_json_defers_file_creation_to_the_mmo_module() {
+        let folder = test_config_folder();
+        std::fs::write(
+            folder.join("config.json"),
+            "{\"metrics_log\":true,\"mob_ai\":false}",
+        )
+        .unwrap();
+        let state = MetricsReporterState::new();
+        state.load_config(folder.clone());
+
+        // Core must not overwrite the pending json adoption with defaults.
+        assert!(!folder.join("config.ron").exists());
+
+        cleanup(&folder);
+    }
+
+    #[test]
+    fn toggle_on_core_only_file_stays_core_only() {
+        let folder = test_config_folder();
+        let state = MetricsReporterState::new();
+        state.load_config(folder.clone());
+
+        assert!(state.toggle_metrics_log());
+
+        let text = std::fs::read_to_string(folder.join("config.ron")).unwrap();
+        assert!(!text.contains("mmo:"));
+        let config: cabbage_mmo::PluginConfig = ron::from_str(&text).unwrap();
+        assert!(config.metrics_log);
+        assert!(config.mob_ai);
+        assert_eq!(config.mmo, None);
+
+        cleanup(&folder);
+    }
+
+    #[test]
+    fn toggle_preserves_legacy_mmo_section() {
+        let folder = test_config_folder();
+        std::fs::write(
+            folder.join("config.ron"),
+            "(metrics_log:false,mob_ai:true,mmo:Some((\
+             enabled:false,config_version:2,message_on_level_up:true,save_interval_ticks:6000,\
+             skills:{},disabled_world_features:[],reward_config_version:1)))",
+        )
+        .unwrap();
+        let state = MetricsReporterState::new();
+        state.load_config(folder.clone());
+
+        assert!(state.toggle_metrics_log());
+
+        let text = std::fs::read_to_string(folder.join("config.ron")).unwrap();
+        let config: cabbage_mmo::PluginConfig = ron::from_str(&text).unwrap();
+        assert!(config.metrics_log);
+        assert!(config.mob_ai);
+        let mmo = config.mmo.expect("mmo section must survive the toggle");
+        assert!(!mmo.enabled);
+        assert_eq!(mmo.save_interval_ticks, 6000);
+
+        cleanup(&folder);
     }
 }

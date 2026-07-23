@@ -63,7 +63,7 @@ below (sum-of-XP for player rows; deterministic anchor rule for curves).
 
 The legacy `Combat` skill is retired: its
 stored XP is preserved in a `legacy_combat_xp` record (SQLite schema v1) until
-an administrator migrates it via `combat_migration.target` in config.ron or
+an administrator migrates it via `combat_migration.target` in `mmo.ron` or
 `/mmo migrate combat <skill>`. `Mining` XP remains Mining XP.
 
 For one compatibility period, `SkillId::from_name` and single-value config
@@ -260,17 +260,33 @@ CREATE TABLE legacy_combat_xp (
 - `legacy_combat_xp` preserves retired Combat XP until an administrator
   migrates it.
 
-Mob and block XP rewards are static balance configuration and live in RON.
-When upgrading, Cabbage migrates any customized `mob_xp` and `ore_xp` rows
-into RON once, then drops those obsolete SQLite tables.
+Mob and block XP rewards are static balance configuration and live in
+`mmo/rewards.ron`. When upgrading, Cabbage migrates any customized `mob_xp`
+and `ore_xp` rows into RON once, then drops those obsolete SQLite tables.
 
 ## Configuration
 
-The plugin config is stored as RON in the unified Cabbage data folder
-(`plugins/Cabbage/config.ron`). `config_version`
-tracks the MMO config schema (currently 2); older files gain safe defaults
-for missing sections and are saved back on upgrade. Unknown skill names in
-the `skills` map (e.g. the retired `Combat`) are skipped with a warning.
+MMO configuration is split across three RON files in the unified Cabbage
+data folder (`plugins/Cabbage/`); Core separately owns `config.ron` for the
+`metrics_log`/`mob_ai` core switches:
+
+- `mmo.ron` — the full `MmoConfig`: module switch, per-skill curves,
+  progression and perk bounds, the branch sections (`frontier`, `warfare`,
+  `enterprise`), audit, and combat migration. `config_version` tracks the
+  MMO config schema (currently 2); older files gain safe defaults for
+  missing sections and are saved back on upgrade. Unknown skill names in
+  the `skills` map (e.g. the retired `Combat`) are skipped with a warning.
+- `mmo/rewards.ron` — the `XpRewardsConfig`: the static mob and block XP
+  tables (`mobs`, `blocks`). This is the home of all kill/mining XP values.
+- `mmo/ore_reveal.ron` — the `OreRevealConfig`: ore-vein reveal rules.
+
+Migration from a unified `config.ron`: on first load the `mmo:` section is
+copied out into the three files above (inline `xp_rewards` and `ore_reveal`
+included), applying any pending schema upgrade. The old `config.ron` is
+left byte-for-byte untouched, and once the split files exist the stale
+`mmo:` section is ignored forever. A legacy `config.json` is adopted the
+same way (core switches → `config.ron` when missing, MMO defaults → the
+split files) and is never modified or deleted.
 
 Config v2 (six-skill consolidation) merges retired pair entries in the
 `skills` map deterministically during deserialization: an explicit canonical
@@ -285,64 +301,68 @@ activity configs (`frontier.agriculture`, `frontier.herbalism`,
 configure event sources, not levels.
 
 ```ron
-PluginConfig(
-    metrics_log: false,
-    mob_ai: true,
-    mmo: Some(MmoConfig(
+// mmo.ron — every MMO setting except XP rewards and ore reveal
+(
+    enabled: true,
+    config_version: 2,
+    message_on_level_up: true,
+    save_interval_ticks: 6000,
+    skills: {
+        Mining: (max_level: 100, base_xp: 50, xp_multiplier: 1.15, enabled: true),
+        // ... every skill in the three branches
+    },
+    progression: (max_xp_per_award: 10000),
+    perks: (
         enabled: true,
-        config_version: 2,
-        message_on_level_up: true,
-        save_interval_ticks: 6000,
-        skills: {
-            Mining: (max_level: 100, base_xp: 50, xp_multiplier: 1.15, enabled: true),
-            // ... every skill in the three branches
-        },
-        progression: (max_xp_per_award: 10000),
-        perks: (
-            enabled: true,
-            batch_break_max_blocks: 16,      // hard-capped at 128
-            batch_break_cooldown_ticks: 100,
-            max_damage_multiplier: 2.0,
-            max_proc_chance: 0.35,
-            max_effect_area_radius: 4,
+        batch_break_max_blocks: 16,      // hard-capped at 128
+        batch_break_cooldown_ticks: 100,
+        max_damage_multiplier: 2.0,
+        max_proc_chance: 0.35,
+        max_effect_area_radius: 4,
+    ),
+    combat_migration: (target: None),    // or Some(Blades) etc.
+    frontier: (
+        mining: (
+            prospector_enabled: true,
+            prospector_base_chance: 0.05,
+            prospector_chance_per_level: 0.002,
+            prospector_max_chance: 0.35,
+            vein_miner_enabled: true,
+            vein_miner_max_blocks: 16,
         ),
-        combat_migration: (target: None),    // or Some(Blades) etc.
-        frontier: (
-            mining: (
-                prospector_enabled: true,
-                prospector_base_chance: 0.05,
-                prospector_chance_per_level: 0.002,
-                prospector_max_chance: 0.35,
-                vein_miner_enabled: true,
-                vein_miner_max_blocks: 16,
-            ),
-            woodcutting: (
-                log_xp: { "oak_log": 6, /* ... */ },
-                heartwood_chance: 0.02,
-                heartwood_xp_bonus: 25,
-                timber_enabled: true,
-                timber_max_blocks: 32,
-            ),
-            agriculture: (
-                crops: { "wheat": (xp: 10, max_age: 7, bonus_item: "wheat"), /* ... */ },
-                harvest_bonus_chance: 0.10,
-                fertilizer_bonus_xp: 10,
-                fertilizer_guarantees_bonus: true,
-            ),
-            fishing: (
-                catch_xp: { "cod": 20, /* ... */ },
-                default_catch_xp: 10,
-                reel_exp_bonus: 2,
-                treasure_replacements: {},
-            ),
+        woodcutting: (
+            log_xp: { "oak_log": 6, /* ... */ },
+            heartwood_chance: 0.02,
+            heartwood_xp_bonus: 25,
+            timber_enabled: true,
+            timber_max_blocks: 32,
         ),
-        reward_config_version: 1,
-        xp_rewards: (
-            mobs: { "zombie": 12, /* ... */ },
-            blocks: { "coal_ore": 8, /* ... */ },
+        agriculture: (
+            crops: { "wheat": (xp: 10, max_age: 7, bonus_item: "wheat"), /* ... */ },
+            harvest_bonus_chance: 0.10,
+            fertilizer_bonus_xp: 10,
+            fertilizer_guarantees_bonus: true,
         ),
-        ore_reveal: ( /* see ore_reveal/ defaults */ ),
-    )),
+        fishing: (
+            catch_xp: { "cod": 20, /* ... */ },
+            default_catch_xp: 10,
+            reel_exp_bonus: 2,
+            treasure_replacements: {},
+        ),
+    ),
+    reward_config_version: 1,
+)
+
+// mmo/rewards.ron — static mob and block XP tables
+(
+    mobs: { "zombie": 12, /* ... */ },
+    blocks: { "coal_ore": 8, /* ... */ },
+)
+
+// mmo/ore_reveal.ron — ore-vein reveal rules (see ore_reveal/ defaults)
+(
+    enabled: true,
+    // host_blocks, shape, ores, biome_multipliers
 )
 ```
 
@@ -364,7 +384,8 @@ proc chances, curve parameters) are clamped on load via `MmoConfig::sanitized`.
   XP sources, live perk effects, and planned milestone unlocks (players).
 - `/mmo help [page]` — compact, paginated command list.
 - `/mmo top <skill>` — top players for any of the 18 canonical skills.
-- `/mmo reload` — reload config.ron (admin).
+- `/mmo reload` — reload the MMO config files (`mmo.ron`, `mmo/rewards.ron`,
+  `mmo/ore_reveal.ron`) and rebuild curves (admin).
 - `/mmo setxp <player> <skill> <xp>` — set a player's skill XP (admin).
 - `/mmo migrate status` — legacy Combat XP preservation status (admin).
 - `/mmo migrate combat <skill>` — move preserved Combat XP to a skill (admin).

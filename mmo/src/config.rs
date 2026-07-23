@@ -13,10 +13,6 @@ fn default_true() -> bool {
     true
 }
 
-fn default_mmo_config() -> Option<MmoConfig> {
-    Some(MmoConfig::default())
-}
-
 /// Current schema version of `MmoConfig`. Older files are upgraded in place
 /// on load (missing sections gain safe defaults) and saved back. Version 2
 /// merges the retired skill-pair entries of the six-skill consolidation;
@@ -25,13 +21,19 @@ fn default_mmo_config() -> Option<MmoConfig> {
 pub const CURRENT_CONFIG_VERSION: u32 = 2;
 
 /// Top-level Cabbage plugin configuration, now stored as RON.
+///
+/// Core owns this file (`config.ron`) and only ever writes the two core
+/// switches. The `mmo` section exists only so legacy unified files still
+/// parse; the MMO module's canonical home is `mmo.ron`, `mmo/rewards.ron`,
+/// and `mmo/ore_reveal.ron`, so a missing section deserializes to `None`
+/// and `None` is never written back.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PluginConfig {
     #[serde(default)]
     pub metrics_log: bool,
     #[serde(default = "default_true")]
     pub mob_ai: bool,
-    #[serde(default = "default_mmo_config")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mmo: Option<MmoConfig>,
 }
 
@@ -40,7 +42,7 @@ impl Default for PluginConfig {
         Self {
             metrics_log: false,
             mob_ai: true,
-            mmo: Some(MmoConfig::default()),
+            mmo: None,
         }
     }
 }
@@ -58,7 +60,7 @@ impl From<LegacyPluginConfig> for PluginConfig {
         Self {
             metrics_log: legacy.metrics_log,
             mob_ai: legacy.mob_ai,
-            mmo: Some(MmoConfig::default()),
+            mmo: None,
         }
     }
 }
@@ -192,14 +194,18 @@ pub struct MmoConfig {
     /// Placed-feature registry names that should not generate.
     #[serde(default = "default_disabled_world_features")]
     pub disabled_world_features: Vec<String>,
-    /// Rules for revealing ore veins after natural stone is mined.
-    #[serde(default)]
+    /// Rules for revealing ore veins after natural stone is mined. Still
+    /// parsed from legacy unified files, but never serialized into
+    /// `mmo.ron`; the canonical home is `mmo/ore_reveal.ron`.
+    #[serde(default, skip_serializing)]
     pub ore_reveal: OreRevealConfig,
     /// Schema version for one-time migration of reward values from SQLite.
     #[serde(default)]
     pub reward_config_version: u32,
-    /// Static XP rewards, kept in RON so all balance settings reload together.
-    #[serde(default)]
+    /// Static XP rewards, kept in RON so all balance settings reload
+    /// together. Still parsed from legacy unified files, but never
+    /// serialized into `mmo.ron`; the canonical home is `mmo/rewards.ron`.
+    #[serde(default, skip_serializing)]
     pub xp_rewards: XpRewardsConfig,
     /// Progression bounds applied by the central XP award path.
     #[serde(default)]

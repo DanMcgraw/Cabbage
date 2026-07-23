@@ -99,7 +99,7 @@ plugin entry point.
 Files from the pre-split monolithic plugin are adopted on first load; legacy files are never modified or deleted:
 
 - **Cabbage.Core** copies `output.log` into `plugins/Cabbage.Core/` when it does not exist there yet, and reads the legacy `config.ron` in place to adopt its `metrics_log`/`mob_ai` values (the legacy file's `mmo` section is ignored by Core).
-- **Cabbage.Mmo** copies `config.ron`, `config.json`, `mmo.db`, and `mmo-audit.log` into `plugins/Cabbage.Mmo/` when they do not exist there yet. The legacy `config.ron` is a full `PluginConfig`, exactly the format Cabbage.Mmo reads.
+- **Cabbage.Mmo** copies `config.ron`, `config.json`, `mmo.db`, and `mmo-audit.log` into `plugins/Cabbage.Mmo/` when they do not exist there yet. The legacy `config.ron` is a full unified `PluginConfig`: its `mmo` section is adopted on first load and copied out into `mmo.ron`, `mmo/rewards.ron`, and `mmo/ore_reveal.ron` (inline `xp_rewards`/`ore_reveal` included). The legacy file is left byte-for-byte untouched, and once the split files exist the stale `mmo:` section is ignored forever.
 
 ## Pumpkin Native Plugin API
 
@@ -313,7 +313,7 @@ context.register_permission(perm).await?;
 let data_folder = context.get_data_folder(); // ./plugins/<plugin name>, e.g. ./plugins/Cabbage.Core
 ```
 
-Use this for config files, logs, and databases. Core stores `config.ron` (`CoreConfig`: `metrics_log`, `mob_ai`) and `output.log` here; Mmo stores `config.ron` (`PluginConfig`), `mmo.db`, and `mmo-audit.log` here.
+Use this for config files, logs, and databases. Core owns `config.ron` (`CoreConfig`: `metrics_log`, `mob_ai`) and `output.log` here; Mmo stores `mmo.ron` (full `MmoConfig` except XP rewards and ore reveal), `mmo/rewards.ron` (`XpRewardsConfig`), `mmo/ore_reveal.ron` (`OreRevealConfig`), `mmo.db`, and `mmo-audit.log` here.
 
 ### Services (cross-plugin shared state)
 

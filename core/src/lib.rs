@@ -122,29 +122,50 @@ fn migrate_split_data_folder(data_folder: &Path) {
         &data_folder.join(EVENT_LOG_FILE),
     );
 
-    // If the MMO config was just adopted, retain the newer Core switches too.
+    // If the MMO config was just adopted, retain the newer Core switches
+    // too. The two switch lines are replaced in place so every other
+    // section — including the inline `mmo` block the MMO module splits out
+    // into `mmo.ron`, `mmo/rewards.ron`, and `mmo/ore_reveal.ron` on load —
+    // survives untouched.
     if config_was_missing
         && let (Ok(unified), Ok(core)) = (
             std::fs::read_to_string(&config_path),
             std::fs::read_to_string(core_folder.join("config.ron")),
         )
-        && let (Ok(mut unified), Ok(core)) = (
-            ron::from_str::<cabbage_mmo::PluginConfig>(&unified),
-            ron::from_str::<cabbage_mmo::PluginConfig>(&core),
+        && let Ok(core) = ron::from_str::<cabbage_mmo::PluginConfig>(&core)
+        && let Err(error) = std::fs::write(
+            &config_path,
+            merge_core_switches(&unified, core.metrics_log, core.mob_ai),
         )
     {
-        unified.metrics_log = core.metrics_log;
-        unified.mob_ai = core.mob_ai;
-        if let Ok(contents) =
-            ron::ser::to_string_pretty(&unified, ron::ser::PrettyConfig::default())
-            && let Err(error) = std::fs::write(&config_path, contents)
-        {
-            println!(
-                "[Cabbage] Failed to merge split Core config into {}: {error}",
-                config_path.display()
-            );
-        }
+        println!(
+            "[Cabbage] Failed to merge split Core config into {}: {error}",
+            config_path.display()
+        );
     }
+}
+
+/// Replace the top-level `metrics_log`/`mob_ai` switch lines of a
+/// pretty-printed `config.ron`, leaving every other line untouched. Neither
+/// key appears anywhere else in the config tree, and files written by the
+/// plugin are always multi-line; any other shape is returned unchanged,
+/// matching the old behavior of skipping the merge on unparseable files.
+fn merge_core_switches(config_text: &str, metrics_log: bool, mob_ai: bool) -> String {
+    config_text
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            let indent = &line[..line.len() - trimmed.len()];
+            if trimmed.starts_with("metrics_log:") {
+                format!("{indent}metrics_log: {metrics_log},")
+            } else if trimmed.starts_with("mob_ai:") {
+                format!("{indent}mob_ai: {mob_ai},")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 impl Plugin for CabbageCorePlugin {
@@ -227,4 +248,64 @@ impl Plugin for CabbageCorePlugin {
 #[unsafe(no_mangle)]
 pub fn plugin() -> Box<dyn Plugin> {
     Box::new(CabbageCorePlugin::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_folder_adoption_merges_core_switches_losslessly() {
+        let base = std::env::temp_dir().join(format!(
+            "cabbage_core_migrate_test_{}",
+            uuid::Uuid::new_v4()
+        ));
+        let plugins = base.join("plugins");
+        let data_folder = plugins.join("Cabbage");
+        let core_folder = plugins.join(SPLIT_CORE_DATA_FOLDER);
+        let mmo_folder = plugins.join(SPLIT_MMO_DATA_FOLDER);
+        std::fs::create_dir_all(&core_folder).unwrap();
+        std::fs::create_dir_all(&mmo_folder).unwrap();
+
+        let unified = "(\n    metrics_log: false,\n    mob_ai: true,\n    mmo: Some((\n        enabled: true,\n        config_version: 2,\n        message_on_level_up: true,\n        save_interval_ticks: 6000,\n        skills: {},\n        disabled_world_features: [],\n        reward_config_version: 1,\n        xp_rewards: (mobs: {\"zombie\": 99}, blocks: {}),\n        ore_reveal: (enabled: false),\n    )),\n)";
+        std::fs::write(mmo_folder.join("config.ron"), unified).unwrap();
+        std::fs::write(
+            core_folder.join("config.ron"),
+            "(metrics_log:true,mob_ai:false)",
+        )
+        .unwrap();
+
+        migrate_split_data_folder(&data_folder);
+
+        // The newer Core switches were merged in, and every other line —
+        // including the inline sections the MMO module splits out on load —
+        // survived untouched.
+        let expected = unified
+            .replace("    metrics_log: false,", "    metrics_log: true,")
+            .replace("    mob_ai: true,", "    mob_ai: false,");
+        let text = std::fs::read_to_string(data_folder.join("config.ron")).unwrap();
+        assert_eq!(text, expected);
+
+        // The legacy sources are never modified.
+        assert_eq!(
+            std::fs::read_to_string(mmo_folder.join("config.ron")).unwrap(),
+            unified
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn merge_core_switches_replaces_only_the_switch_lines() {
+        let text = "(\n    metrics_log: false,\n    mob_ai: true,\n    mmo: Some((\n        enabled: true,\n    )),\n)";
+        assert_eq!(
+            merge_core_switches(text, true, false),
+            "(\n    metrics_log: true,\n    mob_ai: false,\n    mmo: Some((\n        enabled: true,\n    )),\n)"
+        );
+        // A shape without the switch lines is returned unchanged.
+        assert_eq!(
+            merge_core_switches("(enabled: true)", true, false),
+            "(enabled: true)"
+        );
+    }
 }
