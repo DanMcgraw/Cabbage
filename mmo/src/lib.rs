@@ -651,6 +651,15 @@ impl EventHandler<BlockDropItemEvent> for MmoState {
                 return;
             }
             frontier::mining::handle_block_drop_item(self, event).await;
+            if !event.cancelled {
+                let world = event.player.world();
+                self.batch_break_state.capture_origin_drops(
+                    &world,
+                    event.player.gameprofile.id,
+                    event.block_position,
+                    &event.items,
+                );
+            }
         })
     }
 }

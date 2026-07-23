@@ -5,7 +5,9 @@
 //! origin's `BlockBrokenEvent` and executed on a later server tick while the
 //! player is not actively mining. This keeps Java's digging sequence,
 //! origin-block acknowledgement, and predicted held-tool update out of the
-//! server-side batch operation.
+//! server-side batch operation. Only the origin uses Pumpkin's player-caused
+//! break pipeline; connected blocks are direct world mutations whose drops,
+//! vanilla experience, skill experience, and durability are aggregated.
 
 use std::{
     collections::{HashSet, VecDeque},
@@ -16,15 +18,16 @@ use pumpkin::{
     entity::{EntityBase, player::Player},
     world::World,
 };
-use pumpkin_data::{
-    Block, BlockStateId, block_state::BlockState, data_component_impl::ToolImpl,
-    item_stack::ItemStack,
-};
+use pumpkin_data::{Block, BlockStateId, data_component_impl::ToolImpl, item_stack::ItemStack};
 use pumpkin_util::math::{position::BlockPos, vector3::Vector3};
 use pumpkin_world::inventory::Inventory;
 use uuid::Uuid;
 
-use crate::MmoState;
+use crate::{
+    MmoState,
+    progression::{self, XpSource},
+    skills::SkillId,
+};
 
 /// Do not retain an uncommitted or continually-busy action indefinitely.
 const MAX_PENDING_AGE_TICKS: i32 = 40;
@@ -93,6 +96,7 @@ struct PendingBatchBreak {
     cooldown_key: &'static str,
     queued_at_tick: i32,
     ready_at_tick: Option<i32>,
+    origin_drops: Option<Vec<ItemStack>>,
 }
 
 struct PendingSlotSync {
@@ -121,6 +125,28 @@ impl BatchBreakState {
     fn schedule(&self, action: PendingBatchBreak) {
         if let Ok(mut pending) = self.pending.lock() {
             pending.push_back(action);
+        }
+    }
+
+    /// Snapshot the origin's finalized drop list after Cabbage's drop perks
+    /// have run. The backend portion repeats this exact result instead of
+    /// executing loot tables and drop events for every connected block.
+    pub(crate) fn capture_origin_drops(
+        &self,
+        world: &Arc<World>,
+        player_uuid: Uuid,
+        origin: BlockPos,
+        items: &[ItemStack],
+    ) {
+        let Ok(mut pending) = self.pending.lock() else {
+            return;
+        };
+        if let Some(action) = pending.iter_mut().find(|action| {
+            action.player_uuid == player_uuid
+                && action.origin == origin
+                && Arc::ptr_eq(&action.world, world)
+        }) {
+            action.origin_drops = Some(items.to_vec());
         }
     }
 
@@ -243,9 +269,8 @@ fn is_expired(queued_at_tick: i32, current_tick: i32) -> bool {
 /// not fire (global perk switch off, on cooldown, no candidates, or no usable
 /// held tool). `max_blocks` is additionally clamped by the global batch cap.
 ///
-/// The cooldown is charged before the request is queued. It remains the
-/// recursion guard when the deferred operation fires a fresh
-/// `BlockBreakEvent` for each candidate.
+/// The cooldown is charged before the request is queued and prevents another
+/// origin action until this backend batch has settled.
 pub(crate) async fn queue_batch_break(
     state: &MmoState,
     world: &Arc<World>,
@@ -342,6 +367,7 @@ pub(crate) async fn queue_batch_break(
         cooldown_key,
         queued_at_tick: current_tick,
         ready_at_tick: None,
+        origin_drops: None,
     });
     Some(scheduled)
 }
@@ -420,19 +446,7 @@ async fn execute_batch(
     }
 
     let is_creative = player.gamemode.load() == pumpkin_util::GameMode::Creative;
-    let luck = player
-        .living_entity
-        .get_attribute_value(&pumpkin_data::attributes::Attributes::LUCK) as f32;
-    let is_raining = action.world.is_raining().await;
-    let is_thundering = action.world.is_thundering().await;
-    let day_time = action.world.level_info.load().day_time as u64;
-    let Some(server) = action.world.server.upgrade() else {
-        return;
-    };
-
     let mut broken_count = 0usize;
-    let mut collected_drops: Vec<ItemStack> = Vec::new();
-    let mut total_experience_orbs: u32 = 0;
 
     for (position, expected_state_id) in &action.candidates {
         if player.mining.load(Ordering::Relaxed)
@@ -454,83 +468,46 @@ async fn execute_batch(
             continue;
         }
 
-        if action
+        let replaced_state_id = action
             .world
-            .break_block(
+            .set_block_state(
                 position,
-                Some(player.clone()),
-                pumpkin_world::world::BlockFlags::SKIP_DROPS
-                    | pumpkin_world::world::BlockFlags::NOTIFY_NEIGHBORS,
+                BlockStateId::AIR,
+                pumpkin_world::world::BlockFlags::NOTIFY_ALL
+                    | pumpkin_world::world::BlockFlags::SKIP_DROPS,
             )
-            .await
-            .is_none()
-        {
+            .await;
+        if replaced_state_id != *expected_state_id {
             continue;
         }
         broken_count += 1;
-
-        if is_creative {
-            continue;
-        }
-        let tool = {
-            let held = player.inventory().held_item();
-            let stack = held.lock().await;
-            (stack.item_count > 0).then(|| stack.clone())
-        };
-        let params = pumpkin::world::loot::LootContextParameters {
-            block_state: Some(BlockState::from_id(broken_block_state)),
-            luck,
-            position: Some(Vector3::new(
-                f64::from(position.0.x),
-                f64::from(position.0.y),
-                f64::from(position.0.z),
-            )),
-            world_time: day_time,
-            tool,
-            is_raining: Some(is_raining),
-            is_thundering: Some(is_thundering),
-            ..Default::default()
-        };
-        let raw_items = pumpkin::block::get_loot_items(broken_block, params);
-        let drop_event =
-            pumpkin::plugin::api::events::block::block_drop_item::BlockDropItemEvent::new(
-                player.clone(),
-                broken_block,
-                *position,
-                raw_items,
-            );
-        let drop_event = server.plugin_manager.fire(drop_event).await;
-        if drop_event.cancelled {
-            continue;
-        }
-        collected_drops.extend(drop_event.items);
-        if let Some(experience) = &broken_block.experience {
-            let mut random = pumpkin_util::random::RandomGenerator::Xoroshiro(
-                pumpkin_util::random::xoroshiro128::Xoroshiro::from_seed(
-                    pumpkin_util::random::get_seed(),
-                ),
-            );
-            let amount = experience.experience.get(&mut random);
-            if amount > 0 {
-                total_experience_orbs = total_experience_orbs.saturating_add(amount as u32);
-            }
-        }
     }
 
     if broken_count == 0 {
         return;
     }
 
-    for stack in merge_drops(collected_drops) {
-        action.world.drop_stack(&action.origin, stack).await;
-    }
-    if total_experience_orbs > 0 {
-        pumpkin::entity::experience_orb::ExperienceOrbEntity::spawn(
-            &action.world,
-            action.origin.to_f64(),
-            total_experience_orbs,
-        )
-        .await;
+    if !is_creative {
+        // Pumpkin already spawned the origin's drops and vanilla XP. Repeat
+        // the finalized origin drop snapshot and one representative vanilla
+        // XP roll for every backend-removed block.
+        if let Some(origin_drops) = action.origin_drops.as_deref() {
+            for stack in multiply_drops(origin_drops, broken_count) {
+                action.world.drop_stack(&action.origin, stack).await;
+            }
+            let extra_experience = roll_block_experience(action.target)
+                .saturating_mul(u32::try_from(broken_count).unwrap_or(u32::MAX));
+            if extra_experience > 0 {
+                pumpkin::entity::experience_orb::ExperienceOrbEntity::spawn(
+                    &action.world,
+                    action.origin.to_f64(),
+                    extra_experience,
+                )
+                .await;
+            }
+        }
+
+        award_extra_skill_xp(state, player, &action, broken_count).await;
     }
 
     if !is_creative && action.damage_per_block > 0 {
@@ -562,9 +539,66 @@ async fn execute_batch(
     }
 
     state.audit(&format!(
-        "batch break: {} broke {broken_count} block(s) for {}",
+        "backend batch break: {} removed {broken_count} extra block(s) for {}",
         action.cooldown_key, action.player_uuid
     ));
+}
+
+fn multiply_drops(drops: &[ItemStack], multiplier: usize) -> Vec<ItemStack> {
+    let mut repeated = Vec::with_capacity(drops.len().saturating_mul(multiplier));
+    for _ in 0..multiplier {
+        repeated.extend(drops.iter().cloned());
+    }
+    merge_drops(repeated)
+}
+
+fn roll_block_experience(block: &Block) -> u32 {
+    let Some(experience) = &block.experience else {
+        return 0;
+    };
+    let mut random = pumpkin_util::random::RandomGenerator::Xoroshiro(
+        pumpkin_util::random::xoroshiro128::Xoroshiro::from_seed(pumpkin_util::random::get_seed()),
+    );
+    u32::try_from(experience.experience.get(&mut random)).unwrap_or(0)
+}
+
+async fn award_extra_skill_xp(
+    state: &MmoState,
+    player: &Arc<Player>,
+    action: &PendingBatchBreak,
+    broken_count: usize,
+) {
+    if !progression::earns_xp(player) {
+        return;
+    }
+    let reward = {
+        let config = state.config();
+        match action.cooldown_key {
+            "mining.vein_miner" => state
+                .block_xp_reward(action.target.name)
+                .map(|xp| (SkillId::Mining, xp)),
+            "woodcutting.timber" => config
+                .frontier
+                .woodcutting
+                .log_xp
+                .get(action.target.name)
+                .copied()
+                .map(|xp| (SkillId::Woodcutting, xp)),
+            "excavation.earthmover" => config
+                .frontier
+                .excavation
+                .diggable_xp
+                .get(action.target.name)
+                .copied()
+                .map(|xp| (SkillId::Excavation, xp)),
+            _ => None,
+        }
+    };
+    let Some((skill, xp_per_block)) = reward else {
+        return;
+    };
+    let total_xp = xp_per_block.saturating_mul(u64::try_from(broken_count).unwrap_or(u64::MAX));
+    progression::award_xp(state, player, skill, total_xp, XpSource::BlockBreak).await;
 }
 
 fn merge_drops(drops: Vec<ItemStack>) -> Vec<ItemStack> {
@@ -665,5 +699,28 @@ mod tests {
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].item_count, 64);
         assert_eq!(merged[1].item_count, 16);
+    }
+
+    #[test]
+    fn origin_drops_are_multiplied_for_backend_blocks() {
+        let drops = vec![ItemStack::new(3, &pumpkin_data::item::Item::COBBLESTONE)];
+        let multiplied = multiply_drops(&drops, 4);
+        assert_eq!(multiplied.len(), 1);
+        assert_eq!(multiplied[0].item_count, 12);
+    }
+
+    #[test]
+    fn multiplied_drops_respect_the_item_stack_limit() {
+        let drops = vec![ItemStack::new(40, &pumpkin_data::item::Item::COBBLESTONE)];
+        let multiplied = multiply_drops(&drops, 2);
+        assert_eq!(multiplied.len(), 2);
+        assert_eq!(multiplied[0].item_count, 64);
+        assert_eq!(multiplied[1].item_count, 16);
+    }
+
+    #[test]
+    fn zero_backend_blocks_multiply_to_no_drops() {
+        let drops = vec![ItemStack::new(3, &pumpkin_data::item::Item::COBBLESTONE)];
+        assert!(multiply_drops(&drops, 0).is_empty());
     }
 }
