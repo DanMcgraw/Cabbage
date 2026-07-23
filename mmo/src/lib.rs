@@ -21,6 +21,7 @@ use pumpkin::{
             },
             entity::{
                 entity_breed::EntityBreedCompleteEvent, entity_damage::EntityDamageEvent,
+                entity_damage_by_entity::EntityDamageByEntityEvent,
                 entity_feed::EntityFeedCompleteEvent,
                 entity_product::AnimalProductCollectCompleteEvent,
                 entity_shoot_bow::EntityShootBowEvent, entity_tame::EntityTameEvent,
@@ -579,6 +580,7 @@ impl EventHandler<BlockBreakEvent> for MmoState {
             frontier::mining::handle_block_break(self, event).await;
             frontier::woodcutting::handle_block_break(self, event).await;
             frontier::excavation::handle_block_break(self, event).await;
+            enterprise::repair::handle_tool_care(self, event).await;
         })
     }
 }
@@ -863,6 +865,21 @@ impl EventHandler<EntityDamageEvent> for MmoState {
     }
 }
 
+impl EventHandler<EntityDamageByEntityEvent> for MmoState {
+    fn handle_blocking<'a>(
+        &'a self,
+        _server: &'a Arc<Server>,
+        event: &'a mut EntityDamageByEntityEvent,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.is_active() || !self.is_enabled() {
+                return;
+            }
+            warfare::archery::handle_entity_damage_by_entity(self, event).await;
+        })
+    }
+}
+
 impl EventHandler<AnvilPrepareEvent> for MmoState {
     fn handle_blocking<'a>(
         &'a self,
@@ -1110,6 +1127,49 @@ mod tests {
             config.skills[&SkillId::Cultivation],
             crate::config::SkillConfig::default()
         );
+    }
+
+    #[test]
+    fn config_v2_file_upgrades_to_v3_and_saves_once_with_tier_knobs() {
+        // A v2 file carries no per-tier knobs; the v2 pair merge and the
+        // adopted values must keep working through the v3 bump.
+        let mut config: MmoConfig = ron::from_str(
+            "(enabled:true,message_on_level_up:true,save_interval_ticks:6000,\
+             config_version:2,\
+             skills:{\
+                 Cultivation:(max_level:99,base_xp:60,xp_multiplier:1.14,enabled:true),\
+                 Agriculture:(max_level:80,base_xp:70,xp_multiplier:1.2,enabled:false),\
+                 Herbalism:(max_level:80,base_xp:70,xp_multiplier:1.2,enabled:false)\
+             },\
+             disabled_world_features:[],\
+             frontier:(mining:(prospector_enabled:true,prospector_base_chance:0.07,prospector_chance_per_level:0.002,prospector_max_chance:0.35,vein_miner_enabled:true,vein_miner_max_blocks:16)),\
+             warfare:(archery:(hit_xp:6)),\
+             enterprise:(repair:(discount_per_level:0.05,discount_cap:10.0,cooldown_ticks:100,xp:20)))",
+        )
+        .unwrap();
+        // The v2 pair merge still runs during deserialize (explicit wins).
+        assert_eq!(config.skills[&SkillId::Cultivation].max_level, 99);
+        // v2 files parse: the new knobs land on their defaults.
+        assert_eq!(config.frontier.mining.prospector_base_chance, 0.07);
+        assert_eq!(config.frontier.mining.prospector_chance_per_tier, 0.01);
+        assert!(config.frontier.mining.prospector_capstone_double);
+        assert!(config.warfare.archery.damage_enabled);
+        assert_eq!(config.warfare.archery.damage_cap_per_tier, 0.05);
+        assert!(config.enterprise.repair.tool_care_enabled);
+        assert_eq!(config.enterprise.repair.tool_care_chance_per_tier, 0.025);
+
+        // The upgrade bumps to v3 exactly once and the re-saved file
+        // documents the new fields.
+        assert!(upgrade_mmo_config(&mut config));
+        assert_eq!(config.config_version, CURRENT_CONFIG_VERSION);
+        assert!(!upgrade_mmo_config(&mut config));
+        let serialized = ron::ser::to_string(&config).unwrap();
+        assert!(serialized.contains("prospector_chance_per_tier"));
+        assert!(serialized.contains("prospector_capstone_double"));
+        assert!(serialized.contains("damage_cap_per_tier"));
+        assert!(serialized.contains("tool_care_chance_per_tier"));
+        assert!(serialized.contains("heal_per_tier"));
+        assert!(serialized.contains("xp_cap_per_tier"));
     }
 
     fn test_config_folder() -> PathBuf {

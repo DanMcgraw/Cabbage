@@ -11,7 +11,7 @@
 //! The catalog is display-only: gameplay handlers remain the authority on
 //! whether an effect can fire. Milestone slots stay visibly `Planned` until
 //! their concrete perk is implemented — the page never promises that a
-//! level-25/50/75/100 placeholder is already active. Threshold states
+//! level-10/25/50/100 placeholder is already active. Threshold states
 //! (`Unlocked`/`Next`/`Locked`) land together with the first implemented
 //! milestone perk; today every row is `Active from level 1`, `Disabled`, or
 //! `Planned`.
@@ -21,7 +21,7 @@ use pumpkin_util::text::{TextComponent, click::ClickEvent, color::NamedColor};
 use super::{
     super::{
         config::{LevelCurve, MmoConfig},
-        perks::eligibility::{CAPSTONE_LEVEL, MAJOR_PERK_LEVELS},
+        perks::eligibility::PERK_TIER_LEVELS,
         progression::{PlayerSkillSnapshot, PlayerSnapshot},
         skills::SkillId,
     },
@@ -661,7 +661,7 @@ fn progression_rows(skill: SkillId, config: &MmoConfig, level: u32) -> Vec<Progr
     let skill_on = skill_enabled(config, skill);
     let perks_on = config.perks.enabled;
 
-    let mut rows = Vec::with_capacity(entry.effects.len() + MAJOR_PERK_LEVELS.len() + 1);
+    let mut rows = Vec::with_capacity(entry.effects.len() + PERK_TIER_LEVELS.len());
     for effect in entry.effects {
         let render = effect.render(config, level);
         let (state, detail) = if !module_on {
@@ -685,20 +685,16 @@ fn progression_rows(skill: SkillId, config: &MmoConfig, level: u32) -> Vec<Progr
             detail,
         });
     }
-    for milestone in MAJOR_PERK_LEVELS {
+    // Perk tiers land in a later phase; until then the four tier levels stay
+    // visibly `Planned` placeholder rows built from `PERK_TIER_LEVELS`.
+    for tier_level in PERK_TIER_LEVELS {
         rows.push(ProgressionRow {
-            level: milestone,
-            name: "Major perk slot",
+            level: tier_level,
+            name: "Perk tier slot",
             state: RowState::Planned,
             detail: "planned for a future update; nothing unlocks here yet".to_string(),
         });
     }
-    rows.push(ProgressionRow {
-        level: CAPSTONE_LEVEL,
-        name: "Capstone slot",
-        state: RowState::Planned,
-        detail: "planned for a future update; nothing unlocks here yet".to_string(),
-    });
     rows
 }
 
@@ -1037,8 +1033,7 @@ mod tests {
             .filter(|row| row.state == RowState::Planned)
             .map(|row| row.level)
             .collect();
-        let mut expected = MAJOR_PERK_LEVELS.to_vec();
-        expected.push(CAPSTONE_LEVEL);
+        let expected = PERK_TIER_LEVELS.to_vec();
         assert_eq!(milestone_levels, expected);
 
         // The whole progression section is ordered by unlock level.
@@ -1051,7 +1046,7 @@ mod tests {
     #[test]
     fn milestones_stay_planned_below_at_and_above_their_level() {
         let config = MmoConfig::default();
-        let milestones = MAJOR_PERK_LEVELS.iter().copied().chain([CAPSTONE_LEVEL]);
+        let milestones = PERK_TIER_LEVELS.iter().copied();
         for milestone in milestones {
             for level in [milestone - 1, milestone, milestone + 1] {
                 let rows = progression_rows(SkillId::Mining, &config, level);

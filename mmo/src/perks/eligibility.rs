@@ -1,28 +1,32 @@
-//! Perk unlock eligibility by skill level.
+//! Perk tier eligibility by skill level.
 //!
-//! Major perks unlock at levels 25/50/75 and capstones at 100. No major
-//! perks or capstones are enabled yet: per the plan they arrive one at a
-//! time only after the owning skill's basic XP flow has been live-tested,
-//! behind configuration kill switches. This module owns the level gates so
-//! every future perk uses the same thresholds.
+//! Every skill has four perk milestones — tiers — at levels 10/25/50/100.
+//! Reaching a tier steps up the skill's existing perk effects (bigger batch
+//! breaks, higher proc chances, raised caps) and, at the top tier, unlocks
+//! capstone-style extras. This module owns the tier thresholds so every
+//! per-skill perk formula and the level-up announcements use the same
+//! levels.
 
-/// Levels at which major perks unlock. The skill detail catalog builds its
-/// planned milestone slots from this list.
-pub(crate) const MAJOR_PERK_LEVELS: [u32; 3] = [25, 50, 75];
+/// Levels at which perk tiers unlock. `perk_tier` counts how many of these
+/// a level has reached; the skill detail catalog builds its milestone rows
+/// from this list.
+pub(crate) const PERK_TIER_LEVELS: [u32; 4] = [10, 25, 50, 100];
 
-/// Level at which a skill's capstone unlocks.
-pub(crate) const CAPSTONE_LEVEL: u32 = 100;
-
-/// Whether a major perk of the given unlock level is available at `level`.
-#[allow(dead_code)] // consumed by the first major perks (Phase 4, after live tests)
-pub(crate) fn is_major_perk_unlocked(level: u32, perk_level: u32) -> bool {
-    MAJOR_PERK_LEVELS.contains(&perk_level) && level >= perk_level
+/// Number of perk milestones reached at `level` (0..=4).
+pub(crate) fn perk_tier(level: u32) -> u32 {
+    PERK_TIER_LEVELS
+        .iter()
+        .filter(|&&tier| level >= tier)
+        .count() as u32
 }
 
-/// Whether the capstone is available at `level`.
-#[allow(dead_code)] // consumed by the first capstone (Phase 4, after live tests)
-pub(crate) fn is_capstone_unlocked(level: u32) -> bool {
-    level >= CAPSTONE_LEVEL
+/// Tier levels crossed going from `old` to `new` (for unlock announcements),
+/// in ascending order. Handles multi-level jumps and yields each crossed
+/// tier level once; empty when no tier is crossed.
+pub(crate) fn tiers_crossed(old: u32, new: u32) -> impl Iterator<Item = u32> {
+    PERK_TIER_LEVELS
+        .into_iter()
+        .filter(move |&tier| old < tier && tier <= new)
 }
 
 #[cfg(test)]
@@ -30,25 +34,53 @@ mod tests {
     use super::*;
 
     #[test]
-    fn major_perks_unlock_at_thresholds() {
-        assert!(!is_major_perk_unlocked(24, 25));
-        assert!(is_major_perk_unlocked(25, 25));
-        assert!(is_major_perk_unlocked(80, 25));
-        assert!(!is_major_perk_unlocked(49, 50));
-        assert!(is_major_perk_unlocked(50, 50));
-        assert!(!is_major_perk_unlocked(74, 75));
-        assert!(is_major_perk_unlocked(75, 75));
+    fn perk_tier_counts_reached_milestones() {
+        // Tier 0 for any level below 10 (9 is only an edge input; no tier 9).
+        for level in [0, 1, 5, 9] {
+            assert_eq!(perk_tier(level), 0, "level {level}");
+        }
+        // Tier 1 from 10 up to 24.
+        for level in [10, 11, 24] {
+            assert_eq!(perk_tier(level), 1, "level {level}");
+        }
+        // Tier 2 from 25 up to 49.
+        for level in [25, 26, 49] {
+            assert_eq!(perk_tier(level), 2, "level {level}");
+        }
+        // Tier 3 from 50 up to 99 (99 is only an edge input; no tier 99).
+        for level in [50, 51, 99] {
+            assert_eq!(perk_tier(level), 3, "level {level}");
+        }
+        // Tier 4 at 100 and beyond.
+        for level in [100, 101, 1000] {
+            assert_eq!(perk_tier(level), 4, "level {level}");
+        }
     }
 
     #[test]
-    fn non_threshold_levels_are_rejected() {
-        assert!(!is_major_perk_unlocked(100, 30));
-        assert!(!is_major_perk_unlocked(100, 100));
+    fn tiers_crossed_is_empty_when_no_tier_is_crossed() {
+        assert_eq!(tiers_crossed(1, 9).collect::<Vec<_>>(), Vec::<u32>::new());
+        assert_eq!(tiers_crossed(10, 24).collect::<Vec<_>>(), Vec::<u32>::new());
+        assert_eq!(tiers_crossed(50, 50).collect::<Vec<_>>(), Vec::<u32>::new());
+        // Level loss never announces a tier.
+        assert_eq!(tiers_crossed(60, 10).collect::<Vec<_>>(), Vec::<u32>::new());
     }
 
     #[test]
-    fn capstone_unlocks_at_100() {
-        assert!(!is_capstone_unlocked(99));
-        assert!(is_capstone_unlocked(100));
+    fn tiers_crossed_yields_a_single_crossed_tier() {
+        assert_eq!(tiers_crossed(9, 10).collect::<Vec<_>>(), vec![10]);
+        assert_eq!(tiers_crossed(24, 25).collect::<Vec<_>>(), vec![25]);
+        assert_eq!(tiers_crossed(99, 100).collect::<Vec<_>>(), vec![100]);
+    }
+
+    #[test]
+    fn tiers_crossed_handles_multi_level_jumps() {
+        assert_eq!(
+            tiers_crossed(1, 100).collect::<Vec<_>>(),
+            vec![10, 25, 50, 100]
+        );
+        assert_eq!(tiers_crossed(9, 26).collect::<Vec<_>>(), vec![10, 25]);
+        // Each crossed tier level is yielded exactly once.
+        assert_eq!(tiers_crossed(10, 50).collect::<Vec<_>>(), vec![25, 50]);
     }
 }

@@ -63,11 +63,20 @@ pub struct MiningPerkConfig {
     pub prospector_chance_per_level: f64,
     /// Hard cap for the Prospector proc chance.
     pub prospector_max_chance: f64,
+    /// Additional Prospector proc chance per perk tier.
+    #[serde(default = "default_prospector_chance_per_tier")]
+    pub prospector_chance_per_tier: f64,
     /// Sneak + break an ore to break its connected vein (Vein Miner).
     #[serde(default = "default_true")]
     pub vein_miner_enabled: bool,
     /// Maximum extra blocks Vein Miner may break in one action.
     pub vein_miner_max_blocks: u32,
+    /// Additional blocks Vein Miner may break per perk tier.
+    #[serde(default = "default_vein_miner_max_blocks_per_tier")]
+    pub vein_miner_max_blocks_per_tier: u32,
+    /// At perk tier 4, a Prospector bonus drop is two items instead of one.
+    #[serde(default = "default_true")]
+    pub prospector_capstone_double: bool,
 }
 
 impl Default for MiningPerkConfig {
@@ -77,10 +86,21 @@ impl Default for MiningPerkConfig {
             prospector_base_chance: 0.05,
             prospector_chance_per_level: 0.002,
             prospector_max_chance: 0.35,
+            prospector_chance_per_tier: default_prospector_chance_per_tier(),
             vein_miner_enabled: true,
             vein_miner_max_blocks: 16,
+            vein_miner_max_blocks_per_tier: default_vein_miner_max_blocks_per_tier(),
+            prospector_capstone_double: true,
         }
     }
+}
+
+fn default_prospector_chance_per_tier() -> f64 {
+    0.01
+}
+
+fn default_vein_miner_max_blocks_per_tier() -> u32 {
+    4
 }
 
 /// Woodcutting configuration: natural-log XP, Heartwood roll, Timber.
@@ -91,13 +111,22 @@ pub struct WoodcuttingConfig {
     pub log_xp: HashMap<String, u64>,
     /// Chance for a natural log break to drop one extra log (Heartwood roll).
     pub heartwood_chance: f64,
+    /// Additional Heartwood roll chance per perk tier.
+    #[serde(default = "default_heartwood_chance_per_tier")]
+    pub heartwood_chance_per_tier: f64,
     /// Bonus XP awarded alongside a successful Heartwood roll.
     pub heartwood_xp_bonus: u64,
+    /// Additional Heartwood bonus XP per perk tier.
+    #[serde(default = "default_heartwood_xp_bonus_per_tier")]
+    pub heartwood_xp_bonus_per_tier: u64,
     /// Sneak + break a natural log to fell connected logs (Timber).
     #[serde(default = "default_true")]
     pub timber_enabled: bool,
     /// Maximum extra blocks Timber may break in one action.
     pub timber_max_blocks: u32,
+    /// Additional blocks Timber may fell per perk tier.
+    #[serde(default = "default_timber_max_blocks_per_tier")]
+    pub timber_max_blocks_per_tier: u32,
 }
 
 impl Default for WoodcuttingConfig {
@@ -105,11 +134,26 @@ impl Default for WoodcuttingConfig {
         Self {
             log_xp: default_log_xp(),
             heartwood_chance: 0.02,
+            heartwood_chance_per_tier: default_heartwood_chance_per_tier(),
             heartwood_xp_bonus: 25,
+            heartwood_xp_bonus_per_tier: default_heartwood_xp_bonus_per_tier(),
             timber_enabled: true,
             timber_max_blocks: 32,
+            timber_max_blocks_per_tier: default_timber_max_blocks_per_tier(),
         }
     }
+}
+
+fn default_heartwood_chance_per_tier() -> f64 {
+    0.01
+}
+
+fn default_heartwood_xp_bonus_per_tier() -> u64 {
+    5
+}
+
+fn default_timber_max_blocks_per_tier() -> u32 {
+    8
 }
 
 impl WoodcuttingConfig {
@@ -158,6 +202,9 @@ pub struct AgricultureConfig {
     pub crops: HashMap<String, CropReward>,
     /// Chance for a mature harvest to add one bonus crop item.
     pub harvest_bonus_chance: f64,
+    /// Additional harvest bonus chance per perk tier.
+    #[serde(default = "default_harvest_bonus_chance_per_tier")]
+    pub harvest_bonus_chance_per_tier: f64,
     /// Bonus XP for harvesting a fertilized crop.
     pub fertilizer_bonus_xp: u64,
     /// Whether a fertilized crop always yields the harvest bonus item.
@@ -170,10 +217,15 @@ impl Default for AgricultureConfig {
         Self {
             crops: default_crops(),
             harvest_bonus_chance: 0.10,
+            harvest_bonus_chance_per_tier: default_harvest_bonus_chance_per_tier(),
             fertilizer_bonus_xp: 10,
             fertilizer_guarantees_bonus: true,
         }
     }
+}
+
+fn default_harvest_bonus_chance_per_tier() -> f64 {
+    0.02
 }
 
 impl AgricultureConfig {
@@ -216,6 +268,9 @@ pub struct FishingConfig {
     pub default_catch_xp: u64,
     /// Extra vanilla experience dropped on a successful catch (reel perk).
     pub reel_exp_bonus: i32,
+    /// Additional reel experience per perk tier.
+    #[serde(default = "default_reel_exp_bonus_per_tier")]
+    pub reel_exp_bonus_per_tier: i32,
     /// Replace caught treasure items: caught registry key → replacement key.
     /// Empty by default (feature off until balanced).
     #[serde(default)]
@@ -228,9 +283,14 @@ impl Default for FishingConfig {
             catch_xp: default_catch_xp(),
             default_catch_xp: 10,
             reel_exp_bonus: 2,
+            reel_exp_bonus_per_tier: default_reel_exp_bonus_per_tier(),
             treasure_replacements: HashMap::new(),
         }
     }
+}
+
+fn default_reel_exp_bonus_per_tier() -> i32 {
+    1
 }
 
 fn default_catch_xp() -> HashMap<String, u64> {
@@ -269,11 +329,17 @@ pub struct HerbalismConfig {
     pub plant_xp: HashMap<String, u64>,
     /// Chance for a plant break to yield one extra item (quality yield).
     pub quality_yield_chance: f64,
+    /// Additional quality yield chance per perk tier.
+    #[serde(default = "default_quality_yield_chance_per_tier")]
+    pub quality_yield_chance_per_tier: f64,
     /// XP per eaten plant-based consumable, keyed by item registry key.
     #[serde(default = "default_consumable_xp")]
     pub consumable_xp: HashMap<String, u64>,
     /// Extra health restored by configured consumables (2.0 = one heart).
     pub consumable_heal_bonus: f32,
+    /// Additional consumable heal per perk tier (2.0 = one heart).
+    #[serde(default = "default_consumable_heal_bonus_per_tier")]
+    pub consumable_heal_bonus_per_tier: f32,
 }
 
 impl Default for HerbalismConfig {
@@ -281,10 +347,20 @@ impl Default for HerbalismConfig {
         Self {
             plant_xp: default_plant_xp(),
             quality_yield_chance: 0.08,
+            quality_yield_chance_per_tier: default_quality_yield_chance_per_tier(),
             consumable_xp: default_consumable_xp(),
             consumable_heal_bonus: 1.0,
+            consumable_heal_bonus_per_tier: default_consumable_heal_bonus_per_tier(),
         }
     }
+}
+
+fn default_quality_yield_chance_per_tier() -> f64 {
+    0.02
+}
+
+fn default_consumable_heal_bonus_per_tier() -> f32 {
+    0.5
 }
 
 impl HerbalismConfig {
@@ -367,6 +443,12 @@ pub struct ExcavationConfig {
     pub earthmover_enabled: bool,
     /// Maximum extra blocks Earthmover may break in one action.
     pub earthmover_max_blocks: u32,
+    /// Additional blocks Earthmover may excavate per perk tier.
+    #[serde(default = "default_earthmover_max_blocks_per_tier")]
+    pub earthmover_max_blocks_per_tier: u32,
+    /// Additional archaeology loot chance per perk tier.
+    #[serde(default = "default_loot_chance_per_tier")]
+    pub loot_chance_per_tier: f64,
 }
 
 impl Default for ExcavationConfig {
@@ -376,8 +458,18 @@ impl Default for ExcavationConfig {
             bonus_loot: default_excavation_loot(),
             earthmover_enabled: true,
             earthmover_max_blocks: 16,
+            earthmover_max_blocks_per_tier: default_earthmover_max_blocks_per_tier(),
+            loot_chance_per_tier: default_loot_chance_per_tier(),
         }
     }
+}
+
+fn default_earthmover_max_blocks_per_tier() -> u32 {
+    4
+}
+
+fn default_loot_chance_per_tier() -> f64 {
+    0.01
 }
 
 impl ExcavationConfig {
@@ -454,6 +546,12 @@ pub struct HusbandryConfig {
     /// Chance that a successfully spawned baby receives one Cabbage trait.
     #[serde(default = "default_trait_roll_chance")]
     pub trait_roll_chance: f64,
+    /// Additional newborn trait roll chance per perk tier.
+    #[serde(default = "default_trait_roll_chance_per_tier")]
+    pub trait_roll_chance_per_tier: f64,
+    /// Tier at or above which a second distinct trait is rolled.
+    #[serde(default = "default_double_trait_min_tier")]
+    pub double_trait_min_tier: u32,
     /// Trait identifiers eligible for the newborn roll.
     #[serde(default = "default_husbandry_traits")]
     pub traits: Vec<String>,
@@ -466,6 +564,8 @@ impl Default for HusbandryConfig {
             default_breed_xp: 15,
             product_xp: default_product_xp(),
             trait_roll_chance: default_trait_roll_chance(),
+            trait_roll_chance_per_tier: default_trait_roll_chance_per_tier(),
+            double_trait_min_tier: default_double_trait_min_tier(),
             traits: default_husbandry_traits(),
         }
     }
@@ -473,6 +573,14 @@ impl Default for HusbandryConfig {
 
 fn default_trait_roll_chance() -> f64 {
     0.15
+}
+
+fn default_trait_roll_chance_per_tier() -> f64 {
+    0.02
+}
+
+fn default_double_trait_min_tier() -> u32 {
+    3
 }
 
 fn default_husbandry_traits() -> Vec<String> {
@@ -604,19 +712,31 @@ impl FrontierConfig {
         clamp_chance(&mut self.mining.prospector_base_chance);
         clamp_chance(&mut self.mining.prospector_chance_per_level);
         clamp_chance(&mut self.mining.prospector_max_chance);
+        clamp_chance(&mut self.mining.prospector_chance_per_tier);
         clamp_chance(&mut self.woodcutting.heartwood_chance);
+        clamp_chance(&mut self.woodcutting.heartwood_chance_per_tier);
         clamp_chance(&mut self.agriculture.harvest_bonus_chance);
+        clamp_chance(&mut self.agriculture.harvest_bonus_chance_per_tier);
         clamp_chance(&mut self.herbalism.quality_yield_chance);
+        clamp_chance(&mut self.herbalism.quality_yield_chance_per_tier);
         if !self.herbalism.consumable_heal_bonus.is_finite()
             || self.herbalism.consumable_heal_bonus < 0.0
         {
             self.herbalism.consumable_heal_bonus = 0.0;
         }
+        if !self.herbalism.consumable_heal_bonus_per_tier.is_finite()
+            || self.herbalism.consumable_heal_bonus_per_tier < 0.0
+        {
+            self.herbalism.consumable_heal_bonus_per_tier = 0.0;
+        }
         for loot in self.excavation.bonus_loot.values_mut() {
             clamp_chance(&mut loot.chance);
         }
+        clamp_chance(&mut self.excavation.loot_chance_per_tier);
         clamp_chance(&mut self.husbandry.trait_roll_chance);
+        clamp_chance(&mut self.husbandry.trait_roll_chance_per_tier);
         self.fishing.reel_exp_bonus = self.fishing.reel_exp_bonus.clamp(0, 100);
+        self.fishing.reel_exp_bonus_per_tier = self.fishing.reel_exp_bonus_per_tier.clamp(0, 100);
         self
     }
 }
@@ -649,6 +769,64 @@ mod tests {
         assert_eq!(config.mining.prospector_max_chance, 1.0);
         assert_eq!(config.woodcutting.heartwood_chance, 0.0);
         assert_eq!(config.fishing.reel_exp_bonus, 100);
+    }
+
+    #[test]
+    fn sanitized_clamps_tier_knobs() {
+        let mut config = FrontierConfig::default();
+        config.mining.prospector_chance_per_tier = 2.0;
+        config.woodcutting.heartwood_chance_per_tier = f64::NAN;
+        config.agriculture.harvest_bonus_chance_per_tier = -1.0;
+        config.herbalism.quality_yield_chance_per_tier = 3.0;
+        config.herbalism.consumable_heal_bonus_per_tier = f32::NAN;
+        config.excavation.loot_chance_per_tier = 1.5;
+        config.husbandry.trait_roll_chance_per_tier = -0.5;
+        config.fishing.reel_exp_bonus_per_tier = 10_000;
+        let config = config.sanitized();
+        assert_eq!(config.mining.prospector_chance_per_tier, 1.0);
+        assert_eq!(config.woodcutting.heartwood_chance_per_tier, 0.0);
+        assert_eq!(config.agriculture.harvest_bonus_chance_per_tier, 0.0);
+        assert_eq!(config.herbalism.quality_yield_chance_per_tier, 1.0);
+        assert_eq!(config.herbalism.consumable_heal_bonus_per_tier, 0.0);
+        assert_eq!(config.excavation.loot_chance_per_tier, 1.0);
+        assert_eq!(config.husbandry.trait_roll_chance_per_tier, 0.0);
+        assert_eq!(config.fishing.reel_exp_bonus_per_tier, 100);
+    }
+
+    #[test]
+    fn v2_frontier_sections_parse_with_tier_knob_defaults() {
+        // Shape written by config v2: every section present, none of the
+        // per-tier knobs added in v3.
+        let config: FrontierConfig = ron::from_str(
+            "(mining:(prospector_enabled:true,prospector_base_chance:0.07,prospector_chance_per_level:0.003,prospector_max_chance:0.30,vein_miner_enabled:true,vein_miner_max_blocks:12),\
+             woodcutting:(heartwood_chance:0.03,heartwood_xp_bonus:30,timber_enabled:true,timber_max_blocks:24),\
+             agriculture:(harvest_bonus_chance:0.12,fertilizer_bonus_xp:8,fertilizer_guarantees_bonus:false),\
+             fishing:(default_catch_xp:9,reel_exp_bonus:3,treasure_replacements:{}),\
+             herbalism:(quality_yield_chance:0.09,consumable_heal_bonus:2.0),\
+             excavation:(earthmover_enabled:true,earthmover_max_blocks:12),\
+             husbandry:(default_breed_xp:15),\
+             taming:(default_tame_xp:30,bond_feed_xp:4,bond_cap:100))",
+        )
+        .unwrap();
+        // Adopted v2 values survive.
+        assert_eq!(config.mining.prospector_base_chance, 0.07);
+        assert_eq!(config.woodcutting.timber_max_blocks, 24);
+        assert_eq!(config.herbalism.consumable_heal_bonus, 2.0);
+        // The new per-tier knobs land on their defaults.
+        assert_eq!(config.mining.prospector_chance_per_tier, 0.01);
+        assert_eq!(config.mining.vein_miner_max_blocks_per_tier, 4);
+        assert!(config.mining.prospector_capstone_double);
+        assert_eq!(config.woodcutting.timber_max_blocks_per_tier, 8);
+        assert_eq!(config.woodcutting.heartwood_chance_per_tier, 0.01);
+        assert_eq!(config.woodcutting.heartwood_xp_bonus_per_tier, 5);
+        assert_eq!(config.agriculture.harvest_bonus_chance_per_tier, 0.02);
+        assert_eq!(config.herbalism.quality_yield_chance_per_tier, 0.02);
+        assert_eq!(config.herbalism.consumable_heal_bonus_per_tier, 0.5);
+        assert_eq!(config.excavation.earthmover_max_blocks_per_tier, 4);
+        assert_eq!(config.excavation.loot_chance_per_tier, 0.01);
+        assert_eq!(config.fishing.reel_exp_bonus_per_tier, 1);
+        assert_eq!(config.husbandry.trait_roll_chance_per_tier, 0.02);
+        assert_eq!(config.husbandry.double_trait_min_tier, 3);
     }
 
     #[test]

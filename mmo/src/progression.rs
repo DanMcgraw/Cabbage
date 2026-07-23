@@ -210,6 +210,19 @@ pub(crate) fn earns_xp(player: &Player) -> bool {
     )
 }
 
+/// Read a player's current level for perk gating, falling back to level 1
+/// when the database read fails so perks keep their level-1 behavior
+/// (perk tier 0) instead of being skipped on a transient error.
+pub(crate) async fn perk_level(state: &MmoState, player_uuid: uuid::Uuid, skill: SkillId) -> u32 {
+    match state.db().get_skill(player_uuid, skill).await {
+        Ok(progress) => state.curve(skill).level_for_xp(progress.xp).0,
+        Err(error) => {
+            log::warn!("[Cabbage MMO] failed to read {skill} level for perk gating: {error}");
+            1
+        }
+    }
+}
+
 /// A point-in-time view of a player's skill progress.
 ///
 /// Level is derived from total XP on demand, so this struct stores only the

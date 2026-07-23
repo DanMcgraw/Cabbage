@@ -48,10 +48,17 @@ pub struct SmithingConfig {
     /// Tag anvil outputs with creator/provenance item data.
     #[serde(default = "default_true")]
     pub mark_anvil_outputs: bool,
+    /// Additional craft/smelt XP multiplier per perk tier.
+    #[serde(default = "default_smithing_xp_multiplier_per_tier")]
+    pub xp_multiplier_per_tier: f64,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_smithing_xp_multiplier_per_tier() -> f64 {
+    0.05
 }
 
 impl Default for SmithingConfig {
@@ -61,6 +68,7 @@ impl Default for SmithingConfig {
             smelt_xp: default_smelt_xp(),
             default_smelt_xp: 2,
             mark_anvil_outputs: true,
+            xp_multiplier_per_tier: default_smithing_xp_multiplier_per_tier(),
         }
     }
 }
@@ -122,18 +130,32 @@ fn default_smelt_xp() -> HashMap<String, u64> {
 }
 
 /// Repair: anvil cost discount in the prepare preview, XP on take. Both the
-/// discount and the award use the merged Maintenance track.
+/// discount and the award use the merged Maintenance track. The Tool Care
+/// knobs live here because this section owns the anvil side of Maintenance.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RepairConfig {
     /// Level-cost reduction per Maintenance level.
     pub discount_per_level: f64,
     /// Hard cap for the level-cost reduction.
     pub discount_cap: f64,
+    /// Additional discount cap per perk tier.
+    #[serde(default = "default_repair_discount_cap_per_tier")]
+    pub discount_cap_per_tier: f64,
     /// Cooldown between discounted repairs, in ticks. Charged only when the
     /// discounted output is taken.
     pub cooldown_ticks: u32,
     /// XP per completed repair.
     pub xp: u64,
+    /// Master switch for Tool Care (chance to refund 1 durability on the
+    /// held tool after a block break).
+    #[serde(default = "default_true")]
+    pub tool_care_enabled: bool,
+    /// Base Tool Care proc chance.
+    #[serde(default = "default_tool_care_chance")]
+    pub tool_care_chance: f64,
+    /// Additional Tool Care proc chance per perk tier.
+    #[serde(default = "default_tool_care_chance_per_tier")]
+    pub tool_care_chance_per_tier: f64,
 }
 
 impl Default for RepairConfig {
@@ -141,10 +163,26 @@ impl Default for RepairConfig {
         Self {
             discount_per_level: 0.05,
             discount_cap: 10.0,
+            discount_cap_per_tier: default_repair_discount_cap_per_tier(),
             cooldown_ticks: 100,
             xp: 20,
+            tool_care_enabled: true,
+            tool_care_chance: default_tool_care_chance(),
+            tool_care_chance_per_tier: default_tool_care_chance_per_tier(),
         }
     }
+}
+
+fn default_repair_discount_cap_per_tier() -> f64 {
+    1.0
+}
+
+fn default_tool_care_chance() -> f64 {
+    0.05
+}
+
+fn default_tool_care_chance_per_tier() -> f64 {
+    0.025
 }
 
 /// Salvage: grindstone experience bonus and material-recovery rolls. Both
@@ -155,6 +193,9 @@ pub struct SalvageConfig {
     pub xp_bonus_per_level: f64,
     /// Hard cap for the experience bonus fraction.
     pub xp_bonus_cap: f64,
+    /// Additional XP bonus cap per perk tier.
+    #[serde(default = "default_salvage_xp_bonus_cap_per_tier")]
+    pub xp_bonus_cap_per_tier: f64,
     /// Cooldown between bonused grindstone takes, in ticks.
     pub cooldown_ticks: u32,
     /// XP per completed grindstone take.
@@ -171,12 +212,17 @@ impl Default for SalvageConfig {
         Self {
             xp_bonus_per_level: 0.002,
             xp_bonus_cap: 0.25,
+            xp_bonus_cap_per_tier: default_salvage_xp_bonus_cap_per_tier(),
             cooldown_ticks: 60,
             xp: 15,
             recovery_chance: 0.10,
             recovery_materials: default_recovery_materials(),
         }
     }
+}
+
+fn default_salvage_xp_bonus_cap_per_tier() -> f64 {
+    0.05
 }
 
 fn default_recovery_materials() -> HashMap<String, String> {
@@ -193,7 +239,7 @@ fn default_recovery_materials() -> HashMap<String, String> {
     .collect()
 }
 
-/// Alchemy: XP for consuming potions.
+/// Alchemy: XP for consuming potions, plus the Potion Mastery heal.
 ///
 /// Brewing itself is not attributable (`BrewEvent` carries no player) and
 /// potency/duration mutation of applied effects has no safe hook, so both
@@ -207,6 +253,15 @@ pub struct AlchemyConfig {
     /// rewards require an explicit `potion_xp` key so ordinary foods cannot
     /// accidentally earn Alchemy XP.
     pub default_potion_xp: u64,
+    /// Master switch for Potion Mastery (heal on potion consume).
+    #[serde(default = "default_true")]
+    pub heal_enabled: bool,
+    /// Base health restored on potion consume (2.0 = one heart).
+    #[serde(default = "default_potion_heal_base")]
+    pub heal_base: f32,
+    /// Additional Potion Mastery health per perk tier (2.0 = one heart).
+    #[serde(default = "default_potion_heal_per_tier")]
+    pub heal_per_tier: f32,
 }
 
 impl Default for AlchemyConfig {
@@ -214,8 +269,19 @@ impl Default for AlchemyConfig {
         Self {
             potion_xp: default_potion_xp(),
             default_potion_xp: 8,
+            heal_enabled: true,
+            heal_base: default_potion_heal_base(),
+            heal_per_tier: default_potion_heal_per_tier(),
         }
     }
+}
+
+fn default_potion_heal_base() -> f32 {
+    0.5
+}
+
+fn default_potion_heal_per_tier() -> f32 {
+    0.5
 }
 
 fn default_potion_xp() -> HashMap<String, u64> {
@@ -236,10 +302,16 @@ pub struct EnchantingConfig {
     pub offer_discount_per_level: f64,
     /// Hard cap for the offer level-requirement reduction.
     pub offer_discount_cap: f64,
+    /// Additional offer discount cap per perk tier.
+    #[serde(default = "default_offer_discount_cap_per_tier")]
+    pub offer_discount_cap_per_tier: f64,
     /// XP granted per level of the commit's level cost.
     pub xp_per_level_cost: f64,
     /// Maximum XP from a single enchant.
     pub xp_cap: u64,
+    /// Additional enchant XP cap per perk tier.
+    #[serde(default = "default_enchanting_xp_cap_per_tier")]
+    pub xp_cap_per_tier: u64,
 }
 
 impl Default for EnchantingConfig {
@@ -247,10 +319,20 @@ impl Default for EnchantingConfig {
         Self {
             offer_discount_per_level: 0.02,
             offer_discount_cap: 5.0,
+            offer_discount_cap_per_tier: default_offer_discount_cap_per_tier(),
             xp_per_level_cost: 5.0,
             xp_cap: 100,
+            xp_cap_per_tier: default_enchanting_xp_cap_per_tier(),
         }
     }
+}
+
+fn default_offer_discount_cap_per_tier() -> f64 {
+    1.0
+}
+
+fn default_enchanting_xp_cap_per_tier() -> u64 {
+    25
 }
 
 /// Tinkering: mechanism crafting XP and custom-item provenance.
@@ -259,14 +341,22 @@ pub struct TinkeringConfig {
     /// XP per crafted mechanism, keyed by item registry key.
     #[serde(default = "default_tinkering_craft_xp")]
     pub craft_xp: HashMap<String, u64>,
+    /// Additional craft XP multiplier per perk tier.
+    #[serde(default = "default_tinkering_xp_multiplier_per_tier")]
+    pub xp_multiplier_per_tier: f64,
 }
 
 impl Default for TinkeringConfig {
     fn default() -> Self {
         Self {
             craft_xp: default_tinkering_craft_xp(),
+            xp_multiplier_per_tier: default_tinkering_xp_multiplier_per_tier(),
         }
     }
+}
+
+fn default_tinkering_xp_multiplier_per_tier() -> f64 {
+    0.05
 }
 
 fn default_tinkering_craft_xp() -> HashMap<String, u64> {
@@ -343,15 +433,30 @@ impl EnterpriseConfig {
                 *value = 0.0;
             }
         };
+        clamp_nonnegative(&mut self.smithing.xp_multiplier_per_tier);
         clamp_nonnegative(&mut self.repair.discount_per_level);
         clamp_nonnegative(&mut self.repair.discount_cap);
+        clamp_nonnegative(&mut self.repair.discount_cap_per_tier);
+        clamp_nonnegative(&mut self.repair.tool_care_chance);
+        self.repair.tool_care_chance = self.repair.tool_care_chance.min(1.0);
+        clamp_nonnegative(&mut self.repair.tool_care_chance_per_tier);
+        self.repair.tool_care_chance_per_tier = self.repair.tool_care_chance_per_tier.min(1.0);
         clamp_nonnegative(&mut self.salvage.xp_bonus_per_level);
         clamp_nonnegative(&mut self.salvage.xp_bonus_cap);
+        clamp_nonnegative(&mut self.salvage.xp_bonus_cap_per_tier);
         clamp_nonnegative(&mut self.salvage.recovery_chance);
         self.salvage.recovery_chance = self.salvage.recovery_chance.min(1.0);
+        if !self.alchemy.heal_base.is_finite() || self.alchemy.heal_base < 0.0 {
+            self.alchemy.heal_base = 0.0;
+        }
+        if !self.alchemy.heal_per_tier.is_finite() || self.alchemy.heal_per_tier < 0.0 {
+            self.alchemy.heal_per_tier = 0.0;
+        }
         clamp_nonnegative(&mut self.enchanting.offer_discount_per_level);
         clamp_nonnegative(&mut self.enchanting.offer_discount_cap);
+        clamp_nonnegative(&mut self.enchanting.offer_discount_cap_per_tier);
         clamp_nonnegative(&mut self.enchanting.xp_per_level_cost);
+        clamp_nonnegative(&mut self.tinkering.xp_multiplier_per_tier);
         self
     }
 }
@@ -389,5 +494,62 @@ mod tests {
         let config = EnterpriseConfig::default();
         assert!(!config.trading.enabled);
         assert!(!config.charisma.enabled);
+    }
+
+    #[test]
+    fn sanitized_clamps_tier_knobs() {
+        let mut config = EnterpriseConfig::default();
+        config.smithing.xp_multiplier_per_tier = f64::NAN;
+        config.repair.discount_cap_per_tier = -1.0;
+        config.repair.tool_care_chance = 2.0;
+        config.repair.tool_care_chance_per_tier = f64::NAN;
+        config.salvage.xp_bonus_cap_per_tier = -0.5;
+        config.alchemy.heal_base = f32::NAN;
+        config.alchemy.heal_per_tier = -1.0;
+        config.enchanting.offer_discount_cap_per_tier = -1.0;
+        config.tinkering.xp_multiplier_per_tier = f64::INFINITY;
+        let config = config.sanitized();
+        assert_eq!(config.smithing.xp_multiplier_per_tier, 0.0);
+        assert_eq!(config.repair.discount_cap_per_tier, 0.0);
+        assert_eq!(config.repair.tool_care_chance, 1.0);
+        assert_eq!(config.repair.tool_care_chance_per_tier, 0.0);
+        assert_eq!(config.salvage.xp_bonus_cap_per_tier, 0.0);
+        assert_eq!(config.alchemy.heal_base, 0.0);
+        assert_eq!(config.alchemy.heal_per_tier, 0.0);
+        assert_eq!(config.enchanting.offer_discount_cap_per_tier, 0.0);
+        assert_eq!(config.tinkering.xp_multiplier_per_tier, 0.0);
+    }
+
+    #[test]
+    fn v2_enterprise_sections_parse_with_tier_knob_defaults() {
+        // Shape written by config v2: every section present, none of the
+        // per-tier knobs or the Tool Care / Potion Mastery knobs added in v3.
+        let config: EnterpriseConfig = ron::from_str(
+            "(smithing:(default_smelt_xp:2,mark_anvil_outputs:true),\
+             repair:(discount_per_level:0.05,discount_cap:10.0,cooldown_ticks:100,xp:20),\
+             salvage:(xp_bonus_per_level:0.002,xp_bonus_cap:0.25,cooldown_ticks:60,xp:15,recovery_chance:0.10,recovery_materials:{}),\
+             alchemy:(default_potion_xp:8),\
+             enchanting:(offer_discount_per_level:0.02,offer_discount_cap:5.0,xp_per_level_cost:5.0,xp_cap:100),\
+             tinkering:(craft_xp:{\"piston\":15}),\
+             trading:(enabled:false,reputation_gains:{}),\
+             charisma:(enabled:false))",
+        )
+        .unwrap();
+        // Adopted v2 values survive.
+        assert_eq!(config.repair.discount_cap, 10.0);
+        assert_eq!(config.enchanting.xp_cap, 100);
+        // The new knobs land on their defaults.
+        assert_eq!(config.smithing.xp_multiplier_per_tier, 0.05);
+        assert_eq!(config.repair.discount_cap_per_tier, 1.0);
+        assert!(config.repair.tool_care_enabled);
+        assert_eq!(config.repair.tool_care_chance, 0.05);
+        assert_eq!(config.repair.tool_care_chance_per_tier, 0.025);
+        assert_eq!(config.salvage.xp_bonus_cap_per_tier, 0.05);
+        assert!(config.alchemy.heal_enabled);
+        assert_eq!(config.alchemy.heal_base, 0.5);
+        assert_eq!(config.alchemy.heal_per_tier, 0.5);
+        assert_eq!(config.enchanting.offer_discount_cap_per_tier, 1.0);
+        assert_eq!(config.enchanting.xp_cap_per_tier, 25);
+        assert_eq!(config.tinkering.xp_multiplier_per_tier, 0.05);
     }
 }

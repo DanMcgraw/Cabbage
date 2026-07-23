@@ -17,8 +17,10 @@ fn default_true() -> bool {
 /// on load (missing sections gain safe defaults) and saved back. Version 2
 /// merges the retired skill-pair entries of the six-skill consolidation;
 /// that merge happens deterministically while the `skills` map is
-/// deserialized (see [`migrate_skill_configs`]).
-pub const CURRENT_CONFIG_VERSION: u32 = 2;
+/// deserialized (see [`migrate_skill_configs`]). Version 3 adds the per-tier
+/// perk knobs to the branch sections; every new knob deserializes with a
+/// serde default so v2 files parse unchanged.
+pub const CURRENT_CONFIG_VERSION: u32 = 3;
 
 /// Top-level Cabbage plugin configuration, now stored as RON.
 ///
